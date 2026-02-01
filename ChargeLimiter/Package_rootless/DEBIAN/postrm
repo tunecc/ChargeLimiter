@@ -1,0 +1,6 @@
+#!/bin/bash
+
+# 卸载后刷新图标缓存
+uicache -p /var/jb/Applications/ChargeLimiter.app 2>/dev/null
+
+exit 0
