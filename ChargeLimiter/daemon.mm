@@ -1,7 +1,17 @@
 #include <sqlite3.h>
 #import <Foundation/Foundation.h>
-#import <GCDWebServers/GCDWebServers.h>
 #import <UserNotifications/UserNotifications.h>
+
+// 如果定义了 CL_USE_GCDWEBSERVER 则使用 GCDWebServers，否则使用自己的简易 HTTP 服务器
+#ifndef CL_USE_GCDWEBSERVER
+#define CL_USE_GCDWEBSERVER 0
+#endif
+
+#if CL_USE_GCDWEBSERVER
+#import <GCDWebServers/GCDWebServers.h>
+#else
+#import "CLSimpleHTTPServer.h"
+#endif
 
 #include "utils.h"
 
@@ -345,7 +355,7 @@ static NSString* getMsgForLang(NSString* msgid, NSString* lang) {
     static NSDictionary* messages = nil;
     if (messages == nil) {
         NSString* bundlePath = [getSelfExePath() stringByDeletingLastPathComponent];
-        NSString* langPath = [bundlePath stringByAppendingString:@"/www/lang.json"];
+        NSString* langPath = [bundlePath stringByAppendingString:@"/lang.json"];
         NSData* data = [NSData dataWithContentsOfFile:langPath];
         messages = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
     }
@@ -581,7 +591,24 @@ static void onBatteryEvent(io_service_t serv) {
                 }
                 break;
             }
-            if (capacity.intValue <= charge_below.intValue) { // 充电-电量低,优先级=4
+            // 温度恢复充电 - 在所有模式下都生效，优先级=4
+            // 只有当温度控制开启且当前温度在安全范围内时才考虑恢复
+            if (enable_temp.boolValue && temperature <= charge_temp_below && !is_charging) {
+                // 温度已降到安全范围，可以恢复充电
+                // 但需要确保电量也在合理范围内（低于上限）
+                if (is_adaptor_connected && capacity.intValue < charge_above.intValue) {
+                    if (adv_disable_inflow.boolValue && !is_inflow_enabled.boolValue) {
+                        NSFileLog(@"enable inflow for low temperature %lf <= %lf", temperature, charge_temp_below);
+                        setInflowStatus(YES);
+                    }
+                    NSFileLog(@"start charging for low temperature %lf <= %lf", temperature, charge_temp_below);
+                    setBatteryStatus(YES);
+                    performAction(@"start_charge");
+                    performAcccharge(YES);
+                    break;
+                }
+            }
+            if (capacity.intValue <= charge_below.intValue) { // 充电-电量低,优先级=5
                 // 禁流模式下电量下降后恢复充电
                 if (is_adaptor_connected) {
                     if (adv_disable_inflow.boolValue && !is_inflow_enabled.boolValue) {
@@ -596,21 +623,6 @@ static void onBatteryEvent(io_service_t serv) {
                 break;
             }
             if (mode == CL_MODE_PLUG) {
-                if (enable_temp.boolValue && temperature <= charge_temp_below) { // 充电-温度低,优先级=5
-                    if (is_adaptor_connected) {
-                        if (adv_disable_inflow.boolValue && !is_inflow_enabled.boolValue) {
-                            NSFileLog(@"enable inflow for low temperature %lf < %lf", temperature, charge_temp_below);
-                            setInflowStatus(YES);
-                        }
-                        if (!is_charging) {
-                            NSFileLog(@"start charging for low temperature %lf < %lf", temperature, charge_temp_below);
-                            setBatteryStatus(YES);
-                            performAction(@"start_charge");
-                            performAcccharge(YES);
-                        }
-                    }
-                    break;
-                }
                 if (is_adaptor_new_connected) { // 充电-插电,优先级=6
                     if (adv_disable_inflow.boolValue && !is_inflow_enabled.boolValue) {
                         NSFileLog(@"enable inflow for plug in");
@@ -1124,6 +1136,8 @@ void detectUPSBattery() {
 - (void)serve {
     initConf(NO);
     initDB(nil);
+    
+#if CL_USE_GCDWEBSERVER
     static GCDWebServer* _webServer = nil;
     if (_webServer == nil) {
         if (localPortOpen(GSERV_PORT)) {
@@ -1148,6 +1162,29 @@ void detectUPSBattery() {
             NSLog(@"%@ serve failed, exit", log_prefix);
             exit(0);
         }
+#else
+    // 使用自己的简易 HTTP 服务器，替代 GCDWebServers
+    static CLSimpleHTTPServer* _webServer = nil;
+    if (_webServer == nil) {
+        if (localPortOpen(GSERV_PORT)) {
+            NSLog(@"%@ already served, exit", log_prefix);
+            exit(0); // 服务已存在,退出
+        }
+        _webServer = [[CLSimpleHTTPServer alloc] init];
+        NSString* html_root = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"www"];
+        [_webServer setDocumentRoot:html_root];
+        [_webServer setPostHandler:^NSDictionary*(NSDictionary* jsonBody) {
+            @autoreleasepool {
+                return handleReq(jsonBody);
+            }
+        }];
+        BOOL status = [_webServer startOnPort:GSERV_PORT bindToLocalhost:YES];
+        if (!status) {
+            NSLog(@"%@ serve failed, exit", log_prefix);
+            exit(0);
+        }
+#endif
+        
         getBatInfo(&bat_info);
         gNotifyPort = IONotificationPortCreate(kIOMasterPortDefault);
         CFRunLoopSourceRef runSrc = IONotificationPortGetRunLoopSource(gNotifyPort);

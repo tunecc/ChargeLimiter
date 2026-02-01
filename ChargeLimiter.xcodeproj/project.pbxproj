@@ -11,16 +11,15 @@
 		182AAAF62B916632006BBE9A /* UserNotifications.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 184FE8032B70BE8100525080 /* UserNotifications.framework */; };
 		1839C1D12B8C250C00FCFDEB /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 18257CBC2B88652600DC5F70 /* CoreGraphics.framework */; };
 		1839C1D22B8C251600FCFDEB /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 18257CBC2B88652600DC5F70 /* CoreGraphics.framework */; };
-		1839C1D92B8C657400FCFDEB /* splash.png in Resources */ = {isa = PBXBuildFile; fileRef = 18EEB6F72B7BCAA100DCC561 /* splash.png */; };
 		184EA9A52B7A373300D0981D /* utils.mm in Sources */ = {isa = PBXBuildFile; fileRef = 18C50C652B6D2D5D00793FA9 /* utils.mm */; };
 		184EA9A72B7A373300D0981D /* CFNetwork.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 187886532B519B1600E48B28 /* CFNetwork.framework */; };
 		184EA9A82B7A373300D0981D /* CoreServices.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 18C50C7B2B6DFD8000793FA9 /* CoreServices.framework */; };
 		184EA9AC2B7A373300D0981D /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1878864E2B5199EC00E48B28 /* UIKit.framework */; };
-		184EA9AF2B7A373300D0981D /* www in Resources */ = {isa = PBXBuildFile; fileRef = 187886522B519A5B00E48B28 /* www */; };
+		184EA9AF2B7A373300D0981D /* lang.json in Resources */ = {isa = PBXBuildFile; fileRef = 187886522B519A5B00E48B28 /* lang.json */; };
 		184EA9B02B7A373300D0981D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1878863C2B51976B00E48B28 /* Assets.xcassets */; };
 		184EA9B12B7A373300D0981D /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 1878863E2B51976B00E48B28 /* LaunchScreen.storyboard */; };
 		184EA9B22B7A373300D0981D /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 187886392B51976A00E48B28 /* Main.storyboard */; };
-		1860F2C42B5809510094AAC8 /* www in Resources */ = {isa = PBXBuildFile; fileRef = 187886522B519A5B00E48B28 /* www */; };
+		1860F2C42B5809510094AAC8 /* lang.json in Resources */ = {isa = PBXBuildFile; fileRef = 187886522B519A5B00E48B28 /* lang.json */; };
 		18658A8F2BD2716000207EF3 /* ui.mm in Sources */ = {isa = PBXBuildFile; fileRef = 18658A812BCF771800207EF3 /* ui.mm */; };
 		1870F5FD2B83B8F100B3660F /* GraphicsServices.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 1870F5FC2B83B8F100B3660F /* GraphicsServices.tbd */; };
 		1870F5FE2B83B8F100B3660F /* GraphicsServices.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 1870F5FC2B83B8F100B3660F /* GraphicsServices.tbd */; };
@@ -62,7 +61,28 @@
 		18C50C7C2B6DFD8000793FA9 /* CoreServices.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 18C50C7B2B6DFD8000793FA9 /* CoreServices.framework */; };
 		18D0C42F2B7FC64F006A7AB7 /* BackBoardServices.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 18D0C42E2B7FC64F006A7AB7 /* BackBoardServices.tbd */; };
 		18D0C4302B7FC64F006A7AB7 /* BackBoardServices.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 18D0C42E2B7FC64F006A7AB7 /* BackBoardServices.tbd */; };
-		18EEB6F82B7BCAA100DCC561 /* splash.png in Resources */ = {isa = PBXBuildFile; fileRef = 18EEB6F72B7BCAA100DCC561 /* splash.png */; };
+		A720B97C2F2F0995008B9C91 /* CLMainViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9622F2F0995008B9C91 /* CLMainViewController.m */; };
+		A720B97D2F2F0995008B9C91 /* CLSettingsViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9662F2F0995008B9C91 /* CLSettingsViewController.m */; };
+		A720B97E2F2F0995008B9C91 /* CLHelpViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9602F2F0995008B9C91 /* CLHelpViewController.m */; };
+		A720B97F2F2F0995008B9C91 /* CLBatteryManager.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9762F2F0995008B9C91 /* CLBatteryManager.m */; };
+		A720B9802F2F0995008B9C91 /* CLTheme.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9792F2F0995008B9C91 /* CLTheme.m */; };
+		A720B9812F2F0995008B9C91 /* CLAccChargeViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B95E2F2F0995008B9C91 /* CLAccChargeViewController.m */; };
+		A720B9822F2F0995008B9C91 /* CLAPIClient.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9742F2F0995008B9C91 /* CLAPIClient.m */; };
+		A720B9832F2F0995008B9C91 /* CLTestApp.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9772F2F0995008B9C91 /* CLTestApp.m */; };
+		A720B9842F2F0995008B9C91 /* CLAdvancedSettingsViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B95F2F2F0995008B9C91 /* CLAdvancedSettingsViewController.m */; };
+		A720B99D2F2F0995008B9C91 /* CLMainViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9622F2F0995008B9C91 /* CLMainViewController.m */; };
+		A720B99E2F2F0995008B9C91 /* CLSettingsViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9662F2F0995008B9C91 /* CLSettingsViewController.m */; };
+		A720B99F2F2F0995008B9C91 /* CLHelpViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9602F2F0995008B9C91 /* CLHelpViewController.m */; };
+		A720B9A02F2F0995008B9C91 /* CLBatteryManager.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9762F2F0995008B9C91 /* CLBatteryManager.m */; };
+		A720B9A12F2F0995008B9C91 /* CLTheme.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9792F2F0995008B9C91 /* CLTheme.m */; };
+		A720B9A22F2F0995008B9C91 /* CLAccChargeViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B95E2F2F0995008B9C91 /* CLAccChargeViewController.m */; };
+		A720B9A32F2F0995008B9C91 /* CLAPIClient.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9742F2F0995008B9C91 /* CLAPIClient.m */; };
+		A720B9A42F2F0995008B9C91 /* CLTestApp.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9772F2F0995008B9C91 /* CLTestApp.m */; };
+		A720B9A52F2F0995008B9C91 /* CLAdvancedSettingsViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B95F2F2F0995008B9C91 /* CLAdvancedSettingsViewController.m */; };
+		A720B9A82F2F0C0B008B9C91 /* CLSimpleHTTPServer.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9A72F2F0C0B008B9C91 /* CLSimpleHTTPServer.m */; };
+		A720B9A92F2F0C0B008B9C91 /* CLSimpleHTTPServer.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9A72F2F0C0B008B9C91 /* CLSimpleHTTPServer.m */; };
+		A720B9AA2F2F0C0C008B9C91 /* CLSimpleHTTPServer.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9A72F2F0C0B008B9C91 /* CLSimpleHTTPServer.m */; };
+		A720B9AB2F2F0C0D008B9C91 /* CLSimpleHTTPServer.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9A72F2F0C0B008B9C91 /* CLSimpleHTTPServer.m */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -107,7 +127,7 @@
 		187886412B51976B00E48B28 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		187886422B51976B00E48B28 /* daemon.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = daemon.mm; sourceTree = "<group>"; };
 		1878864E2B5199EC00E48B28 /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
-		187886522B519A5B00E48B28 /* www */ = {isa = PBXFileReference; lastKnownFileType = folder; path = www; sourceTree = "<group>"; };
+		187886522B519A5B00E48B28 /* lang.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = lang.json; sourceTree = "<group>"; };
 		187886532B519B1600E48B28 /* CFNetwork.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CFNetwork.framework; path = System/Library/Frameworks/CFNetwork.framework; sourceTree = SDKROOT; };
 		187BEA1F2B6A5F6100BD5C8F /* Package */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Package; sourceTree = "<group>"; };
 		18826C072BFCF00A00F7D88D /* Package_rootless */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Package_rootless; sourceTree = "<group>"; };
@@ -126,7 +146,23 @@
 		18D0C42E2B7FC64F006A7AB7 /* BackBoardServices.tbd */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = "sourcecode.text-based-dylib-definition"; path = BackBoardServices.tbd; sourceTree = "<group>"; };
 		18D455212B91A5BD0032EDE7 /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
 		18D455232B91A5BD0032EDE7 /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
-		18EEB6F72B7BCAA100DCC561 /* splash.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = splash.png; sourceTree = "<group>"; };
+		A720B95E2F2F0995008B9C91 /* CLAccChargeViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = CLAccChargeViewController.m; sourceTree = "<group>"; };
+		A720B95F2F2F0995008B9C91 /* CLAdvancedSettingsViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = CLAdvancedSettingsViewController.m; sourceTree = "<group>"; };
+		A720B9602F2F0995008B9C91 /* CLHelpViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = CLHelpViewController.m; sourceTree = "<group>"; };
+		A720B9612F2F0995008B9C91 /* CLMainViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CLMainViewController.h; sourceTree = "<group>"; };
+		A720B9622F2F0995008B9C91 /* CLMainViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = CLMainViewController.m; sourceTree = "<group>"; };
+		A720B9652F2F0995008B9C91 /* CLSettingsViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CLSettingsViewController.h; sourceTree = "<group>"; };
+		A720B9662F2F0995008B9C91 /* CLSettingsViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = CLSettingsViewController.m; sourceTree = "<group>"; };
+		A720B9732F2F0995008B9C91 /* CLAPIClient.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CLAPIClient.h; sourceTree = "<group>"; };
+		A720B9742F2F0995008B9C91 /* CLAPIClient.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = CLAPIClient.m; sourceTree = "<group>"; };
+		A720B9752F2F0995008B9C91 /* CLBatteryManager.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CLBatteryManager.h; sourceTree = "<group>"; };
+		A720B9762F2F0995008B9C91 /* CLBatteryManager.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = CLBatteryManager.m; sourceTree = "<group>"; };
+		A720B9772F2F0995008B9C91 /* CLTestApp.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = CLTestApp.m; sourceTree = "<group>"; };
+		A720B9782F2F0995008B9C91 /* CLTheme.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CLTheme.h; sourceTree = "<group>"; };
+		A720B9792F2F0995008B9C91 /* CLTheme.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = CLTheme.m; sourceTree = "<group>"; };
+		A720B97A2F2F0995008B9C91 /* CLUIKit.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CLUIKit.h; sourceTree = "<group>"; };
+		A720B9A62F2F0C0B008B9C91 /* CLSimpleHTTPServer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CLSimpleHTTPServer.h; sourceTree = "<group>"; };
+		A720B9A72F2F0C0B008B9C91 /* CLSimpleHTTPServer.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = CLSimpleHTTPServer.m; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -170,7 +206,6 @@
 			files = (
 				18C123B32C8C08B300FAAC6C /* CFNetwork.framework in Frameworks */,
 				18C123EE2C8C14CD00FAAC6C /* CoreServices.framework in Frameworks */,
-				18C123B62C8C08B300FAAC6C /* GCDWebServers.framework in Frameworks */,
 				18C123B82C8C08B300FAAC6C /* UserNotifications.framework in Frameworks */,
 				18C123ED2C8C14B200FAAC6C /* BackBoardServices.tbd in Frameworks */,
 				18C123BD2C8C08B300FAAC6C /* IOKit.tbd in Frameworks */,
@@ -186,7 +221,6 @@
 			files = (
 				18C123CF2C8C08CB00FAAC6C /* CFNetwork.framework in Frameworks */,
 				18C123D12C8C08CB00FAAC6C /* CoreServices.framework in Frameworks */,
-				18C123D22C8C08CB00FAAC6C /* GCDWebServers.framework in Frameworks */,
 				18C123D42C8C08CB00FAAC6C /* UserNotifications.framework in Frameworks */,
 				18C123D52C8C08CB00FAAC6C /* BackBoardServices.tbd in Frameworks */,
 				18C123D92C8C08CB00FAAC6C /* IOKit.tbd in Frameworks */,
@@ -207,8 +241,6 @@
 				1839C1D72B8C655900FCFDEB /* Readme2.md */,
 				18497C5D2B541D6100A6C5E3 /* md-trollstore */,
 				181BA3A02B91BAB400CC07A6 /* md-trollstore-appex */,
-				18EEB6F72B7BCAA100DCC561 /* splash.png */,
-				187886522B519A5B00E48B28 /* www */,
 				1878862F2B51976A00E48B28 /* ChargeLimiter */,
 				1878862E2B51976A00E48B28 /* Products */,
 				187886492B5199D800E48B28 /* Frameworks */,
@@ -229,6 +261,10 @@
 		1878862F2B51976A00E48B28 /* ChargeLimiter */ = {
 			isa = PBXGroup;
 			children = (
+				187886522B519A5B00E48B28 /* lang.json */,
+				A720B9A62F2F0C0B008B9C91 /* CLSimpleHTTPServer.h */,
+				A720B9A72F2F0C0B008B9C91 /* CLSimpleHTTPServer.m */,
+				A720B97B2F2F0995008B9C91 /* UIKit */,
 				187BEA1F2B6A5F6100BD5C8F /* Package */,
 				18826C072BFCF00A00F7D88D /* Package_rootless */,
 				18497C5E2B541D8000A6C5E3 /* ChargeLimiter.entitlements */,
@@ -271,6 +307,44 @@
 				1806F2FF2B94AF11007CFED2 /* IntentsUI.framework */,
 			);
 			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		A720B9672F2F0995008B9C91 /* Controllers */ = {
+			isa = PBXGroup;
+			children = (
+				A720B95E2F2F0995008B9C91 /* CLAccChargeViewController.m */,
+				A720B95F2F2F0995008B9C91 /* CLAdvancedSettingsViewController.m */,
+				A720B9602F2F0995008B9C91 /* CLHelpViewController.m */,
+				A720B9612F2F0995008B9C91 /* CLMainViewController.h */,
+				A720B9622F2F0995008B9C91 /* CLMainViewController.m */,
+				A720B9652F2F0995008B9C91 /* CLSettingsViewController.h */,
+				A720B9662F2F0995008B9C91 /* CLSettingsViewController.m */,
+			);
+			path = Controllers;
+			sourceTree = "<group>";
+		};
+		A720B9722F2F0995008B9C91 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		A720B97B2F2F0995008B9C91 /* UIKit */ = {
+			isa = PBXGroup;
+			children = (
+				A720B9672F2F0995008B9C91 /* Controllers */,
+				A720B9722F2F0995008B9C91 /* Views */,
+				A720B9732F2F0995008B9C91 /* CLAPIClient.h */,
+				A720B9742F2F0995008B9C91 /* CLAPIClient.m */,
+				A720B9752F2F0995008B9C91 /* CLBatteryManager.h */,
+				A720B9762F2F0995008B9C91 /* CLBatteryManager.m */,
+				A720B9772F2F0995008B9C91 /* CLTestApp.m */,
+				A720B9782F2F0995008B9C91 /* CLTheme.h */,
+				A720B9792F2F0995008B9C91 /* CLTheme.m */,
+				A720B97A2F2F0995008B9C91 /* CLUIKit.h */,
+			);
+			path = "UIKit";
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -389,8 +463,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				1839C1D92B8C657400FCFDEB /* splash.png in Resources */,
-				184EA9AF2B7A373300D0981D /* www in Resources */,
+				184EA9AF2B7A373300D0981D /* lang.json in Resources */,
 				184EA9B02B7A373300D0981D /* Assets.xcassets in Resources */,
 				184EA9B12B7A373300D0981D /* LaunchScreen.storyboard in Resources */,
 				184EA9B22B7A373300D0981D /* Main.storyboard in Resources */,
@@ -401,8 +474,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				18EEB6F82B7BCAA100DCC561 /* splash.png in Resources */,
-				1860F2C42B5809510094AAC8 /* www in Resources */,
+				1860F2C42B5809510094AAC8 /* lang.json in Resources */,
 				1878863D2B51976B00E48B28 /* Assets.xcassets in Resources */,
 				187886402B51976B00E48B28 /* LaunchScreen.storyboard in Resources */,
 				1878863B2B51976A00E48B28 /* Main.storyboard in Resources */,
@@ -490,6 +562,16 @@
 			files = (
 				184EA9A52B7A373300D0981D /* utils.mm in Sources */,
 				18658A8F2BD2716000207EF3 /* ui.mm in Sources */,
+				A720B97C2F2F0995008B9C91 /* CLMainViewController.m in Sources */,
+				A720B97D2F2F0995008B9C91 /* CLSettingsViewController.m in Sources */,
+				A720B97E2F2F0995008B9C91 /* CLHelpViewController.m in Sources */,
+				A720B97F2F2F0995008B9C91 /* CLBatteryManager.m in Sources */,
+				A720B9802F2F0995008B9C91 /* CLTheme.m in Sources */,
+				A720B9A92F2F0C0B008B9C91 /* CLSimpleHTTPServer.m in Sources */,
+				A720B9812F2F0995008B9C91 /* CLAccChargeViewController.m in Sources */,
+				A720B9822F2F0995008B9C91 /* CLAPIClient.m in Sources */,
+				A720B9832F2F0995008B9C91 /* CLTestApp.m in Sources */,
+				A720B9842F2F0995008B9C91 /* CLAdvancedSettingsViewController.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -499,6 +581,16 @@
 			files = (
 				18C50C662B6D2D5D00793FA9 /* utils.mm in Sources */,
 				18C123E72C8C099600FAAC6C /* ui.mm in Sources */,
+				A720B99D2F2F0995008B9C91 /* CLMainViewController.m in Sources */,
+				A720B99E2F2F0995008B9C91 /* CLSettingsViewController.m in Sources */,
+				A720B99F2F2F0995008B9C91 /* CLHelpViewController.m in Sources */,
+				A720B9A02F2F0995008B9C91 /* CLBatteryManager.m in Sources */,
+				A720B9A12F2F0995008B9C91 /* CLTheme.m in Sources */,
+				A720B9A82F2F0C0B008B9C91 /* CLSimpleHTTPServer.m in Sources */,
+				A720B9A22F2F0995008B9C91 /* CLAccChargeViewController.m in Sources */,
+				A720B9A32F2F0995008B9C91 /* CLAPIClient.m in Sources */,
+				A720B9A42F2F0995008B9C91 /* CLTestApp.m in Sources */,
+				A720B9A52F2F0995008B9C91 /* CLAdvancedSettingsViewController.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -508,6 +600,7 @@
 			files = (
 				18C123B02C8C08B300FAAC6C /* utils.mm in Sources */,
 				18C123E82C8C09A400FAAC6C /* daemon.mm in Sources */,
+				A720B9AA2F2F0C0C008B9C91 /* CLSimpleHTTPServer.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -517,6 +610,7 @@
 			files = (
 				18C123CC2C8C08CB00FAAC6C /* utils.mm in Sources */,
 				18C123CB2C8C08CB00FAAC6C /* daemon.mm in Sources */,
+				A720B9AB2F2F0C0D008B9C91 /* CLSimpleHTTPServer.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -582,7 +676,7 @@
 					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.7;
+				MARKETING_VERSION = 1.8;
 				MonkeyDevBuildPackageOnAnyBuild = YES;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = YES;
@@ -626,7 +720,7 @@
 					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.7;
+				MARKETING_VERSION = 1.8;
 				MonkeyDevBuildPackageOnAnyBuild = YES;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = YES;
@@ -681,7 +775,7 @@
 				ENABLE_BITCODE = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
-				FRAMEWORK_SEARCH_PATHS = /opt/framework;
+				FRAMEWORK_SEARCH_PATHS = "";
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_NO_COMMON_BLOCKS = YES;
@@ -700,7 +794,7 @@
 					/opt/theos/vendor/include,
 					/opt/include,
 				);
-				IPHONEOS_DEPLOYMENT_TARGET = 10.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 13.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = NO;
@@ -747,7 +841,7 @@
 				ENABLE_BITCODE = NO;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				FRAMEWORK_SEARCH_PATHS = /opt/framework;
+				FRAMEWORK_SEARCH_PATHS = "";
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
@@ -760,7 +854,7 @@
 					/opt/theos/vendor/include,
 					/opt/include,
 				);
-				IPHONEOS_DEPLOYMENT_TARGET = 10.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 13.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = NO;
@@ -797,7 +891,7 @@
 					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.7;
+				MARKETING_VERSION = 1.8;
 				MonkeyDevBuildPackageOnAnyBuild = YES;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = YES;
@@ -838,7 +932,7 @@
 					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.7;
+				MARKETING_VERSION = 1.8;
 				MonkeyDevBuildPackageOnAnyBuild = YES;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = YES;
@@ -865,11 +959,14 @@
 				CODE_SIGN_STYLE = Manual;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_BITCODE = NO;
+				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = (
 					/opt/theos/vendor/include,
 					/opt/include,
 				);
 				INFOPLIST_FILE = "";
+				INFOPLIST_KEY_CFBundleDisplayName = ChargeLimiterDaemon;
+				INFOPLIST_KEY_LSUIElement = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -879,7 +976,7 @@
 					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.7;
+				MARKETING_VERSION = 1.8;
 				MonkeyDevBuildPackageOnAnyBuild = YES;
 				MonkeyDevDeviceIP = 192.168.1.12;
 				MonkeyDevInstallOnAnyBuild = YES;
@@ -907,11 +1004,14 @@
 				CODE_SIGN_STYLE = Manual;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_BITCODE = NO;
+				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = (
 					/opt/theos/vendor/include,
 					/opt/include,
 				);
 				INFOPLIST_FILE = "";
+				INFOPLIST_KEY_CFBundleDisplayName = ChargeLimiterDaemon;
+				INFOPLIST_KEY_LSUIElement = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -921,7 +1021,7 @@
 					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.7;
+				MARKETING_VERSION = 1.8;
 				MonkeyDevBuildPackageOnAnyBuild = YES;
 				MonkeyDevDeviceIP = 192.168.1.12;
 				MonkeyDevInstallOnAnyBuild = YES;
@@ -949,11 +1049,14 @@
 				CODE_SIGN_STYLE = Manual;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_BITCODE = NO;
+				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = (
 					/opt/theos/vendor/include,
 					/opt/include,
 				);
 				INFOPLIST_FILE = "";
+				INFOPLIST_KEY_CFBundleDisplayName = ChargeLimiterDaemon;
+				INFOPLIST_KEY_LSUIElement = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -963,7 +1066,7 @@
 					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.7;
+				MARKETING_VERSION = 1.8;
 				MonkeyDevBuildPackageOnAnyBuild = YES;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = YES;
@@ -993,11 +1096,14 @@
 				CODE_SIGN_STYLE = Manual;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_BITCODE = NO;
+				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = (
 					/opt/theos/vendor/include,
 					/opt/include,
 				);
 				INFOPLIST_FILE = "";
+				INFOPLIST_KEY_CFBundleDisplayName = ChargeLimiterDaemon;
+				INFOPLIST_KEY_LSUIElement = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1007,7 +1113,7 @@
 					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.7;
+				MARKETING_VERSION = 1.8;
 				MonkeyDevBuildPackageOnAnyBuild = YES;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = YES;
