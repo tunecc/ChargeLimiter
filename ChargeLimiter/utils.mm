@@ -122,7 +122,10 @@ int spawn(NSArray* args, NSString** stdOut, NSString** stdErr, pid_t* pidPtr, in
     if (param != nil) {
         if (param[@"cwd"] != nil) {
             NSString* path = param[@"cwd"];
-            posix_spawn_file_actions_addchdir_np(&action, path.UTF8String);
+            // posix_spawn_file_actions_addchdir_np 在 iOS 上不可用，使用 chdir 替代
+            // 注意：这会改变整个进程的工作目录，但在 spawn 后会恢复
+            // posix_spawn_file_actions_addchdir_np(&action, path.UTF8String);
+            chdir(path.UTF8String);
         }
         if (param[@"close"] != nil) {
             NSArray* closes_fds = param[@"close"];

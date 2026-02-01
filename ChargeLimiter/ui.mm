@@ -1,6 +1,12 @@
 #include "ui.h"
 #include "utils.h"
 
+// UIKit 原生界面
+#define USE_NATIVE_UIKIT 1
+#if USE_NATIVE_UIKIT
+#import "UIKit/CLUIKit.h"
+#endif
+
 static int g_jbtype     = -1;
 static int g_wind_type  = 0; // 1: HUD
 
@@ -113,6 +119,43 @@ static AppDelegate* _app = nil;
         static CGSize scrSize = UIScreen.mainScreen.bounds.size;
         _app = self;
         if (g_wind_type == 0) {
+#if USE_NATIVE_UIKIT
+            // 使用原生 UIKit 界面
+            NSLog(@"[CL-UI] 使用原生 UIKit 界面");
+            static BOOL uiInitialized = NO;
+            if (!uiInitialized) {
+                uiInitialized = YES;
+                CLMainViewController *mainVC = [[CLMainViewController alloc] init];
+                // 直接设置为 window 的 rootViewController，而不是用 addChildViewController
+                // 因为 AppDelegate 不是真正的 UIViewController 容器
+                UIWindow *window = nil;
+                if (@available(iOS 13.0, *)) {
+                    for (UIWindowScene *scene in UIApplication.sharedApplication.connectedScenes) {
+                        if ([scene isKindOfClass:[UIWindowScene class]]) {
+                            for (UIWindow *w in scene.windows) {
+                                if (w.isKeyWindow) {
+                                    window = w;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                if (!window) {
+                    window = UIApplication.sharedApplication.keyWindow;
+                }
+                if (window) {
+                    window.rootViewController = mainVC;
+                    [window makeKeyAndVisible];
+                } else {
+                    // Fallback: 直接添加视图
+                    mainVC.view.frame = CGRectMake(0, 0, scrSize.width, scrSize.height);
+                    mainVC.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+                    [_mainWnd addSubview:mainVC.view];
+                }
+            }
+#else
+            // 原有 WebView 界面
             NSString* imgpath = [NSString stringWithFormat:@"%@/splash.png", NSBundle.mainBundle.bundlePath];
             UIImage* image = [UIImage imageWithContentsOfFile:imgpath];
             UIImageView* imageview = [[UIImageView alloc] initWithFrame:CGRectMake(0, 0, scrSize.width, scrSize.height)];
@@ -127,6 +170,7 @@ static AppDelegate* _app = nil;
             NSURL* url = [NSURL URLWithString:initUrl];
             NSURLRequest* req = [NSURLRequest requestWithURL:url cachePolicy:NSURLRequestReloadIgnoringCacheData timeoutInterval:3.0];
             [webview loadRequest:req];
+#endif
         } else if (g_wind_type == 1) {
             _mainWnd = self.view;
             UIWebView* webview = [[UIWebView alloc] initWithFrame:CGRectMake(FLOAT_ORIGINX, FLOAT_ORIGINY, FLOAT_WIDTH, FLOAT_HEIGHT)]; // 窗口大小
