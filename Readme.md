@@ -8,8 +8,8 @@
 
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/tunecc/ChargeLimiter/refs/heads/main/screenshots/1.png" width="200" />
-  <img src="https://raw.githubusercontent.com/tunecc/ChargeLimiter/refs/heads/main/screenshots/2.png" width="200" />
-  <img src="https://raw.githubusercontent.com/tunecc/ChargeLimiter/refs/heads/main/screenshots/3.png" width="200" />
-  <img src="https://raw.githubusercontent.com/tunecc/ChargeLimiter/refs/heads/main/screenshots/4.png" width="200" />
+  <img src="https://raw.githubusercontent.com/tunecc/ChargeLimiter/refs/heads/main/screenshots/1.PNG" width="200" />
+  <img src="https://raw.githubusercontent.com/tunecc/ChargeLimiter/refs/heads/main/screenshots/2.PNG" width="200" />
+  <img src="https://raw.githubusercontent.com/tunecc/ChargeLimiter/refs/heads/main/screenshots/3.PNG" width="200" />
+  <img src="https://raw.githubusercontent.com/tunecc/ChargeLimiter/refs/heads/main/screenshots/4.PNG" width="200" />
 </p>
