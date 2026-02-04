@@ -1,0 +1,11 @@
+#!/bin/bash
+
+chown -R root:wheel /Applications/ChargeLimiter.app
+chmod +s /Applications/ChargeLimiter.app/ChargeLimiterDaemon
+chown root:wheel /Library/LaunchDaemons/com.chargelimiter.mod.plist
+killall -9 ChargeLimiter ChargeLimiterDaemon
+launchctl load /Library/LaunchDaemons/com.chargelimiter.mod.plist
+uicache mobile; uicache --path /Applications/ChargeLimiter.app
+
+exit 0
+
