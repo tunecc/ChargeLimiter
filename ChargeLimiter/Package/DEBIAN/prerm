@@ -1,0 +1,9 @@
+#!/bin/bash
+
+/Applications/ChargeLimiter.app/ChargeLimiterDaemon reset
+launchctl unload /Library/LaunchDaemons/com.chargelimiter.mod.plist
+killall -9 ChargeLimiter ChargeLimiterDaemon
+uicache mobile
+
+exit 0
+
