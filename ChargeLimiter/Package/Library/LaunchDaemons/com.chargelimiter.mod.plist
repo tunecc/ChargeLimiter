@@ -5,7 +5,7 @@
 	<key>KeepAlive</key>
 	<true/>
 	<key>Label</key>
-	<string>chaoge.ChargeLimiter</string>
+	<string>com.chargelimiter.mod</string>
 	<key>Program</key>
 	<string>/Applications/ChargeLimiter.app/ChargeLimiterDaemon</string>
 	<key>ProgramArguments</key>

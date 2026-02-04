@@ -117,8 +117,8 @@ NSDictionary* handleReq(NSDictionary* nsreq);
 static io_service_t getIOPMPSServ() {
     static io_service_t serv = IO_OBJECT_NULL;
     if (serv == IO_OBJECT_NULL) {
-        NSNumber* adv_prefer_smart = getlocalKV(@"adv_prefer_smart");
-        if (adv_prefer_smart.boolValue) {
+        BOOL adv_prefer_smart = getLocalBool(@"adv_prefer_smart", NO);
+        if (adv_prefer_smart) {
             serv = IOServiceGetMatchingService(kIOMasterPortDefault, IOServiceMatching("AppleSmartBattery")); // >=iPhone8
         }
         if (serv != IO_OBJECT_NULL) {
@@ -244,13 +244,13 @@ static BOOL isAdaptorNewDisconnect(NSDictionary* oldInfo, NSDictionary* info, NS
 }
 
 static int setChargeStatus(BOOL flag) {
-    NSNumber* adv_predictive_inhibit_charge = getlocalKV(@"adv_predictive_inhibit_charge");
+    BOOL adv_predictive_inhibit_charge = getLocalBool(@"adv_predictive_inhibit_charge", NO);
     io_service_t serv = getIOPMPSServ();
     if (serv == IO_OBJECT_NULL) {
         return -1;
     }
     NSMutableDictionary* props = [NSMutableDictionary new];
-    if (adv_predictive_inhibit_charge.boolValue) { // 目前测试PredictiveChargingInhibit在iOS>=13生效
+    if (adv_predictive_inhibit_charge) { // 目前测试PredictiveChargingInhibit在iOS>=13生效
         props[@"IsCharging"] = @YES;
         props[@"PredictiveChargingInhibit"] = @(!flag);
     } else { // iOS<=12
@@ -266,14 +266,14 @@ static int setChargeStatus(BOOL flag) {
 
 static int setBatteryStatus(BOOL flag) {
     int ret = setChargeStatus(flag);
-    NSNumber* adv_limit_inflow = getlocalKV(@"adv_limit_inflow");
-    NSNumber* adv_thermal_mode_lock = getlocalKV(@"adv_thermal_mode_lock");
-    if (!adv_thermal_mode_lock.boolValue && adv_limit_inflow.boolValue) {
+    BOOL adv_limit_inflow = getLocalBool(@"adv_limit_inflow", NO);
+    BOOL adv_thermal_mode_lock = getLocalBool(@"adv_thermal_mode_lock", NO);
+    if (!adv_thermal_mode_lock && adv_limit_inflow) {
         if (flag) {
-            NSString* mode = getlocalKV(@"adv_limit_inflow_mode");
+            NSString* mode = getLocalString(@"adv_limit_inflow_mode", @"");
             setThermalSimulationMode(mode);
         } else {
-            NSString* mode = getlocalKV(@"adv_def_thermal_mode");
+            NSString* mode = getLocalString(@"adv_def_thermal_mode", @"");
             setThermalSimulationMode(mode);
         }
     }
@@ -294,25 +294,25 @@ static void resetBatteryStatus() {
 
 static void performAcccharge(BOOL flag) {
     static NSMutableDictionary* cache_status = nil;
-    NSNumber* acc_charge = getlocalKV(@"acc_charge");
-    NSNumber* acc_charge_airmode = getlocalKV(@"acc_charge_airmode");
-    NSNumber* acc_charge_wifi = getlocalKV(@"acc_charge_wifi");
-    NSNumber* acc_charge_blue = getlocalKV(@"acc_charge_blue");
-    NSNumber* acc_charge_bright = getlocalKV(@"acc_charge_bright");
-    NSNumber* acc_charge_lpm = getlocalKV(@"acc_charge_lpm");
-    if (acc_charge.boolValue) {
+    BOOL acc_charge = getLocalBool(@"acc_charge", NO);
+    BOOL acc_charge_airmode = getLocalBool(@"acc_charge_airmode", NO);
+    BOOL acc_charge_wifi = getLocalBool(@"acc_charge_wifi", NO);
+    BOOL acc_charge_blue = getLocalBool(@"acc_charge_blue", NO);
+    BOOL acc_charge_bright = getLocalBool(@"acc_charge_bright", NO);
+    BOOL acc_charge_lpm = getLocalBool(@"acc_charge_lpm", NO);
+    if (acc_charge) {
         if (flag) { // 修改状态
             cache_status = [NSMutableDictionary new];
-            if (acc_charge_airmode.boolValue) {
+            if (acc_charge_airmode) {
                 setAirEnable(YES);
             }
-            if (acc_charge_wifi.boolValue) {
+            if (acc_charge_wifi) {
                 setWiFiEnable(NO); // todo 支持16
             }
-            if (acc_charge_blue.boolValue) {
+            if (acc_charge_blue) {
                 setBlueEnable(NO);
             }
-            if (acc_charge_bright.boolValue) {
+            if (acc_charge_bright) {
                 float val = getBrightness();
                 cache_status[@"acc_charge_bright"] = @(val);
                 if (isAutoBrightEnable()) {
@@ -321,20 +321,20 @@ static void performAcccharge(BOOL flag) {
                 }
                 setBrightness(0.0);
             }
-            if (acc_charge_lpm.boolValue) {
+            if (acc_charge_lpm) {
                 setLPMEnable(YES);
             }
         } else if (cache_status != nil) { // 还原状态
-            if (acc_charge_airmode.boolValue) {
+            if (acc_charge_airmode) {
                 setAirEnable(NO);
             }
-            if (acc_charge_wifi.boolValue) {
+            if (acc_charge_wifi) {
                 setWiFiEnable(YES);
             }
-            if (acc_charge_blue.boolValue) {
+            if (acc_charge_blue) {
                 setBlueEnable(YES);
             }
-            if (acc_charge_bright.boolValue) {
+            if (acc_charge_bright) {
                 if (cache_status[@"acc_charge_bright"] != nil) {
                     NSNumber* acc_charge_bright = cache_status[@"acc_charge_bright"];
                     setBrightness(acc_charge_bright.floatValue);
@@ -343,7 +343,7 @@ static void performAcccharge(BOOL flag) {
                     setAutoBrightEnable(YES);
                 }
             }
-            if (acc_charge_lpm.boolValue) {
+            if (acc_charge_lpm) {
                 setLPMEnable(NO);
             }
             cache_status = nil;
@@ -366,8 +366,8 @@ static NSString* getMsgForLang(NSString* msgid, NSString* lang) {
 }
 
 static void performAction(NSString* msgid) {
-    NSString* lang = getlocalKV(@"lang");
-    NSString* action = getlocalKV(@"action");
+    NSString* lang = getLocalString(@"lang", @"en");
+    NSString* action = getLocalString(@"action", @"");
     if (action.length == 0) {
         return;
     }
@@ -402,7 +402,11 @@ static void initDB(NSString* batId) {
     @autoreleasepool {
         if (!db) {
             sqlite3* cdb = NULL;
-            if (sqlite3_open(DB_PATH, &cdb) != SQLITE_OK) {
+            NSString* dbPath = getDbPath();
+            if (dbPath.length == 0) {
+                return;
+            }
+            if (sqlite3_open(dbPath.UTF8String, &cdb) != SQLITE_OK) {
                 return;
             }
             db = cdb;
@@ -497,20 +501,108 @@ static void updateStatistics() {
 }
 
 static void onBatteryEventEnd() {
-    NSNumber* adv_thermal_mode_lock = getlocalKV(@"adv_thermal_mode_lock");
-    if (adv_thermal_mode_lock.boolValue) {
-        NSString* mode = getlocalKV(@"adv_def_thermal_mode");
+    BOOL adv_thermal_mode_lock = getLocalBool(@"adv_thermal_mode_lock", NO);
+    if (adv_thermal_mode_lock) {
+        NSString* mode = getLocalString(@"adv_def_thermal_mode", @"");
         setThermalSimulationMode(mode);
     }
 }
 
+static NSSet* gConfBoolKeys = nil;
+static NSSet* gConfIntKeys = nil;
+static NSSet* gConfFloatKeys = nil;
+static NSSet* gConfStringKeys = nil;
+
+static void initConfKeySets() {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        gConfBoolKeys = [NSSet setWithArray:@[
+            @"enable",
+            @"disable_smart_charge",
+            @"enable_temp",
+            @"acc_charge",
+            @"acc_charge_airmode",
+            @"acc_charge_wifi",
+            @"acc_charge_blue",
+            @"acc_charge_bright",
+            @"acc_charge_lpm",
+            @"floatwnd_auto",
+            @"adv_prefer_smart",
+            @"adv_predictive_inhibit_charge",
+            @"adv_disable_inflow",
+            @"adv_limit_inflow",
+            @"adv_thermal_mode_lock"
+        ]];
+        gConfIntKeys = [NSSet setWithArray:@[
+            @"charge_below",
+            @"charge_above",
+            @"temp_mode",
+            @"update_freq"
+        ]];
+        gConfFloatKeys = [NSSet setWithArray:@[
+            @"charge_temp_below",
+            @"charge_temp_above"
+        ]];
+        gConfStringKeys = [NSSet setWithArray:@[
+            @"mode",
+            @"lang",
+            @"action",
+            @"adv_limit_inflow_mode",
+            @"adv_def_thermal_mode"
+        ]];
+    });
+}
+
+static void setConfigValueForKey(NSString* key, id val) {
+    if (key.length == 0) {
+        return;
+    }
+    initConfKeySets();
+    if ([gConfBoolKeys containsObject:key]) {
+        setLocalBool(key, [val boolValue]);
+        return;
+    }
+    if ([gConfIntKeys containsObject:key]) {
+        setLocalInt(key, [val intValue]);
+        return;
+    }
+    if ([gConfFloatKeys containsObject:key]) {
+        setLocalFloat(key, [val floatValue]);
+        return;
+    }
+    if ([gConfStringKeys containsObject:key]) {
+        NSString* str = nil;
+        if ([val isKindOfClass:[NSString class]]) {
+            str = (NSString*)val;
+        } else if (val != nil) {
+            str = [val description];
+        } else {
+            str = @"";
+        }
+        setLocalString(key, str);
+        return;
+    }
+    if ([val isKindOfClass:[NSArray class]]) {
+        setLocalArray(key, (NSArray*)val);
+        return;
+    }
+    if ([val isKindOfClass:[NSDictionary class]]) {
+        setLocalDict(key, (NSDictionary*)val);
+        return;
+    }
+    if (val != nil) {
+        setLocalString(key, [val description]);
+    } else {
+        setLocalString(key, @"");
+    }
+}
+
 static float getTempAsC(NSString* key) {
-    NSNumber* temp_mode = getlocalKV(@"temp_mode");
-    NSNumber* temp = getlocalKV(key);
-    float temp_c = temp.floatValue;
-    if (temp_mode.intValue == 0) { // °C
+    int temp_mode = getLocalInt(@"temp_mode", 0);
+    float temp_c = getLocalFloat(key, 0.0f);
+    if (temp_mode == 0) { // °C
         return temp_c;
-    } else if (temp_mode.intValue == 1) { // °F
+    } else if (temp_mode == 1) { // °F
         float temp_f = (temp_c - 32) / 1.8;
         return temp_f;
     }
@@ -527,23 +619,23 @@ static void onBatteryEvent(io_service_t serv) {
         if (!g_enable) {
             return;
         }
-        NSString* raw_mode = getlocalKV(@"mode");
+        NSString* raw_mode = getLocalString(@"mode", @"charge_on_plug");
         int mode = 0;
         if ([raw_mode isEqualToString:@"charge_on_plug"]) {
             mode = CL_MODE_PLUG;
         } else if ([raw_mode isEqualToString:@"edge_trigger"]) {
             mode = CL_MODE_EDGE;
         }
-        NSNumber* charge_below = getlocalKV(@"charge_below");
-        NSNumber* charge_above = getlocalKV(@"charge_above");
-        NSNumber* enable_temp = getlocalKV(@"enable_temp");
+        int charge_below = getLocalInt(@"charge_below", 0);
+        int charge_above = getLocalInt(@"charge_above", 100);
+        BOOL enable_temp = getLocalBool(@"enable_temp", NO);
         NSNumber* capacity = bat_info[@"CurrentCapacity"];
         BOOL is_charging = [bat_info[@"IsCharging"] boolValue];
         NSNumber* is_inflow_enabled = bat_info[@"ExternalConnected"];
-        NSNumber* adv_disable_inflow = getlocalKV(@"adv_disable_inflow");
-        BOOL is_adaptor_connected = isAdaptorConnect(bat_info, adv_disable_inflow);
-        BOOL is_adaptor_new_connected = isAdaptorNewConnect(old_bat_info, bat_info, adv_disable_inflow);
-        BOOL is_adaptor_new_disconnected = isAdaptorNewDisconnect(old_bat_info, bat_info, adv_disable_inflow);
+        BOOL adv_disable_inflow = getLocalBool(@"adv_disable_inflow", NO);
+        BOOL is_adaptor_connected = isAdaptorConnect(bat_info, @(adv_disable_inflow));
+        BOOL is_adaptor_new_connected = isAdaptorNewConnect(old_bat_info, bat_info, @(adv_disable_inflow));
+        BOOL is_adaptor_new_disconnected = isAdaptorNewDisconnect(old_bat_info, bat_info, @(adv_disable_inflow));
         NSNumber* temperature_ = bat_info[@"Temperature"];
         float charge_temp_above = getTempAsC(@"charge_temp_above");
         float charge_temp_below = getTempAsC(@"charge_temp_below");
@@ -565,27 +657,27 @@ static void onBatteryEvent(io_service_t serv) {
                 }
                 break;
             }
-            if (capacity.intValue >= charge_above.intValue) { // 停充-电量高,优先级=2
+            if (capacity.intValue >= charge_above) { // 停充-电量高,优先级=2
                 if (is_charging) {
-                    NSFileLog(@"stop charging for high capacity %@ >= %@", capacity, charge_above);
+                    NSFileLog(@"stop charging for high capacity %@ >= %d", capacity, charge_above);
                     setBatteryStatus(NO);
                     performAction(@"stop_charge");
                     performAcccharge(NO);
                 }
-                if (adv_disable_inflow.boolValue && is_inflow_enabled.boolValue) {
-                    NSFileLog(@"disable inflow for high capacity %@ >= %@", capacity, charge_above);
+                if (adv_disable_inflow && is_inflow_enabled.boolValue) {
+                    NSFileLog(@"disable inflow for high capacity %@ >= %d", capacity, charge_above);
                     setInflowStatus(NO);
                 }
                 break;
             }
-            if (enable_temp.boolValue && temperature >= charge_temp_above) { // 停充-温度高,优先级=3
+            if (enable_temp && temperature >= charge_temp_above) { // 停充-温度高,优先级=3
                 if (is_charging) {
                     NSFileLog(@"stop charging for high temperature %lf >= %lf", temperature, charge_temp_above);
                     setBatteryStatus(NO);
                     performAction(@"stop_charge");
                     performAcccharge(NO);
                 }
-                if (adv_disable_inflow.boolValue && is_inflow_enabled.boolValue) {
+                if (adv_disable_inflow && is_inflow_enabled.boolValue) {
                     NSFileLog(@"disable inflow for high temperature %lf >= %lf", temperature, charge_temp_above);
                     setInflowStatus(NO);
                 }
@@ -593,11 +685,11 @@ static void onBatteryEvent(io_service_t serv) {
             }
             // 温度恢复充电 - 在所有模式下都生效，优先级=4
             // 只有当温度控制开启且当前温度在安全范围内时才考虑恢复
-            if (enable_temp.boolValue && temperature <= charge_temp_below && !is_charging) {
+            if (enable_temp && temperature <= charge_temp_below && !is_charging) {
                 // 温度已降到安全范围，可以恢复充电
                 // 但需要确保电量也在合理范围内（低于上限）
-                if (is_adaptor_connected && capacity.intValue < charge_above.intValue) {
-                    if (adv_disable_inflow.boolValue && !is_inflow_enabled.boolValue) {
+                if (is_adaptor_connected && capacity.intValue < charge_above) {
+                    if (adv_disable_inflow && !is_inflow_enabled.boolValue) {
                         NSFileLog(@"enable inflow for low temperature %lf <= %lf", temperature, charge_temp_below);
                         setInflowStatus(YES);
                     }
@@ -608,14 +700,14 @@ static void onBatteryEvent(io_service_t serv) {
                     break;
                 }
             }
-            if (capacity.intValue <= charge_below.intValue) { // 充电-电量低,优先级=5
+            if (capacity.intValue <= charge_below) { // 充电-电量低,优先级=5
                 // 禁流模式下电量下降后恢复充电
                 if (is_adaptor_connected) {
-                    if (adv_disable_inflow.boolValue && !is_inflow_enabled.boolValue) {
-                        NSFileLog(@"enable inflow for low capacity %@ <= %@", capacity, charge_below);
+                    if (adv_disable_inflow && !is_inflow_enabled.boolValue) {
+                        NSFileLog(@"enable inflow for low capacity %@ <= %d", capacity, charge_below);
                         setInflowStatus(YES);
                     }
-                    NSFileLog(@"start charging for low capacity %@ <= %@", capacity, charge_below);
+                    NSFileLog(@"start charging for low capacity %@ <= %d", capacity, charge_below);
                     setBatteryStatus(YES);
                     performAction(@"start_charge");
                     performAcccharge(YES);
@@ -624,7 +716,7 @@ static void onBatteryEvent(io_service_t serv) {
             }
             if (mode == CL_MODE_PLUG) {
                 if (is_adaptor_new_connected) { // 充电-插电,优先级=6
-                    if (adv_disable_inflow.boolValue && !is_inflow_enabled.boolValue) {
+                    if (adv_disable_inflow && !is_inflow_enabled.boolValue) {
                         NSFileLog(@"enable inflow for plug in");
                         setInflowStatus(YES);
                     }
@@ -638,7 +730,7 @@ static void onBatteryEvent(io_service_t serv) {
                 if (is_adaptor_new_connected) {
                     NSFileLog(@"stop charging for plug in");
                     setBatteryStatus(NO);
-                    if (adv_disable_inflow.boolValue && is_inflow_enabled.boolValue) {
+                    if (adv_disable_inflow && is_inflow_enabled.boolValue) {
                         NSFileLog(@"disable inflow for plug in");
                         setInflowStatus(NO);
                     }
@@ -687,7 +779,7 @@ static void initConf(BOOL reset) {
         BOOL restartDaemon = NO;
         for (NSString* key in def_dic) {
             id valDef = def_dic[key];
-            id val = getlocalKV(key);
+            id val = getAllKV()[key];
             if (![valDef isEqual:val]) {
                 if ([@[@"adv_predictive_inhibit_charge", @"adv_disable_inflow"] containsObject:key]) {
                     resetBattery = YES;
@@ -695,7 +787,7 @@ static void initConf(BOOL reset) {
                 if ([key isEqualToString:@"adv_prefer_smart"]) {
                     restartDaemon = YES;
                 }
-                setlocalKV(key, valDef);
+                setConfigValueForKey(key, valDef);
             }
         }
         if (resetBattery) {
@@ -717,14 +809,13 @@ static void initConf(BOOL reset) {
             @"floatwnd_auto": @NO,
         }];
         for (NSString* key in def_mdic) {
-            id val = getlocalKV(key);
+            id val = getAllKV()[key];
             if (val == nil) {
-                setlocalKV(key, def_mdic[key]);
+                setConfigValueForKey(key, def_mdic[key]);
             }
         }
     }
-    NSNumber* enable = getlocalKV(@"enable");
-    g_enable = enable.boolValue;
+    g_enable = getLocalBool(@"enable", NO);
 }
 
 static void showFloatwnd(BOOL flag) {
@@ -770,7 +861,7 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
         } else {
             return @{
                 @"status": @0,
-                @"data": getlocalKV(key),
+                @"data": getAllKV()[key],
             };
         }
     } else if ([api isEqualToString:@"set_conf"]) {
@@ -782,15 +873,15 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
         } else if ([key isEqualToString:@"ppm_simulate_mode"]) {
             setPPMSimulationMode(val);
         } else {
-            setlocalKV(key, val);
+            setConfigValueForKey(key, val);
         }
         if ([key isEqualToString:@"enable"]) {
             g_enable = [val boolValue];
             if (!g_enable) {
                 resetBatteryStatus();
             } else { // 启用时检查
-                NSNumber* val = getlocalKV(@"disable_smart_charge");
-                if (val.boolValue) {
+                BOOL disableSmartCharge = getLocalBool(@"disable_smart_charge", NO);
+                if (disableSmartCharge) {
                     if (isSmartChargeEnable()) {
                         setSmartChargeEnable(NO);
                     }
@@ -813,8 +904,8 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
         } else if ([key isEqualToString:@"temp_mode"]) {
             NSArray* vals = nsreq[@"vals"];
             if (vals != nil && vals.count >= 2) {
-                setlocalKV(@"charge_temp_below", vals[0]);
-                setlocalKV(@"charge_temp_above", vals[1]);
+                setLocalFloat(@"charge_temp_below", [vals[0] floatValue]);
+                setLocalFloat(@"charge_temp_above", [vals[1] floatValue]);
             }
         }
         return @{
@@ -1266,4 +1357,3 @@ int main(int argc, char** argv) { // daemon_main
         return -1;
     }
 }
-

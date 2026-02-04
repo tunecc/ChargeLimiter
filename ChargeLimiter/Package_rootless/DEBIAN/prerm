@@ -1,8 +1,0 @@
-#!/bin/bash
-
-/var/jb/Applications/ChargeLimiter.app/ChargeLimiterDaemon reset 2>/dev/null
-launchctl unload /var/jb/Library/LaunchDaemons/chaoge.ChargeLimiter.plist 2>/dev/null
-killall -9 ChargeLimiter ChargeLimiterDaemon 2>/dev/null
-
-exit 0
-

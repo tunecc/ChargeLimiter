@@ -4,7 +4,9 @@
 #include "common.h"
 
 @interface LSApplicationProxy : NSObject
++ (instancetype)applicationProxyForIdentifier:(NSString*)identifier;
 @property (nonatomic, readonly) NSString* bundleIdentifier;
+@property (nonatomic, readonly) NSURL* dataContainerURL;
 @end
 
 @interface LSApplicationWorkspace : NSObject
@@ -82,7 +84,28 @@ void setSmartChargeEnable(BOOL flag);
 id getlocalKV(NSString* key);
 void setlocalKV(NSString* key, id val);
 NSDictionary* getAllKV();
+BOOL getLocalBool(NSString* key, BOOL defaultValue);
+int getLocalInt(NSString* key, int defaultValue);
+float getLocalFloat(NSString* key, float defaultValue);
+double getLocalDouble(NSString* key, double defaultValue);
+NSString* getLocalString(NSString* key, NSString* defaultValue);
+NSArray* getLocalArray(NSString* key, NSArray* defaultValue);
+NSDictionary* getLocalDict(NSString* key, NSDictionary* defaultValue);
+void setLocalBool(NSString* key, BOOL value);
+void setLocalInt(NSString* key, int value);
+void setLocalFloat(NSString* key, float value);
+void setLocalDouble(NSString* key, double value);
+void setLocalString(NSString* key, NSString* value);
+void setLocalArray(NSString* key, NSArray* value);
+void setLocalDict(NSString* key, NSDictionary* value);
 /* ---------------- App ---------------- */
 
-#endif // UTILS_H
+NSString* getAppDocumentsPath();
+NSString* getLogPath();
+NSString* getConfPath();
+NSString* getDbPath();
+NSString* getConfDirPath();
+extern "C" NSString* getConfPath_C(void);
+extern "C" NSString* getConfDirPath_C(void);
 
+#endif // UTILS_H
