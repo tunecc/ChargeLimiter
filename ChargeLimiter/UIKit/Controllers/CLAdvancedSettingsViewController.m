@@ -115,6 +115,7 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
     titleLabel.font = [UIFont systemFontOfSize:16];
     titleLabel.textColor = [UIColor labelColor];
     [row addSubview:titleLabel];
+
     
     UISwitch *switchView = [[UISwitch alloc] init];
     switchView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -227,6 +228,7 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
 }
 
 - (void)addSeparator {
+    CGFloat hairline = 1.0 / UIScreen.mainScreen.scale;
     UIView *separator = [[UIView alloc] init];
     separator.backgroundColor = [UIColor separatorColor];
     separator.translatesAutoresizingMaskIntoConstraints = NO;
@@ -236,10 +238,10 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
     [container addSubview:separator];
     
     [NSLayoutConstraint activateConstraints:@[
-        [container.heightAnchor constraintEqualToConstant:0.5],
+        [container.heightAnchor constraintEqualToConstant:hairline],
         [separator.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:56],
         [separator.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
-        [separator.heightAnchor constraintEqualToConstant:0.5],
+        [separator.heightAnchor constraintEqualToConstant:hairline],
         [separator.centerYAnchor constraintEqualToAnchor:container.centerYAnchor]
     ]];
     

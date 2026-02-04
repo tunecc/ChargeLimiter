@@ -1,16 +1,36 @@
+# IDE & Editor
 .vscode
-Packages
+*.xcuserstate
+xcuserdata/
+
+# Build outputs
+build/
+Packages/
+LatestBuild/
+DerivedData/
 ChargeLimiter/Package/Applications
 ChargeLimiter/Package_rootless/Applications
 ChargeLimiter/Package_rootless_arm64
 ChargeLimiter_rootless/Package/Applications
 ChargeLimiter_rootless/Package_tmp
 ChargeLimiter_roothide
-LatestBuild
-.DS_Store
 .theos
+
+# macOS
+.DS_Store
+*.swp
+
+# Backup files
+*.bak
+*.orig
+*.backup
+
+# Temporary files
+*.tmp
+*.temp
+
+# Draft documents
 Readme2.md
-REFACTOR_SUMMARY.md
 SWIFTUI_CHANGES_LOG.txt
-/out
+REFACTOR_SUMMARY.md
 /docs

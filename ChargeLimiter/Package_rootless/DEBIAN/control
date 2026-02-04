@@ -1,11 +1,10 @@
 Package: com.chargelimiter.mod
 Name: ChargeLimiter
-Version: 1.9.0
+Version: 1.9.2
 Description: 优化了一下界面
 Section: Applications
 Depends: firmware (>= 13.0)
 Priority: optional
-Architecture: iphoneos-arm64e
+Architecture: iphoneos-arm64
 Author: tune
 Maintainer: tune
-

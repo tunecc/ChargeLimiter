@@ -5,6 +5,6 @@ Description: 优化了一下界面
 Section: Applications
 Depends: firmware (>= 13.0)
 Priority: optional
-Architecture: iphoneos-arm64
+Architecture: iphoneos-arm64e
 Author: tune
 Maintainer: tune
