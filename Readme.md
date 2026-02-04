@@ -13,34 +13,33 @@
 </p>
 
 
-## 📦 Building & Packaging (快速上手)
+## 📦 构建安装包 (快速上手)
 
-**Quick start:** 编译 → 复制 `.app` 到对应 `Package` 模板目录 → 打包。更多详细步骤见：`构建安装包.md`。
+详细步骤与踩坑说明请看仓库根目录的 `构建安装包.md`。
 
-Prerequisites: **Xcode**, **xcode-select (CLI tools)**, **dpkg-deb** (brew install dpkg)。
+软件要求: **Xcode**, **xcode-select (CLI tools)**, **dpkg-deb** (brew install dpkg)。
 
-示例命令（使用占位符 `$OUTDIR`、`<VERSION>`）：
-
-- 构建 App：
 ```bash
-rm -rf build
+# build
+rm -rf build Payload out
 xcodebuild -scheme "ChargeLimiter" -configuration Release -derivedDataPath build CODE_SIGNING_ALLOWED=NO ARCHS=arm64
-```
-- 生成 TrollStore (.tipa)：
-```bash
-mkdir -p Payload
-cp -r build/Build/Products/Release-iphoneos/ChargeLimiter.app Payload/
-zip -r "$OUTDIR/ChargeLimiter_<VERSION>_TrollStore.tipa" Payload
+
+# TrollStore
+mkdir -p Payload out
+cp -a build/Build/Products/Release-iphoneos/ChargeLimiter.app Payload/ChargeLimiter.app
+zip -r out/ChargeLimiter_<VERSION>_TrollStore.tipa Payload
 rm -rf Payload
-```
-- 打包 .deb（示例）：
-```bash
+
 # roothide (arm64e)
-dpkg-deb -Zxz -b ChargeLimiter/Package_rootless "$OUTDIR/ChargeLimiter_<VERSION>_roothide_arm64e.deb"
+rm -rf ChargeLimiter/Package_rootless/var/jb/Applications/ChargeLimiter.app
+cp -a build/Build/Products/Release-iphoneos/ChargeLimiter.app \
+  ChargeLimiter/Package_rootless/var/jb/Applications/ChargeLimiter.app
+dpkg-deb -Zxz -b ChargeLimiter/Package_rootless out/ChargeLimiter_<VERSION>_roothide_arm64e.deb
+
 # rootless (arm64)
-dpkg-deb -Zxz -b ChargeLimiter/Package "$OUTDIR/ChargeLimiter_<VERSION>_rootless_arm64.deb"
+rm -rf ChargeLimiter/Package/Applications/ChargeLimiter.app
+cp -a build/Build/Products/Release-iphoneos/ChargeLimiter.app \
+  ChargeLimiter/Package/Applications/ChargeLimiter.app
+dpkg-deb -Zxz -b ChargeLimiter/Package out/ChargeLimiter_<VERSION>_rootless_arm64.deb
 ```
 
-**Checklist（发布前）**: 更新 `MARKETING_VERSION`、检查 `DEBIAN/control`（Package/Version/Arch）、确认脚本权限并在真机测试。
-
-（详细步骤请参见仓库根目录的 `构建安装包.md`）
