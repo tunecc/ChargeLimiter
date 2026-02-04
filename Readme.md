@@ -24,22 +24,24 @@
 rm -rf build Payload out
 xcodebuild -scheme "ChargeLimiter" -configuration Release -derivedDataPath build CODE_SIGNING_ALLOWED=NO ARCHS=arm64
 
+# 可选：直接使用 DerivedData 的最新产物，避免旧包
+APP="$HOME/Library/Developer/Xcode/DerivedData/ChargeLimiter-*/Build/Products/Release-iphoneos/ChargeLimiter.app"
+
 # TrollStore
 mkdir -p Payload out
-cp -a build/Build/Products/Release-iphoneos/ChargeLimiter.app Payload/ChargeLimiter.app
+cp -a "${APP:-build/Build/Products/Release-iphoneos/ChargeLimiter.app}" Payload/ChargeLimiter.app
 zip -r out/ChargeLimiter_<VERSION>_TrollStore.tipa Payload
 rm -rf Payload
 
 # roothide (arm64e)
-rm -rf ChargeLimiter/Package_rootless/var/jb/Applications/ChargeLimiter.app
-cp -a build/Build/Products/Release-iphoneos/ChargeLimiter.app \
-  ChargeLimiter/Package_rootless/var/jb/Applications/ChargeLimiter.app
-dpkg-deb -Zxz -b ChargeLimiter/Package_rootless out/ChargeLimiter_<VERSION>_roothide_arm64e.deb
+rm -rf ChargeLimiter/Package_roothide/var/jb/Applications/ChargeLimiter.app
+cp -a "${APP:-build/Build/Products/Release-iphoneos/ChargeLimiter.app}" \
+  ChargeLimiter/Package_roothide/var/jb/Applications/ChargeLimiter.app
+dpkg-deb -Zxz -b ChargeLimiter/Package_roothide out/ChargeLimiter_<VERSION>_roothide_arm64e.deb
 
 # rootless (arm64)
-rm -rf ChargeLimiter/Package/Applications/ChargeLimiter.app
-cp -a build/Build/Products/Release-iphoneos/ChargeLimiter.app \
-  ChargeLimiter/Package/Applications/ChargeLimiter.app
-dpkg-deb -Zxz -b ChargeLimiter/Package out/ChargeLimiter_<VERSION>_rootless_arm64.deb
+rm -rf ChargeLimiter/Package_rootless/var/jb/Applications/ChargeLimiter.app
+cp -a "${APP:-build/Build/Products/Release-iphoneos/ChargeLimiter.app}" \
+  ChargeLimiter/Package_rootless/var/jb/Applications/ChargeLimiter.app
+dpkg-deb -Zxz -b ChargeLimiter/Package_rootless out/ChargeLimiter_<VERSION>_rootless_arm64.deb
 ```
-
