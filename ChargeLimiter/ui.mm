@@ -251,8 +251,8 @@ static AppDelegate* _app = nil;
                                     }
                                 }
                                 if (![old_bid isEqualToString:cur_bid]) {
-                                    NSNumber* floatwnd_auto = getlocalKV(@"floatwnd_auto");
-                                    if (floatwnd_auto.boolValue) {
+                                    BOOL floatwnd_auto = getLocalBool(@"floatwnd_auto", NO);
+                                    if (floatwnd_auto) {
                                         if ([white_list containsObject:cur_bid]) {
                                             NSFileLog(@"floatwnd unhide for %@", cur_bid);
                                             dispatch_async(dispatch_get_main_queue(), ^{
@@ -471,4 +471,3 @@ int main(int argc, char** argv) { // ChargeLimiter
         return -1;
     }
 }
-

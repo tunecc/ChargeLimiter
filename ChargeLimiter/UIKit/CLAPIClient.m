@@ -127,7 +127,7 @@
             @"adv_def_thermal_mode": @"off",
             @"adv_limit_inflow_mode": @"off",
             @"adv_thermal_mode_lock": @NO,
-            @"ver": @"1.7.0",
+            @"ver": @"1.9.0",
             @"sysver": @"iOS 16.1.2",
             @"devmodel": @"iPhone14,2",
             @"sys_boot": @((NSInteger)[[NSDate date] timeIntervalSince1970] - 86400),
@@ -161,6 +161,42 @@
     } else if ([api isEqualToString:@"reset_conf"]) {
         NSLog(@"[CL-Mock] 重置配置");
         return @{@"status": @0};
+    } else if ([api isEqualToString:@"get_statistics"]) {
+        NSDictionary *conf = params[@"conf"];
+        NSMutableDictionary *data = [NSMutableDictionary dictionary];
+        NSInteger now = (NSInteger)[[NSDate date] timeIntervalSince1970];
+        for (NSString *key in conf) {
+            NSDictionary *confForKey = conf[key];
+            NSInteger n = [confForKey[@"n"] integerValue];
+            if (n <= 0) n = 10;
+            NSMutableArray *rows = [NSMutableArray arrayWithCapacity:n];
+            NSInteger step = 300;
+            if ([key isEqualToString:@"hour"]) step = 3600;
+            else if ([key isEqualToString:@"day"]) step = 86400;
+            else if ([key isEqualToString:@"month"]) step = 2592000;
+            
+            for (NSInteger i = 0; i < n; i++) {
+                NSInteger ts = now - i * step;
+                NSInteger cap = 40 + (NSInteger)(arc4random_uniform(50));
+                NSInteger temp = 2400 + (NSInteger)(arc4random_uniform(600));
+                NSInteger amp = (NSInteger)(arc4random_uniform(1200)) - 400;
+                NSInteger volt = 3700 + (NSInteger)(arc4random_uniform(300));
+                NSInteger cycle = 120 + (NSInteger)(arc4random_uniform(50));
+                NSInteger nominal = 3200 + (NSInteger)(arc4random_uniform(300));
+                NSMutableDictionary *row = [@{
+                    @"UpdateTime": @(ts),
+                    @"CurrentCapacity": @(cap),
+                    @"Temperature": @(temp),
+                    @"Amperage": @(amp),
+                    @"Voltage": @(volt),
+                    @"CycleCount": @(cycle),
+                    @"NominalChargeCapacity": @(nominal),
+                } mutableCopy];
+                [rows addObject:row];
+            }
+            data[key] = [[rows reverseObjectEnumerator] allObjects];
+        }
+        return @{@"status": @0, @"data": data};
     }
     return @{@"status": @(-1), @"error": @"Unknown API"};
 }
@@ -276,6 +312,14 @@
 
 - (void)resetConfigWithCompletion:(CLAPICallback)completion {
     [self sendRequest:@{@"api": @"reset_conf"} completion:completion];
+}
+
+- (void)getStatisticsWithConf:(NSDictionary *)conf completion:(CLAPICallback)completion {
+    NSDictionary *params = @{
+        @"api": @"get_statistics",
+        @"conf": conf ?: @{}
+    };
+    [self sendRequest:params completion:completion];
 }
 
 - (void)getHistoryWithType:(NSString *)type completion:(CLAPICallback)completion {

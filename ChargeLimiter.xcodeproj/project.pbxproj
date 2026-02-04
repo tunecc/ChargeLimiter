@@ -15,10 +15,14 @@
 		184EA9A72B7A373300D0981D /* CFNetwork.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 187886532B519B1600E48B28 /* CFNetwork.framework */; };
 		184EA9A82B7A373300D0981D /* CoreServices.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 18C50C7B2B6DFD8000793FA9 /* CoreServices.framework */; };
 		184EA9AC2B7A373300D0981D /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1878864E2B5199EC00E48B28 /* UIKit.framework */; };
+		A7F0C0C12F5A000100000001 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = A7F0C0C12F5A000100000005 /* Localizable.strings */; };
+		A7F0C0C12F5A000100000002 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = A7F0C0C12F5A000100000006 /* Localizable.strings */; };
 		184EA9AF2B7A373300D0981D /* lang.json in Resources */ = {isa = PBXBuildFile; fileRef = 187886522B519A5B00E48B28 /* lang.json */; };
 		184EA9B02B7A373300D0981D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1878863C2B51976B00E48B28 /* Assets.xcassets */; };
 		184EA9B12B7A373300D0981D /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 1878863E2B51976B00E48B28 /* LaunchScreen.storyboard */; };
 		184EA9B22B7A373300D0981D /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 187886392B51976A00E48B28 /* Main.storyboard */; };
+		A7F0C0C12F5A000100000003 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = A7F0C0C12F5A000100000005 /* Localizable.strings */; };
+		A7F0C0C12F5A000100000004 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = A7F0C0C12F5A000100000006 /* Localizable.strings */; };
 		1860F2C42B5809510094AAC8 /* lang.json in Resources */ = {isa = PBXBuildFile; fileRef = 187886522B519A5B00E48B28 /* lang.json */; };
 		18658A8F2BD2716000207EF3 /* ui.mm in Sources */ = {isa = PBXBuildFile; fileRef = 18658A812BCF771800207EF3 /* ui.mm */; };
 		1870F5FD2B83B8F100B3660F /* GraphicsServices.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 1870F5FC2B83B8F100B3660F /* GraphicsServices.tbd */; };
@@ -128,6 +132,8 @@
 		187886422B51976B00E48B28 /* daemon.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = daemon.mm; sourceTree = "<group>"; };
 		1878864E2B5199EC00E48B28 /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
 		187886522B519A5B00E48B28 /* lang.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = lang.json; sourceTree = "<group>"; };
+		A7F0C0C12F5A000100000005 /* Localizable.strings */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; path = "en.lproj/Localizable.strings"; sourceTree = "<group>"; };
+		A7F0C0C12F5A000100000006 /* Localizable.strings */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; path = "zh-Hans.lproj/Localizable.strings"; sourceTree = "<group>"; };
 		187886532B519B1600E48B28 /* CFNetwork.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CFNetwork.framework; path = System/Library/Frameworks/CFNetwork.framework; sourceTree = SDKROOT; };
 		187BEA1F2B6A5F6100BD5C8F /* Package */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Package; sourceTree = "<group>"; };
 		18826C072BFCF00A00F7D88D /* Package_rootless */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Package_rootless; sourceTree = "<group>"; };
@@ -262,6 +268,8 @@
 			isa = PBXGroup;
 			children = (
 				187886522B519A5B00E48B28 /* lang.json */,
+				A7F0C0C12F5A000100000005 /* Localizable.strings */,
+				A7F0C0C12F5A000100000006 /* Localizable.strings */,
 				A720B9A62F2F0C0B008B9C91 /* CLSimpleHTTPServer.h */,
 				A720B9A72F2F0C0B008B9C91 /* CLSimpleHTTPServer.m */,
 				A720B97B2F2F0995008B9C91 /* UIKit */,
@@ -464,6 +472,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				184EA9AF2B7A373300D0981D /* lang.json in Resources */,
+				A7F0C0C12F5A000100000001 /* Localizable.strings in Resources */,
+				A7F0C0C12F5A000100000002 /* Localizable.strings in Resources */,
 				184EA9B02B7A373300D0981D /* Assets.xcassets in Resources */,
 				184EA9B12B7A373300D0981D /* LaunchScreen.storyboard in Resources */,
 				184EA9B22B7A373300D0981D /* Main.storyboard in Resources */,
@@ -475,6 +485,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				1860F2C42B5809510094AAC8 /* lang.json in Resources */,
+				A7F0C0C12F5A000100000003 /* Localizable.strings in Resources */,
+				A7F0C0C12F5A000100000004 /* Localizable.strings in Resources */,
 				1878863D2B51976B00E48B28 /* Assets.xcassets in Resources */,
 				187886402B51976B00E48B28 /* LaunchScreen.storyboard in Resources */,
 				1878863B2B51976A00E48B28 /* Main.storyboard in Resources */,
@@ -676,14 +688,14 @@
 					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.8;
+				MARKETING_VERSION = 1.9.0;
 				MonkeyDevBuildPackageOnAnyBuild = YES;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = YES;
 				MonkeyDevPath = /opt/MonkeyDev;
 				MonkeyDevTheosPath = /opt/theos_rootless;
 				OTHER_CFLAGS = "-DTHEOS_PACKAGE_INSTALL_PREFIX=\"/var/jb\"";
-				PRODUCT_BUNDLE_IDENTIFIER = chaoge.ChargeLimiter;
+				PRODUCT_BUNDLE_IDENTIFIER = com.chargelimiter.mod;
 				PRODUCT_NAME = ChargeLimiter;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -720,14 +732,14 @@
 					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.8;
+				MARKETING_VERSION = 1.9.0;
 				MonkeyDevBuildPackageOnAnyBuild = YES;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = YES;
 				MonkeyDevPath = /opt/MonkeyDev;
 				MonkeyDevTheosPath = /opt/theos_rootless;
 				OTHER_CFLAGS = "-DTHEOS_PACKAGE_INSTALL_PREFIX=\"/var/jb\"";
-				PRODUCT_BUNDLE_IDENTIFIER = chaoge.ChargeLimiter;
+				PRODUCT_BUNDLE_IDENTIFIER = com.chargelimiter.mod;
 				PRODUCT_NAME = ChargeLimiter;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -891,7 +903,7 @@
 					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.8;
+				MARKETING_VERSION = 1.9.0;
 				MonkeyDevBuildPackageOnAnyBuild = YES;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = YES;
@@ -932,7 +944,7 @@
 					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.8;
+				MARKETING_VERSION = 1.9.0;
 				MonkeyDevBuildPackageOnAnyBuild = YES;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = YES;
@@ -976,7 +988,7 @@
 					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.8;
+				MARKETING_VERSION = 1.9.0;
 				MonkeyDevBuildPackageOnAnyBuild = YES;
 				MonkeyDevDeviceIP = 192.168.1.12;
 				MonkeyDevInstallOnAnyBuild = YES;
@@ -1021,7 +1033,7 @@
 					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.8;
+				MARKETING_VERSION = 1.9.0;
 				MonkeyDevBuildPackageOnAnyBuild = YES;
 				MonkeyDevDeviceIP = 192.168.1.12;
 				MonkeyDevInstallOnAnyBuild = YES;
@@ -1066,14 +1078,14 @@
 					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.8;
+				MARKETING_VERSION = 1.9.0;
 				MonkeyDevBuildPackageOnAnyBuild = YES;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = YES;
 				MonkeyDevPath = /opt/MonkeyDev;
 				MonkeyDevTheosPath = /opt/theos_rootless;
 				OTHER_CFLAGS = "-DTHEOS_PACKAGE_INSTALL_PREFIX=\"/var/jb\"";
-				PRODUCT_BUNDLE_IDENTIFIER = chaoge.ChargeLimiter;
+				PRODUCT_BUNDLE_IDENTIFIER = com.chargelimiter.mod;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -1113,14 +1125,14 @@
 					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.8;
+				MARKETING_VERSION = 1.9.0;
 				MonkeyDevBuildPackageOnAnyBuild = YES;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = YES;
 				MonkeyDevPath = /opt/MonkeyDev;
 				MonkeyDevTheosPath = /opt/theos_rootless;
 				OTHER_CFLAGS = "-DTHEOS_PACKAGE_INSTALL_PREFIX=\"/var/jb\"";
-				PRODUCT_BUNDLE_IDENTIFIER = chaoge.ChargeLimiter;
+				PRODUCT_BUNDLE_IDENTIFIER = com.chargelimiter.mod;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				TARGETED_DEVICE_FAMILY = "1,2";
