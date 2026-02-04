@@ -609,6 +609,133 @@ static float getTempAsC(NSString* key) {
     return 0;
 }
 
+static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
+    NSDictionary* safeInfo = info ?: @{};
+    NSDictionary* safeOld = oldInfo ?: safeInfo;
+    NSString* raw_mode = getLocalString(@"mode", @"charge_on_plug");
+    int mode = 0;
+    if ([raw_mode isEqualToString:@"charge_on_plug"]) {
+        mode = CL_MODE_PLUG;
+    } else if ([raw_mode isEqualToString:@"edge_trigger"]) {
+        mode = CL_MODE_EDGE;
+    }
+    int charge_below = getLocalInt(@"charge_below", 0);
+    int charge_above = getLocalInt(@"charge_above", 100);
+    BOOL enable_temp = getLocalBool(@"enable_temp", NO);
+    NSNumber* capacity = safeInfo[@"CurrentCapacity"];
+    BOOL is_charging = [safeInfo[@"IsCharging"] boolValue];
+    NSNumber* is_inflow_enabled = safeInfo[@"ExternalConnected"];
+    BOOL adv_disable_inflow = getLocalBool(@"adv_disable_inflow", NO);
+    BOOL is_adaptor_connected = isAdaptorConnect(safeInfo, @(adv_disable_inflow));
+    BOOL is_adaptor_new_connected = isAdaptorNewConnect(safeOld, safeInfo, @(adv_disable_inflow));
+    BOOL is_adaptor_new_disconnected = isAdaptorNewDisconnect(safeOld, safeInfo, @(adv_disable_inflow));
+    NSNumber* temperature_ = safeInfo[@"Temperature"];
+    float charge_temp_above = getTempAsC(@"charge_temp_above");
+    float charge_temp_below = getTempAsC(@"charge_temp_below");
+    float temperature = temperature_.intValue / 100.0;
+    if (is_adaptor_new_connected) {
+        NSFileLog(@"detect plug in");
+    } else if (is_adaptor_new_disconnected) {
+        NSFileLog(@"detect unplug");
+    }
+    // 优先级: 电量极低 > 停充(电量>温度) > 充电(电量>温度) > 插电
+    do {
+        if (capacity.intValue <= 5) { // 电量极低,优先级=1
+            // 防止误用或意外造成无法充电
+            if (is_adaptor_connected && !is_charging) {
+                NSFileLog(@"start charging for extremely low capacity %@", capacity);
+                setInflowStatus(YES);
+                setBatteryStatus(YES);
+                performAcccharge(YES);
+            }
+            break;
+        }
+        if (capacity.intValue >= charge_above) { // 停充-电量高,优先级=2
+            if (is_charging) {
+                NSFileLog(@"stop charging for high capacity %@ >= %d", capacity, charge_above);
+                setBatteryStatus(NO);
+                performAction(@"stop_charge");
+                performAcccharge(NO);
+            }
+            if (adv_disable_inflow && is_inflow_enabled.boolValue) {
+                NSFileLog(@"disable inflow for high capacity %@ >= %d", capacity, charge_above);
+                setInflowStatus(NO);
+            }
+            break;
+        }
+        if (enable_temp && temperature >= charge_temp_above) { // 停充-温度高,优先级=3
+            if (is_charging) {
+                NSFileLog(@"stop charging for high temperature %lf >= %lf", temperature, charge_temp_above);
+                setBatteryStatus(NO);
+                performAction(@"stop_charge");
+                performAcccharge(NO);
+            }
+            if (adv_disable_inflow && is_inflow_enabled.boolValue) {
+                NSFileLog(@"disable inflow for high temperature %lf >= %lf", temperature, charge_temp_above);
+                setInflowStatus(NO);
+            }
+            break;
+        }
+        // 温度恢复充电 - 在所有模式下都生效，优先级=4
+        // 只有当温度控制开启且当前温度在安全范围内时才考虑恢复
+        if (enable_temp && temperature <= charge_temp_below && !is_charging) {
+            // 温度已降到安全范围，可以恢复充电
+            // 但需要确保电量也在合理范围内（低于上限）
+            if (is_adaptor_connected && capacity.intValue < charge_above) {
+                if (adv_disable_inflow && !is_inflow_enabled.boolValue) {
+                    NSFileLog(@"enable inflow for low temperature %lf <= %lf", temperature, charge_temp_below);
+                    setInflowStatus(YES);
+                }
+                NSFileLog(@"start charging for low temperature %lf <= %lf", temperature, charge_temp_below);
+                setBatteryStatus(YES);
+                performAction(@"start_charge");
+                performAcccharge(YES);
+                break;
+            }
+        }
+        if (capacity.intValue <= charge_below) { // 充电-电量低,优先级=5
+            // 禁流模式下电量下降后恢复充电
+            if (is_adaptor_connected) {
+                if (adv_disable_inflow && !is_inflow_enabled.boolValue) {
+                    NSFileLog(@"enable inflow for low capacity %@ <= %d", capacity, charge_below);
+                    setInflowStatus(YES);
+                }
+                NSFileLog(@"start charging for low capacity %@ <= %d", capacity, charge_below);
+                setBatteryStatus(YES);
+                performAction(@"start_charge");
+                performAcccharge(YES);
+            }
+            break;
+        }
+        if (mode == CL_MODE_PLUG) {
+            if (is_adaptor_new_connected) { // 充电-插电,优先级=6
+                if (adv_disable_inflow && !is_inflow_enabled.boolValue) {
+                    NSFileLog(@"enable inflow for plug in");
+                    setInflowStatus(YES);
+                }
+                NSFileLog(@"start charging for plug in");
+                setBatteryStatus(YES);
+                performAction(@"start_charge");
+                performAcccharge(YES);
+                break;
+            }
+        } else if (mode == CL_MODE_EDGE) {
+            if (is_adaptor_new_connected) {
+                NSFileLog(@"stop charging for plug in");
+                setBatteryStatus(NO);
+                if (adv_disable_inflow && is_inflow_enabled.boolValue) {
+                    NSFileLog(@"disable inflow for plug in");
+                    setInflowStatus(NO);
+                }
+            }
+            break;
+        }
+    } while(false);
+    if (is_adaptor_new_disconnected) {
+        performAcccharge(NO);
+    }
+}
+
 static void onBatteryEvent(io_service_t serv) {
     @autoreleasepool {
         NSDictionary* old_bat_info = bat_info;
@@ -619,128 +746,7 @@ static void onBatteryEvent(io_service_t serv) {
         if (!g_enable) {
             return;
         }
-        NSString* raw_mode = getLocalString(@"mode", @"charge_on_plug");
-        int mode = 0;
-        if ([raw_mode isEqualToString:@"charge_on_plug"]) {
-            mode = CL_MODE_PLUG;
-        } else if ([raw_mode isEqualToString:@"edge_trigger"]) {
-            mode = CL_MODE_EDGE;
-        }
-        int charge_below = getLocalInt(@"charge_below", 0);
-        int charge_above = getLocalInt(@"charge_above", 100);
-        BOOL enable_temp = getLocalBool(@"enable_temp", NO);
-        NSNumber* capacity = bat_info[@"CurrentCapacity"];
-        BOOL is_charging = [bat_info[@"IsCharging"] boolValue];
-        NSNumber* is_inflow_enabled = bat_info[@"ExternalConnected"];
-        BOOL adv_disable_inflow = getLocalBool(@"adv_disable_inflow", NO);
-        BOOL is_adaptor_connected = isAdaptorConnect(bat_info, @(adv_disable_inflow));
-        BOOL is_adaptor_new_connected = isAdaptorNewConnect(old_bat_info, bat_info, @(adv_disable_inflow));
-        BOOL is_adaptor_new_disconnected = isAdaptorNewDisconnect(old_bat_info, bat_info, @(adv_disable_inflow));
-        NSNumber* temperature_ = bat_info[@"Temperature"];
-        float charge_temp_above = getTempAsC(@"charge_temp_above");
-        float charge_temp_below = getTempAsC(@"charge_temp_below");
-        float temperature = temperature_.intValue / 100.0;
-        if (is_adaptor_new_connected) {
-            NSFileLog(@"detect plug in");
-        } else if (is_adaptor_new_disconnected) {
-            NSFileLog(@"detect unplug");
-        }
-        // 优先级: 电量极低 > 停充(电量>温度) > 充电(电量>温度) > 插电
-        do {
-            if (capacity.intValue <= 5) { // 电量极低,优先级=1
-                // 防止误用或意外造成无法充电
-                if (is_adaptor_connected && !is_charging) {
-                    NSFileLog(@"start charging for extremely low capacity %@", capacity);
-                    setInflowStatus(YES);
-                    setBatteryStatus(YES);
-                    performAcccharge(YES);
-                }
-                break;
-            }
-            if (capacity.intValue >= charge_above) { // 停充-电量高,优先级=2
-                if (is_charging) {
-                    NSFileLog(@"stop charging for high capacity %@ >= %d", capacity, charge_above);
-                    setBatteryStatus(NO);
-                    performAction(@"stop_charge");
-                    performAcccharge(NO);
-                }
-                if (adv_disable_inflow && is_inflow_enabled.boolValue) {
-                    NSFileLog(@"disable inflow for high capacity %@ >= %d", capacity, charge_above);
-                    setInflowStatus(NO);
-                }
-                break;
-            }
-            if (enable_temp && temperature >= charge_temp_above) { // 停充-温度高,优先级=3
-                if (is_charging) {
-                    NSFileLog(@"stop charging for high temperature %lf >= %lf", temperature, charge_temp_above);
-                    setBatteryStatus(NO);
-                    performAction(@"stop_charge");
-                    performAcccharge(NO);
-                }
-                if (adv_disable_inflow && is_inflow_enabled.boolValue) {
-                    NSFileLog(@"disable inflow for high temperature %lf >= %lf", temperature, charge_temp_above);
-                    setInflowStatus(NO);
-                }
-                break;
-            }
-            // 温度恢复充电 - 在所有模式下都生效，优先级=4
-            // 只有当温度控制开启且当前温度在安全范围内时才考虑恢复
-            if (enable_temp && temperature <= charge_temp_below && !is_charging) {
-                // 温度已降到安全范围，可以恢复充电
-                // 但需要确保电量也在合理范围内（低于上限）
-                if (is_adaptor_connected && capacity.intValue < charge_above) {
-                    if (adv_disable_inflow && !is_inflow_enabled.boolValue) {
-                        NSFileLog(@"enable inflow for low temperature %lf <= %lf", temperature, charge_temp_below);
-                        setInflowStatus(YES);
-                    }
-                    NSFileLog(@"start charging for low temperature %lf <= %lf", temperature, charge_temp_below);
-                    setBatteryStatus(YES);
-                    performAction(@"start_charge");
-                    performAcccharge(YES);
-                    break;
-                }
-            }
-            if (capacity.intValue <= charge_below) { // 充电-电量低,优先级=5
-                // 禁流模式下电量下降后恢复充电
-                if (is_adaptor_connected) {
-                    if (adv_disable_inflow && !is_inflow_enabled.boolValue) {
-                        NSFileLog(@"enable inflow for low capacity %@ <= %d", capacity, charge_below);
-                        setInflowStatus(YES);
-                    }
-                    NSFileLog(@"start charging for low capacity %@ <= %d", capacity, charge_below);
-                    setBatteryStatus(YES);
-                    performAction(@"start_charge");
-                    performAcccharge(YES);
-                }
-                break;
-            }
-            if (mode == CL_MODE_PLUG) {
-                if (is_adaptor_new_connected) { // 充电-插电,优先级=6
-                    if (adv_disable_inflow && !is_inflow_enabled.boolValue) {
-                        NSFileLog(@"enable inflow for plug in");
-                        setInflowStatus(YES);
-                    }
-                    NSFileLog(@"start charging for plug in");
-                    setBatteryStatus(YES);
-                    performAction(@"start_charge");
-                    performAcccharge(YES);
-                    break;
-                }
-            } else if (mode == CL_MODE_EDGE) {
-                if (is_adaptor_new_connected) {
-                    NSFileLog(@"stop charging for plug in");
-                    setBatteryStatus(NO);
-                    if (adv_disable_inflow && is_inflow_enabled.boolValue) {
-                        NSFileLog(@"disable inflow for plug in");
-                        setInflowStatus(NO);
-                    }
-                }
-                break;
-            }
-        } while(false);
-        if (is_adaptor_new_disconnected) {
-            performAcccharge(NO);
-        }
+        applyChargePolicy(old_bat_info, bat_info);
         onBatteryEventEnd();
     }
 }
@@ -917,6 +923,7 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             @"status": @0,
         };
     } else if ([api isEqualToString:@"get_bat_info"]) {
+        getBatInfo(&bat_info);
         if (gUPSPS.props != nil) {
             return @{
                 @"status": @0,
@@ -928,6 +935,17 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             @"status": @0,
             @"enable": @(g_enable), // for floatwnd
             @"data": bat_info,
+        };
+    } else if ([api isEqualToString:@"apply_now"]) {
+        NSDictionary* old_bat_info = bat_info;
+        getBatInfo(&bat_info);
+        updateStatistics();
+        if (g_enable) {
+            applyChargePolicy(old_bat_info, bat_info);
+            onBatteryEventEnd();
+        }
+        return @{
+            @"status": @0,
         };
     } else if ([api isEqualToString:@"get_statistics"]) {
         NSDictionary* conf = nsreq[@"conf"];

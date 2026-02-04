@@ -127,7 +127,7 @@
             @"adv_def_thermal_mode": @"off",
             @"adv_limit_inflow_mode": @"off",
             @"adv_thermal_mode_lock": @NO,
-            @"ver": @"1.9.2",
+            @"ver": @"1.9.3",
             @"sysver": @"iOS 16.1.2",
             @"devmodel": @"iPhone14,2",
             @"sys_boot": @((NSInteger)[[NSDate date] timeIntervalSince1970] - 86400),
@@ -157,6 +157,9 @@
         return @{@"status": @0};
     } else if ([api isEqualToString:@"set_inflow_status"]) {
         NSLog(@"[CL-Mock] 设置电源连接: %@", params[@"flag"]);
+        return @{@"status": @0};
+    } else if ([api isEqualToString:@"apply_now"]) {
+        NSLog(@"[CL-Mock] 立即执行策略");
         return @{@"status": @0};
     } else if ([api isEqualToString:@"reset_conf"]) {
         NSLog(@"[CL-Mock] 重置配置");
@@ -300,6 +303,10 @@
 
 - (void)getBatteryInfoWithCompletion:(CLAPICallback)completion {
     [self sendRequest:@{@"api": @"get_bat_info"} completion:completion];
+}
+
+- (void)applyNowWithCompletion:(CLAPICallback)completion {
+    [self sendRequest:@{@"api": @"apply_now"} completion:completion];
 }
 
 - (void)setChargeStatus:(BOOL)charging completion:(CLAPICallback)completion {
