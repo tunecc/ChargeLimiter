@@ -35,10 +35,10 @@ rm -rf Payload
 ```
 - 打包 .deb（示例）：
 ```bash
-# rootless (roothide)
+# roothide (arm64e)
 dpkg-deb -Zxz -b ChargeLimiter/Package_rootless "$OUTDIR/ChargeLimiter_<VERSION>_roothide_arm64e.deb"
-# rootful
-dpkg-deb -Zxz -b ChargeLimiter/Package "$OUTDIR/ChargeLimiter_<VERSION>_rootful_arm64.deb"
+# rootless (arm64)
+dpkg-deb -Zxz -b ChargeLimiter/Package "$OUTDIR/ChargeLimiter_<VERSION>_rootless_arm64.deb"
 ```
 
 **Checklist（发布前）**: 更新 `MARKETING_VERSION`、检查 `DEBIAN/control`（Package/Version/Arch）、确认脚本权限并在真机测试。
