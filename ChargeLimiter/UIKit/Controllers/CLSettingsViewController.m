@@ -37,6 +37,10 @@ NSString* getConfPath_C(void);
 
 #pragma mark - 毛玻璃卡片
 
+@protocol CLChargeSliderEnforcing <NSObject>
+- (NSInteger)normalizedChargeValueForSlider:(UISlider *)slider value:(NSInteger)value;
+@end
+
 @interface CLGlassCard : UIView
 @property (nonatomic, strong) UIVisualEffectView *blurView;
 @property (nonatomic, strong) UIStackView *contentStack;
@@ -156,6 +160,7 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
     titleLabel.font = [UIFont systemFontOfSize:15];
     titleLabel.textColor = [UIColor labelColor];
     [row addSubview:titleLabel];
+
     
     UISwitch *switchView = [[UISwitch alloc] init];
     switchView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -279,7 +284,7 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
     [row addSubview:plusBtn];
     
     [slider addTarget:self action:@selector(sliderChanged:) forControlEvents:UIControlEventValueChanged];
-    [slider addTarget:self action:@selector(sliderEnded:) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside];
+    [slider addTarget:self action:@selector(sliderEnded:) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside | UIControlEventTouchCancel];
     
     // 关联对象
     objc_setAssociatedObject(slider, "onChange", onChange, OBJC_ASSOCIATION_COPY_NONATOMIC);
@@ -386,6 +391,10 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
 - (void)adjustSlider:(UISlider *)slider byAmount:(NSInteger)amount {
     NSInteger newValue = (NSInteger)roundf(slider.value) + amount;
     newValue = MAX(slider.minimumValue, MIN(slider.maximumValue, newValue));
+    id<CLChargeSliderEnforcing> vc = (id)self.viewController;
+    if ([vc respondsToSelector:@selector(normalizedChargeValueForSlider:value:)]) {
+        newValue = [vc normalizedChargeValueForSlider:slider value:newValue];
+    }
     
     [UIView animateWithDuration:0.1 animations:^{
         slider.value = newValue;
@@ -447,6 +456,10 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
         NSString *inputText = alert.textFields.firstObject.text;
         NSInteger inputValue = [inputText integerValue];
         inputValue = MAX(minValue, MIN(maxValue, inputValue));
+        id<CLChargeSliderEnforcing> vc = (id)self.viewController;
+        if ([vc respondsToSelector:@selector(normalizedChargeValueForSlider:value:)]) {
+            inputValue = [vc normalizedChargeValueForSlider:slider value:inputValue];
+        }
         
         slider.value = inputValue;
         valueLabel.text = [NSString stringWithFormat:@"%ld%@", (long)inputValue, suffix];
@@ -462,6 +475,14 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
 
 - (void)sliderChanged:(UISlider *)sender {
     NSInteger value = (NSInteger)roundf(sender.value);
+    id<CLChargeSliderEnforcing> vc = (id)self.viewController;
+    if ([vc respondsToSelector:@selector(normalizedChargeValueForSlider:value:)]) {
+        NSInteger normalized = [vc normalizedChargeValueForSlider:sender value:value];
+        if (normalized != value) {
+            value = normalized;
+            sender.value = value;
+        }
+    }
     UILabel *valueLabel = objc_getAssociatedObject(sender, "valueLabel");
     NSString *suffix = objc_getAssociatedObject(sender, "suffix") ?: @"%";
     valueLabel.text = [NSString stringWithFormat:@"%ld%@", (long)value, suffix];
@@ -494,7 +515,14 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
 
 - (void)sliderEnded:(UISlider *)sender {
     NSInteger value = (NSInteger)roundf(sender.value);
+    id<CLChargeSliderEnforcing> vc = (id)self.viewController;
+    if ([vc respondsToSelector:@selector(normalizedChargeValueForSlider:value:)]) {
+        value = [vc normalizedChargeValueForSlider:sender value:value];
+    }
     sender.value = value;
+    UILabel *valueLabel = objc_getAssociatedObject(sender, "valueLabel");
+    NSString *suffix = objc_getAssociatedObject(sender, "suffix") ?: @"%";
+    valueLabel.text = [NSString stringWithFormat:@"%ld%@", (long)value, suffix];
     if (@available(iOS 10.0, *)) {
         UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
         [feedback impactOccurred];
@@ -528,7 +556,7 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
     UILabel *valueLabel = [[UILabel alloc] init];
     valueLabel.translatesAutoresizingMaskIntoConstraints = NO;
     valueLabel.text = value;
-    valueLabel.font = [UIFont systemFontOfSize:15];
+    valueLabel.font = [UIFont monospacedDigitSystemFontOfSize:15 weight:UIFontWeightMedium];
     valueLabel.textColor = [UIColor secondaryLabelColor];
     valueLabel.tag = [title hash];
     [row addSubview:valueLabel];
@@ -560,6 +588,7 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
 }
 
 - (UIView *)addSeparator {
+    CGFloat hairline = 1.0 / UIScreen.mainScreen.scale;
     UIView *container = [[UIView alloc] init];
     container.translatesAutoresizingMaskIntoConstraints = NO;
     
@@ -569,10 +598,10 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
     [container addSubview:separator];
     
     [NSLayoutConstraint activateConstraints:@[
-        [container.heightAnchor constraintEqualToConstant:0.5],
+        [container.heightAnchor constraintEqualToConstant:hairline],
         [separator.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:50],
         [separator.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
-        [separator.heightAnchor constraintEqualToConstant:0.5],
+        [separator.heightAnchor constraintEqualToConstant:hairline],
         [separator.centerYAnchor constraintEqualToAnchor:container.centerYAnchor]
     ]];
     
@@ -1140,16 +1169,19 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     titleLabel.font = [UIFont systemFontOfSize:24 weight:UIFontWeightBold];
     titleLabel.textColor = [UIColor labelColor];
     [self.mainStack addArrangedSubview:titleLabel];
+    [self.mainStack setCustomSpacing:10 afterView:titleLabel];
     
     self.segmentControl = [[UISegmentedControl alloc] initWithItems:@[CLL(@"5分钟"), CLL(@"小时"), CLL(@"天"), CLL(@"月")]];
     self.segmentControl.selectedSegmentIndex = 0;
     self.segmentControl.translatesAutoresizingMaskIntoConstraints = NO;
     [self.segmentControl addTarget:self action:@selector(segmentChanged:) forControlEvents:UIControlEventValueChanged];
     [self.mainStack addArrangedSubview:self.segmentControl];
+    [self.mainStack setCustomSpacing:12 afterView:self.segmentControl];
     
     self.hintCard = [[CLGlassCard alloc] init];
     [self setupHintCard];
     [self.mainStack addArrangedSubview:self.hintCard];
+    [self.mainStack setCustomSpacing:12 afterView:self.hintCard];
     
     self.tableCard = [[CLGlassCard alloc] init];
     [self setupChartCard];
@@ -1290,19 +1322,19 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
 
 - (void)segmentChanged:(UISegmentedControl *)sender {
     [self updateHintForSegment];
-    [self updateHistoryTable];
+    [self updateHistoryTableAnimated:YES];
 }
 
 - (void)ampTapped {
     self.showAmperage = !self.showAmperage;
     [self updateToggleButtons];
-    [self updateHistoryTable];
+    [self updateHistoryTableAnimated:YES];
 }
 
 - (void)voltTapped {
     self.showVoltage = !self.showVoltage;
     [self updateToggleButtons];
-    [self updateHistoryTable];
+    [self updateHistoryTableAnimated:YES];
 }
 
 - (void)updateToggleButtons {
@@ -1373,6 +1405,20 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
 }
 
 - (void)updateHistoryTable {
+    [self updateHistoryTableAnimated:NO];
+}
+
+- (void)updateHistoryTableAnimated:(BOOL)animated {
+    if (animated) {
+        [UIView transitionWithView:self.chartView duration:0.18 options:UIViewAnimationOptionTransitionCrossDissolve | UIViewAnimationOptionAllowUserInteraction animations:^{
+            [self updateHistoryTableInternal];
+        } completion:nil];
+    } else {
+        [self updateHistoryTableInternal];
+    }
+}
+
+- (void)updateHistoryTableInternal {
     NSInteger idx = self.segmentControl.selectedSegmentIndex;
     NSArray<NSDictionary *> *data = [self dataForSegment:idx];
     NSInteger windowSize = [self windowSizeForSegment:idx];
@@ -1411,7 +1457,7 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     NSInteger maxOffset = [self maxOffsetForSegment:idx totalCount:[self dataForSegment:idx].count window:[self windowSizeForSegment:idx]];
     if (offset < maxOffset) {
         [self setOffset:offset + 1 forSegment:idx];
-        [self updateHistoryTable];
+        [self updateHistoryTableAnimated:YES];
     }
 }
 
@@ -1420,7 +1466,7 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     NSInteger offset = [self offsetForSegment:idx];
     if (offset > 0) {
         [self setOffset:offset - 1 forSegment:idx];
-        [self updateHistoryTable];
+        [self updateHistoryTableAnimated:YES];
     }
 }
 
@@ -2648,6 +2694,7 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     self.batteryStatus.translatesAutoresizingMaskIntoConstraints = NO;
     [self.batteryStatus.heightAnchor constraintEqualToConstant:80].active = YES;
     [self.mainStack addArrangedSubview:self.batteryStatus];
+    [self.mainStack setCustomSpacing:12 afterView:self.batteryStatus];
     
     // 控制卡片
     [self setupControlCard];
@@ -2669,6 +2716,7 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     toolsTitle.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
     toolsTitle.textColor = [UIColor secondaryLabelColor];
     [self.mainStack addArrangedSubview:toolsTitle];
+    [self.mainStack setCustomSpacing:8 afterView:toolsTitle];
     
     // 历史统计入口
     [self setupHistoryEntryCard];
@@ -2685,8 +2733,6 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
 
 - (void)setupControlCard {
     self.controlCard = [[CLGlassCard alloc] init];
-    
-    __weak typeof(self) weakSelf = self;
     [self.controlCard addSwitchRowWithIcon:@"bolt.fill" title:CLL(@"启用") isOn:YES color:[UIColor systemGreenColor] tag:100 onChange:^(BOOL isOn) {
         [[CLAPIClient shared] setConfigWithKey:@"enable" value:@(isOn) completion:nil];
         [CLBatteryManager shared].enabled = isOn;
@@ -2703,45 +2749,77 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     
     __weak typeof(self) weakSelf = self;
     
-    // 开始充电滑块 - 保存引用以便隐藏
-    self.chargeBelowRow = [self.limitCard addSliderRowWithTitle:CLL(@"开始充电 (电量 ≤)") value:self.chargeBelow minValue:10 maxValue:95 color:[UIColor systemBlueColor] tag:200 onChange:^(NSInteger value) {
-        // 最终确定时的回调
-        if (value >= weakSelf.chargeAbove) {
-            value = weakSelf.chargeAbove - 5;
+    // 停止充电滑块 - 保存引用以便更新
+    self.chargeAboveRow = [self.limitCard addSliderRowWithTitle:CLL(@"停止充电 (电量 ≥)") value:self.chargeAbove minValue:15 maxValue:100 color:[UIColor systemGreenColor] tag:201 onChange:^(NSInteger value) {
+        NSInteger adjustedAbove = value;
+        BOOL enforceEdge = (weakSelf.currentChargeMode == 1);
+        NSInteger belowValue = weakSelf.chargeBelow;
+        UISlider *belowSlider = [weakSelf sliderForTag:200];
+        if (belowSlider) {
+            belowValue = (NSInteger)roundf(belowSlider.value);
         }
-        weakSelf.chargeBelow = value;
-        weakSelf.batteryStatus.chargeBelow = value;
-        [CLBatteryManager shared].chargeBelow = value;
-        [[CLAPIClient shared] setConfigWithKey:@"charge_below" value:@(value) completion:nil];
+        if (enforceEdge && adjustedAbove <= belowValue) {
+            adjustedAbove = belowValue + 1;
+            [weakSelf updateSliderValue:weakSelf.chargeAboveRow value:adjustedAbove];
+            [weakSelf updateSliderLabel:weakSelf.chargeAboveRow value:adjustedAbove suffix:@"%"];
+        }
+        weakSelf.chargeAbove = adjustedAbove;
+        weakSelf.batteryStatus.chargeAbove = adjustedAbove;
+        [CLBatteryManager shared].chargeAbove = adjustedAbove;
+        [[CLAPIClient shared] setConfigWithKey:@"charge_above" value:@(adjustedAbove) completion:nil];
     } onLiveChange:^(NSInteger value) {
         // 实时更新电池图标上的标记线
         NSInteger adjustedValue = value;
-        if (adjustedValue >= weakSelf.chargeAbove) {
-            adjustedValue = weakSelf.chargeAbove - 5;
+        BOOL enforceEdge = (weakSelf.currentChargeMode == 1);
+        NSInteger belowValue = weakSelf.chargeBelow;
+        UISlider *belowSlider = [weakSelf sliderForTag:200];
+        if (belowSlider) {
+            belowValue = (NSInteger)roundf(belowSlider.value);
         }
-        weakSelf.batteryStatus.chargeBelow = adjustedValue;
+        if (enforceEdge && adjustedValue <= belowValue) {
+            adjustedValue = belowValue + 1;
+            [weakSelf updateSliderValue:weakSelf.chargeAboveRow value:adjustedValue];
+            [weakSelf updateSliderLabel:weakSelf.chargeAboveRow value:adjustedValue suffix:@"%"];
+        }
+        weakSelf.batteryStatus.chargeAbove = adjustedValue;
     }];
-    
+
     // 保存分隔线引用
     self.chargeBelowSeparator = [self.limitCard addSeparator];
     
-    // 停止充电滑块 - 保存引用以便更新
-    self.chargeAboveRow = [self.limitCard addSliderRowWithTitle:CLL(@"停止充电 (电量 ≥)") value:self.chargeAbove minValue:15 maxValue:100 color:[UIColor systemGreenColor] tag:201 onChange:^(NSInteger value) {
-        // 最终确定时的回调
-        if (value <= weakSelf.chargeBelow) {
-            value = weakSelf.chargeBelow + 5;
+    // 开始充电滑块 - 保存引用以便隐藏
+    self.chargeBelowRow = [self.limitCard addSliderRowWithTitle:CLL(@"开始充电 (电量 ≤)") value:self.chargeBelow minValue:10 maxValue:95 color:[UIColor systemBlueColor] tag:200 onChange:^(NSInteger value) {
+        NSInteger adjustedBelow = value;
+        BOOL enforceEdge = (weakSelf.currentChargeMode == 1);
+        NSInteger aboveValue = weakSelf.chargeAbove;
+        UISlider *aboveSlider = [weakSelf sliderForTag:201];
+        if (aboveSlider) {
+            aboveValue = (NSInteger)roundf(aboveSlider.value);
         }
-        weakSelf.chargeAbove = value;
-        weakSelf.batteryStatus.chargeAbove = value;
-        [CLBatteryManager shared].chargeAbove = value;
-        [[CLAPIClient shared] setConfigWithKey:@"charge_above" value:@(value) completion:nil];
+        if (enforceEdge && adjustedBelow >= aboveValue) {
+            adjustedBelow = aboveValue - 1;
+            [weakSelf updateSliderValue:weakSelf.chargeBelowRow value:adjustedBelow];
+            [weakSelf updateSliderLabel:weakSelf.chargeBelowRow value:adjustedBelow suffix:@"%"];
+        }
+        weakSelf.chargeBelow = adjustedBelow;
+        weakSelf.batteryStatus.chargeBelow = adjustedBelow;
+        [CLBatteryManager shared].chargeBelow = adjustedBelow;
+        [[CLAPIClient shared] setConfigWithKey:@"charge_below" value:@(adjustedBelow) completion:nil];
     } onLiveChange:^(NSInteger value) {
         // 实时更新电池图标上的标记线
         NSInteger adjustedValue = value;
-        if (adjustedValue <= weakSelf.chargeBelow) {
-            adjustedValue = weakSelf.chargeBelow + 5;
+        BOOL enforceEdge = (weakSelf.currentChargeMode == 1);
+        NSInteger aboveValue = weakSelf.chargeAbove;
+        UISlider *aboveSlider = [weakSelf sliderForTag:201];
+        if (aboveSlider) {
+            aboveValue = (NSInteger)roundf(aboveSlider.value);
         }
-        weakSelf.batteryStatus.chargeAbove = adjustedValue;
+        if (enforceEdge && adjustedValue >= aboveValue) {
+            adjustedValue = aboveValue - 1;
+            [weakSelf updateSliderValue:weakSelf.chargeBelowRow value:adjustedValue];
+            [weakSelf updateSliderLabel:weakSelf.chargeBelowRow value:adjustedValue suffix:@"%"];
+        }
+        weakSelf.batteryStatus.chargeBelow = adjustedValue;
     }];
     
     [self.mainStack addArrangedSubview:self.limitCard];
@@ -2864,16 +2942,21 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     entry.translatesAutoresizingMaskIntoConstraints = NO;
     entry.layer.cornerRadius = 12;
     entry.clipsToBounds = YES;
+    entry.userInteractionEnabled = YES;
+    entry.accessibilityTraits = UIAccessibilityTraitButton;
     [entry addTarget:self action:@selector(softwareSettingsTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self applyPressEffectToControl:entry];
     
     UIView *iconWrap = [[UIView alloc] init];
     iconWrap.translatesAutoresizingMaskIntoConstraints = NO;
+    iconWrap.userInteractionEnabled = NO;
     iconWrap.backgroundColor = [[UIColor systemBlueColor] colorWithAlphaComponent:0.15];
     iconWrap.layer.cornerRadius = 18;
     [entry addSubview:iconWrap];
     
     UIImageView *iconView = [[UIImageView alloc] init];
     iconView.translatesAutoresizingMaskIntoConstraints = NO;
+    iconView.userInteractionEnabled = NO;
     UIImageSymbolConfiguration *iconConfig = [UIImageSymbolConfiguration configurationWithPointSize:18 weight:UIImageSymbolWeightSemibold];
     iconView.image = CLSymbolImage(@"gearshape.2.fill", iconConfig);
     iconView.tintColor = [UIColor systemBlueColor];
@@ -2881,24 +2964,28 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     
     UILabel *titleLabel = [[UILabel alloc] init];
     titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    titleLabel.userInteractionEnabled = NO;
     titleLabel.text = CLL(@"软件设置");
     titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
     titleLabel.textColor = [UIColor labelColor];
     
     UILabel *subtitleLabel = [[UILabel alloc] init];
     subtitleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    subtitleLabel.userInteractionEnabled = NO;
     subtitleLabel.text = CLL(@"刷新频率 / 语言 / 外观 / 配置");
     subtitleLabel.font = [UIFont systemFontOfSize:12];
     subtitleLabel.textColor = [UIColor secondaryLabelColor];
     
     UIStackView *textStack = [[UIStackView alloc] initWithArrangedSubviews:@[titleLabel, subtitleLabel]];
     textStack.translatesAutoresizingMaskIntoConstraints = NO;
+    textStack.userInteractionEnabled = NO;
     textStack.axis = UILayoutConstraintAxisVertical;
-    textStack.spacing = 2;
+    textStack.spacing = 3;
     [entry addSubview:textStack];
     
     UIImageView *chevron = [[UIImageView alloc] init];
     chevron.translatesAutoresizingMaskIntoConstraints = NO;
+    chevron.userInteractionEnabled = NO;
     UIImageSymbolConfiguration *chevConfig = [UIImageSymbolConfiguration configurationWithPointSize:14 weight:UIFontWeightSemibold];
     chevron.image = CLSymbolImage(@"chevron.right", chevConfig);
     chevron.tintColor = [UIColor tertiaryLabelColor];
@@ -2930,16 +3017,21 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     entry.translatesAutoresizingMaskIntoConstraints = NO;
     entry.layer.cornerRadius = 12;
     entry.clipsToBounds = YES;
+    entry.userInteractionEnabled = YES;
+    entry.accessibilityTraits = UIAccessibilityTraitButton;
     [entry addTarget:self action:@selector(historyTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self applyPressEffectToControl:entry];
     
     UIView *iconWrap = [[UIView alloc] init];
     iconWrap.translatesAutoresizingMaskIntoConstraints = NO;
+    iconWrap.userInteractionEnabled = NO;
     iconWrap.backgroundColor = [[UIColor systemTealColor] colorWithAlphaComponent:0.15];
     iconWrap.layer.cornerRadius = 18;
     [entry addSubview:iconWrap];
     
     UIImageView *iconView = [[UIImageView alloc] init];
     iconView.translatesAutoresizingMaskIntoConstraints = NO;
+    iconView.userInteractionEnabled = NO;
     UIImageSymbolConfiguration *iconConfig = [UIImageSymbolConfiguration configurationWithPointSize:18 weight:UIImageSymbolWeightSemibold];
     iconView.image = CLSymbolImage(@"chart.line.uptrend.xyaxis", iconConfig);
     iconView.tintColor = [UIColor systemTealColor];
@@ -2947,24 +3039,28 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     
     UILabel *titleLabel = [[UILabel alloc] init];
     titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    titleLabel.userInteractionEnabled = NO;
     titleLabel.text = CLL(@"历史统计");
     titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
     titleLabel.textColor = [UIColor labelColor];
     
     UILabel *subtitleLabel = [[UILabel alloc] init];
     subtitleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    subtitleLabel.userInteractionEnabled = NO;
     subtitleLabel.text = CLL(@"5分钟/小时/天/月趋势图表");
     subtitleLabel.font = [UIFont systemFontOfSize:12];
     subtitleLabel.textColor = [UIColor secondaryLabelColor];
     
     UIStackView *textStack = [[UIStackView alloc] initWithArrangedSubviews:@[titleLabel, subtitleLabel]];
     textStack.translatesAutoresizingMaskIntoConstraints = NO;
+    textStack.userInteractionEnabled = NO;
     textStack.axis = UILayoutConstraintAxisVertical;
-    textStack.spacing = 2;
+    textStack.spacing = 3;
     [entry addSubview:textStack];
     
     UIImageView *chevron = [[UIImageView alloc] init];
     chevron.translatesAutoresizingMaskIntoConstraints = NO;
+    chevron.userInteractionEnabled = NO;
     UIImageSymbolConfiguration *chevConfig = [UIImageSymbolConfiguration configurationWithPointSize:14 weight:UIImageSymbolWeightSemibold];
     chevron.image = CLSymbolImage(@"chevron.right", chevConfig);
     chevron.tintColor = [UIColor tertiaryLabelColor];
@@ -3002,16 +3098,21 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     entry.translatesAutoresizingMaskIntoConstraints = NO;
     entry.layer.cornerRadius = 12;
     entry.clipsToBounds = YES;
+    entry.userInteractionEnabled = YES;
+    entry.accessibilityTraits = UIAccessibilityTraitButton;
     [entry addTarget:self action:@selector(advancedTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self applyPressEffectToControl:entry];
     
     UIView *iconWrap = [[UIView alloc] init];
     iconWrap.translatesAutoresizingMaskIntoConstraints = NO;
+    iconWrap.userInteractionEnabled = NO;
     iconWrap.backgroundColor = [[UIColor systemOrangeColor] colorWithAlphaComponent:0.15];
     iconWrap.layer.cornerRadius = 18;
     [entry addSubview:iconWrap];
     
     UIImageView *iconView = [[UIImageView alloc] init];
     iconView.translatesAutoresizingMaskIntoConstraints = NO;
+    iconView.userInteractionEnabled = NO;
     UIImageSymbolConfiguration *iconConfig = [UIImageSymbolConfiguration configurationWithPointSize:18 weight:UIFontWeightSemibold];
     iconView.image = CLSymbolImage(@"slider.horizontal.3", iconConfig);
     iconView.tintColor = [UIColor systemOrangeColor];
@@ -3019,24 +3120,28 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     
     UILabel *titleLabel = [[UILabel alloc] init];
     titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    titleLabel.userInteractionEnabled = NO;
     titleLabel.text = CLL(@"充电高级");
     titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
     titleLabel.textColor = [UIColor labelColor];
     
     UILabel *subtitleLabel = [[UILabel alloc] init];
     subtitleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    subtitleLabel.userInteractionEnabled = NO;
     subtitleLabel.text = CLL(@"停充 / 限流 / 高温模拟");
     subtitleLabel.font = [UIFont systemFontOfSize:12];
     subtitleLabel.textColor = [UIColor secondaryLabelColor];
     
     UIStackView *textStack = [[UIStackView alloc] initWithArrangedSubviews:@[titleLabel, subtitleLabel]];
     textStack.translatesAutoresizingMaskIntoConstraints = NO;
+    textStack.userInteractionEnabled = NO;
     textStack.axis = UILayoutConstraintAxisVertical;
-    textStack.spacing = 2;
+    textStack.spacing = 3;
     [entry addSubview:textStack];
     
     UIImageView *chevron = [[UIImageView alloc] init];
     chevron.translatesAutoresizingMaskIntoConstraints = NO;
+    chevron.userInteractionEnabled = NO;
     UIImageSymbolConfiguration *chevConfig = [UIImageSymbolConfiguration configurationWithPointSize:14 weight:UIFontWeightSemibold];
     chevron.image = CLSymbolImage(@"chevron.right", chevConfig);
     chevron.tintColor = [UIColor tertiaryLabelColor];
@@ -3070,6 +3175,46 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     mockLabel.textAlignment = NSTextAlignmentCenter;
     [self.mainStack addArrangedSubview:mockLabel];
 #endif
+}
+
+#pragma mark - Slider Constraint
+
+- (UISlider *)sliderForTag:(NSInteger)tag {
+    for (UIView *row in self.limitCard.contentStack.arrangedSubviews) {
+        UIView *maybeSlider = [row viewWithTag:tag];
+        if ([maybeSlider isKindOfClass:[UISlider class]]) {
+            return (UISlider *)maybeSlider;
+        }
+    }
+    return nil;
+}
+
+- (NSInteger)normalizedChargeValueForSlider:(UISlider *)slider value:(NSInteger)value {
+    BOOL enforceEdge = (self.currentChargeMode == 1);
+    if (!enforceEdge) {
+        return value;
+    }
+    if (slider.tag == 201) { // stop charge
+        NSInteger belowValue = self.chargeBelow;
+        UISlider *belowSlider = [self sliderForTag:200];
+        if (belowSlider) {
+            belowValue = (NSInteger)roundf(belowSlider.value);
+        }
+        if (value <= belowValue) {
+            return belowValue + 1;
+        }
+    }
+    if (slider.tag == 200) { // start charge
+        NSInteger aboveValue = self.chargeAbove;
+        UISlider *aboveSlider = [self sliderForTag:201];
+        if (aboveSlider) {
+            aboveValue = (NSInteger)roundf(aboveSlider.value);
+        }
+        if (value >= aboveValue) {
+            return aboveValue - 1;
+        }
+    }
+    return value;
 }
 
 #pragma mark - Navigation Actions
@@ -3116,6 +3261,29 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
         UIViewController *vc = [[vcClass alloc] init];
         [self.navigationController pushViewController:vc animated:YES];
     }
+}
+
+#pragma mark - Touch Feedback
+
+- (void)applyPressEffectToControl:(UIControl *)control {
+    [control addTarget:self action:@selector(entryTouchDown:) forControlEvents:UIControlEventTouchDown];
+    [control addTarget:self action:@selector(entryTouchUp:) forControlEvents:UIControlEventTouchUpInside];
+    [control addTarget:self action:@selector(entryTouchUp:) forControlEvents:UIControlEventTouchUpOutside];
+    [control addTarget:self action:@selector(entryTouchUp:) forControlEvents:UIControlEventTouchCancel];
+}
+
+- (void)entryTouchDown:(UIControl *)sender {
+    [UIView animateWithDuration:0.12 animations:^{
+        sender.transform = CGAffineTransformMakeScale(0.98, 0.98);
+        sender.alpha = 0.88;
+    }];
+}
+
+- (void)entryTouchUp:(UIControl *)sender {
+    [UIView animateWithDuration:0.16 animations:^{
+        sender.transform = CGAffineTransformIdentity;
+        sender.alpha = 1.0;
+    }];
 }
 
 - (void)softwareSettingsTapped {
@@ -3175,6 +3343,7 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     }
 }
 
+
 - (void)updateCardValue:(CLGlassCard *)card title:(NSString *)title value:(NSString *)value {
     NSInteger tag = [title hash];
     for (UIView *row in card.contentStack.arrangedSubviews) {
@@ -3225,14 +3394,28 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     [self updateChargeBelowVisibility];
     
     // 更新充电阈值
-    self.chargeBelow = manager.chargeBelow;
-    self.chargeAbove = manager.chargeAbove;
-    [self updateSliderValue:self.chargeBelowRow value:manager.chargeBelow];
-    [self updateSliderValue:self.chargeAboveRow value:manager.chargeAbove];
-    [self updateSliderLabel:self.chargeBelowRow value:manager.chargeBelow suffix:@"%"];
-    [self updateSliderLabel:self.chargeAboveRow value:manager.chargeAbove suffix:@"%"];
-    self.batteryStatus.chargeBelow = manager.chargeBelow;
-    self.batteryStatus.chargeAbove = manager.chargeAbove;
+    NSInteger chargeBelow = manager.chargeBelow;
+    NSInteger chargeAbove = manager.chargeAbove;
+    if (self.currentChargeMode == 1) { // 边缘触发：开始充电必须小于停止充电
+        if (chargeBelow >= chargeAbove) {
+            chargeBelow = MAX(10, chargeAbove - 5);
+            if (chargeBelow >= chargeAbove) {
+                chargeAbove = MIN(100, chargeBelow + 5);
+            }
+            [[CLAPIClient shared] setConfigWithKey:@"charge_below" value:@(chargeBelow) completion:nil];
+            [[CLAPIClient shared] setConfigWithKey:@"charge_above" value:@(chargeAbove) completion:nil];
+            manager.chargeBelow = chargeBelow;
+            manager.chargeAbove = chargeAbove;
+        }
+    }
+    self.chargeBelow = chargeBelow;
+    self.chargeAbove = chargeAbove;
+    [self updateSliderValue:self.chargeBelowRow value:chargeBelow];
+    [self updateSliderValue:self.chargeAboveRow value:chargeAbove];
+    [self updateSliderLabel:self.chargeBelowRow value:chargeBelow suffix:@"%"];
+    [self updateSliderLabel:self.chargeAboveRow value:chargeAbove suffix:@"%"];
+    self.batteryStatus.chargeBelow = chargeBelow;
+    self.batteryStatus.chargeAbove = chargeAbove;
     
     // 更新温度控制卡片
     [self updateSwitchInCard:self.tempCard tag:250 value:manager.tempControlEnabled];
