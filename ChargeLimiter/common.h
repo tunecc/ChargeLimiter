@@ -28,9 +28,12 @@
 #define FLOAT_HEIGHT    60
 #define log_prefix      @"ChargeLimiterLogger"
 
-#define LOG_PATH        "/var/root/aldente.log"
-#define CONF_PATH       "/var/root/aldente.conf"
-#define DB_PATH         "/var/root/aldente.db"
+#define LOG_FILENAME        "aldente.log"
+#define CONF_FILENAME       "aldente.conf"
+#define DB_FILENAME         "aldente.db"
+
+#define LEGACY_LOG_PATH     "/var/root/aldente.log"
+#define LEGACY_CONF_PATH    "/var/root/aldente.conf"
+#define LEGACY_DB_PATH      "/var/root/aldente.db"
 
 #endif // common_h
-

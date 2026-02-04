@@ -1,7 +1,325 @@
 #include "utils.h"
+#import "CLLocalization.h"
 #include <sys/utsname.h>
 #include <sys/sysctl.h>
 #include <notify.h>
+#import <objc/message.h>
+
+static NSString* g_appDocumentsPath = nil;
+static NSString* g_logPath = nil;
+static NSString* g_confPath = nil;
+static NSString* g_dbPath = nil;
+
+static BOOL isValidAppDocumentsPath(NSString* path) {
+    if (path.length == 0) {
+        return NO;
+    }
+    if ([path hasPrefix:@"/var/mobile/Containers/Data/Application/"]) {
+        return YES;
+    }
+    if ([path hasPrefix:@"/private/var/mobile/Containers/Data/Application/"]) {
+        return YES;
+    }
+    if ([path hasPrefix:@"/var/jb/var/mobile/Containers/Data/Application/"]) {
+        return YES;
+    }
+    if ([path hasPrefix:@"/private/var/jb/var/mobile/Containers/Data/Application/"]) {
+        return YES;
+    }
+    if ([path hasPrefix:@"/var/jb/private/var/mobile/Containers/Data/Application/"]) {
+        return YES;
+    }
+    return NO;
+}
+
+static NSURL* getContainerURLFromMCM(id container) {
+    if (!container) {
+        return nil;
+    }
+    if ([container respondsToSelector:@selector(url)]) {
+        return ((NSURL*(*)(id, SEL))objc_msgSend)(container, @selector(url));
+    }
+    if ([container respondsToSelector:@selector(containerURL)]) {
+        return ((NSURL*(*)(id, SEL))objc_msgSend)(container, @selector(containerURL));
+    }
+    return nil;
+}
+
+static NSURL* resolveMCMContainerURL(NSString* bid) {
+    if (bid.length == 0) {
+        return nil;
+    }
+    Class dataCls = objc_getClass("MCMAppDataContainer");
+    if (dataCls) {
+        SEL selCreate = @selector(containerWithIdentifier:createIfNecessary:error:);
+        if ([dataCls respondsToSelector:selCreate]) {
+            NSError* err = nil;
+            id container = ((id(*)(id, SEL, NSString*, BOOL, NSError**))objc_msgSend)(dataCls, selCreate, bid, YES, &err);
+            NSURL* url = getContainerURLFromMCM(container);
+            if (url.path.length > 0) {
+                return url;
+            }
+        }
+        SEL selGet = @selector(containerWithIdentifier:error:);
+        if ([dataCls respondsToSelector:selGet]) {
+            NSError* err = nil;
+            id container = ((id(*)(id, SEL, NSString*, NSError**))objc_msgSend)(dataCls, selGet, bid, &err);
+            NSURL* url = getContainerURLFromMCM(container);
+            if (url.path.length > 0) {
+                return url;
+            }
+        }
+    }
+    return nil;
+}
+
+static NSString* resolveDocumentsByScanning(NSString* bid) {
+    if (bid.length == 0) {
+        return nil;
+    }
+    NSArray<NSString*>* bases = @[
+        @"/var/mobile/Containers/Data/Application",
+        @"/private/var/mobile/Containers/Data/Application",
+        @"/var/jb/var/mobile/Containers/Data/Application",
+        @"/private/var/jb/var/mobile/Containers/Data/Application",
+        @"/var/jb/private/var/mobile/Containers/Data/Application"
+    ];
+    for (NSString* base in bases) {
+        NSError* error = nil;
+        NSArray* containers = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:base error:&error];
+        if (!containers) {
+            continue;
+        }
+        for (NSString* container in containers) {
+            NSString* containerPath = [base stringByAppendingPathComponent:container];
+            NSString* metaPath = [containerPath stringByAppendingPathComponent:@".com.apple.mobile_container_manager.metadata.plist"];
+            NSDictionary* meta = [NSDictionary dictionaryWithContentsOfFile:metaPath];
+            if (![meta isKindOfClass:[NSDictionary class]]) {
+                continue;
+            }
+            NSString* idA = meta[@"MCMMetadataIdentifier"];
+            NSString* idB = meta[@"MCMMetadataBundleIdentifier"];
+            NSString* idC = meta[@"MCMMetadataBundleID"];
+            if ([idA isEqualToString:bid] || [idB isEqualToString:bid] || [idC isEqualToString:bid]) {
+                return [containerPath stringByAppendingPathComponent:@"Documents"];
+            }
+        }
+    }
+    return nil;
+}
+
+static NSString* resolveAppBundleIdentifier() {
+    NSString* bid = NSBundle.mainBundle.bundleIdentifier;
+    if (bid.length == 0) {
+        return @"com.chargelimiter.mod";
+    }
+    if ([bid containsString:@"ChargeLimiterDaemon"]) {
+        NSString* fixed = [bid stringByReplacingOccurrencesOfString:@"ChargeLimiterDaemon" withString:@"ChargeLimiter"];
+        if (fixed.length > 0) {
+            return fixed;
+        }
+    }
+    return bid;
+}
+
+static NSString* resolveAppDocumentsPath() {
+    NSString* docPath = nil;
+    NSString* bid = resolveAppBundleIdentifier();
+    if (bid.length > 0) {
+        Class proxyCls = objc_getClass("LSApplicationProxy");
+        if (proxyCls && [proxyCls respondsToSelector:@selector(applicationProxyForIdentifier:)]) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+            id proxy = [proxyCls performSelector:@selector(applicationProxyForIdentifier:) withObject:bid];
+#pragma clang diagnostic pop
+            if (proxy && [proxy respondsToSelector:@selector(dataContainerURL)]) {
+                NSURL* url = ((LSApplicationProxy*)proxy).dataContainerURL;
+                if (url.path.length > 0) {
+                    docPath = [url.path stringByAppendingPathComponent:@"Documents"];
+                }
+            }
+        }
+    }
+    if (isValidAppDocumentsPath(docPath)) {
+        return docPath;
+    }
+    NSURL* mcmURL = resolveMCMContainerURL(bid);
+    if (mcmURL.path.length > 0) {
+        docPath = [mcmURL.path stringByAppendingPathComponent:@"Documents"];
+        if (isValidAppDocumentsPath(docPath)) {
+            [[NSFileManager defaultManager] createDirectoryAtPath:docPath withIntermediateDirectories:YES attributes:nil error:nil];
+            return docPath;
+        }
+    }
+    NSString* scanPath = resolveDocumentsByScanning(bid);
+    if (isValidAppDocumentsPath(scanPath)) {
+        return scanPath;
+    }
+    NSString* fallback = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    if (isValidAppDocumentsPath(fallback)) {
+        return fallback;
+    }
+    return nil;
+}
+
+static NSString* resolveJbRootFromSelfExe() {
+    NSString* exe = getSelfExePath();
+    if (exe.length == 0) {
+        return nil;
+    }
+    NSRange marker = [exe rangeOfString:@"/.jbroot-"];
+    if (marker.location == NSNotFound) {
+        return nil;
+    }
+    NSUInteger start = marker.location + 1;
+    NSRange tail = [exe rangeOfString:@"/" options:0 range:NSMakeRange(start, exe.length - start)];
+    if (tail.location == NSNotFound) {
+        return nil;
+    }
+    return [exe substringToIndex:tail.location];
+}
+
+static NSString* resolveFixedConfDir() {
+    int jbtype = getJBType();
+    if (jbtype == JBTYPE_TROLLSTORE || jbtype == JBTYPE_UNKNOWN) {
+        return nil;
+    }
+    if (jbtype == JBTYPE_ROOTHIDE) {
+        NSString* jbroot = resolveJbRootFromSelfExe();
+        if (jbroot.length > 0) {
+            return [jbroot stringByAppendingPathComponent:@"var/mobile/Library/Preferences"];
+        }
+        return nil;
+    }
+    if (jbtype == JBTYPE_ROOTLESS) {
+        return @"/var/jb/var/mobile/Library/Preferences";
+    }
+    return @"/var/mobile/Library/Preferences";
+}
+
+static NSString* appContainerRootFromDocuments(NSString* documentsPath) {
+    if (documentsPath.length == 0) {
+        return nil;
+    }
+    NSString* last = documentsPath.lastPathComponent;
+    if ([last isEqualToString:@"Documents"]) {
+        return [documentsPath stringByDeletingLastPathComponent];
+    }
+    return documentsPath;
+}
+
+static NSString* resolveAppLibraryPreferencesPath() {
+    NSString* doc = resolveAppDocumentsPath();
+    if (doc.length == 0) {
+        return nil;
+    }
+    NSString* root = appContainerRootFromDocuments(doc);
+    if (root.length == 0) {
+        return nil;
+    }
+    NSString* prefs = [root stringByAppendingPathComponent:@"Library/Preferences"];
+    if (isValidAppDocumentsPath([root stringByAppendingPathComponent:@"Documents"])) {
+        return prefs;
+    }
+    return nil;
+}
+
+static void migrateLegacyFileIfNeeded(NSString* newPath, NSString* legacyPath) {
+    if (newPath.length == 0 || legacyPath.length == 0) {
+        return;
+    }
+    NSFileManager* fm = [NSFileManager defaultManager];
+    if ([fm fileExistsAtPath:newPath]) {
+        return;
+    }
+    if (![fm fileExistsAtPath:legacyPath]) {
+        return;
+    }
+    NSString* dir = [newPath stringByDeletingLastPathComponent];
+    [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    NSError* err = nil;
+    if ([fm copyItemAtPath:legacyPath toPath:newPath error:&err]) {
+        [fm removeItemAtPath:legacyPath error:nil];
+    }
+}
+
+static void ensureAppPaths() {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSString* fixedDir = resolveFixedConfDir();
+        NSString* appDoc = resolveAppDocumentsPath();
+        NSString* appPrefs = resolveAppLibraryPreferencesPath();
+        NSString* targetDir = appDoc;
+        NSString* confDir = appDoc;
+        if (fixedDir.length > 0) {
+            targetDir = fixedDir;
+            confDir = fixedDir;
+        } else if (appPrefs.length > 0 && appDoc.length == 0) {
+            targetDir = appPrefs;
+            confDir = appPrefs;
+        }
+        if (targetDir.length == 0 || confDir.length == 0) {
+            NSLog(@"[CL] Failed to resolve config dir.");
+            return;
+        }
+        [[NSFileManager defaultManager] createDirectoryAtPath:targetDir withIntermediateDirectories:YES attributes:nil error:nil];
+        if (![targetDir isEqualToString:confDir]) {
+            [[NSFileManager defaultManager] createDirectoryAtPath:confDir withIntermediateDirectories:YES attributes:nil error:nil];
+        }
+        g_appDocumentsPath = targetDir;
+        g_logPath = [targetDir stringByAppendingPathComponent:@LOG_FILENAME];
+        g_confPath = [confDir stringByAppendingPathComponent:@CONF_FILENAME];
+        g_dbPath = [targetDir stringByAppendingPathComponent:@DB_FILENAME];
+        migrateLegacyFileIfNeeded(g_confPath, @LEGACY_CONF_PATH);
+        migrateLegacyFileIfNeeded(g_dbPath, @LEGACY_DB_PATH);
+        if (fixedDir.length > 0 && appDoc.length > 0 && ![appDoc isEqualToString:fixedDir]) {
+            NSString* appConf = [appDoc stringByAppendingPathComponent:@CONF_FILENAME];
+            NSString* appDb = [appDoc stringByAppendingPathComponent:@DB_FILENAME];
+            migrateLegacyFileIfNeeded(g_confPath, appConf);
+            migrateLegacyFileIfNeeded(g_dbPath, appDb);
+        }
+    });
+}
+
+NSString* getAppDocumentsPath() {
+    ensureAppPaths();
+    return g_appDocumentsPath;
+}
+
+extern "C" NSString* getAppDocumentsPath_C(void) {
+    return getAppDocumentsPath();
+}
+
+NSString* getLogPath() {
+    ensureAppPaths();
+    return g_logPath;
+}
+
+NSString* getConfPath() {
+    ensureAppPaths();
+    return g_confPath;
+}
+
+extern "C" NSString* getConfPath_C(void) {
+    return getConfPath();
+}
+
+NSString* getDbPath() {
+    ensureAppPaths();
+    return g_dbPath;
+}
+
+NSString* getConfDirPath() {
+    ensureAppPaths();
+    if (g_confPath.length == 0) {
+        return nil;
+    }
+    return [g_confPath stringByDeletingLastPathComponent];
+}
+
+extern "C" NSString* getConfDirPath_C(void) {
+    return getConfDirPath();
+}
 
 extern "C" {
 CFTypeRef MGCopyAnswer(CFStringRef str);
@@ -401,10 +719,14 @@ void NSFileLog(NSString* fmt, ...) {
     NSString* dateStr = [formatter stringFromDate:NSDate.date];
     NSString* content = [[NSString alloc] initWithFormat:fmt arguments:va];
     content = [NSString stringWithFormat:@"%@ %@\n", dateStr, content];
-    NSFileHandle* handle = [NSFileHandle fileHandleForWritingAtPath:@LOG_PATH];
+    NSString* logPath = getLogPath();
+    if (logPath.length == 0) {
+        return;
+    }
+    NSFileHandle* handle = [NSFileHandle fileHandleForWritingAtPath:logPath];
     if (handle == nil) {
-        [[NSFileManager defaultManager] createFileAtPath:@LOG_PATH contents:nil attributes:nil];
-        handle = [NSFileHandle fileHandleForWritingAtPath:@LOG_PATH];
+        [[NSFileManager defaultManager] createFileAtPath:logPath contents:nil attributes:nil];
+        handle = [NSFileHandle fileHandleForWritingAtPath:logPath];
     }
     [handle seekToEndOfFile];
     [handle writeData:[content dataUsingEncoding:NSUTF8StringEncoding]];
@@ -886,29 +1208,298 @@ void setSmartChargeEnable(BOOL flag) {
 }
 
 /* ---------------- App ---------------- */
-static NSMutableDictionary* cache_kv = nil;
+@interface CLSettingsStore : NSObject
+@property (nonatomic, strong) NSMutableDictionary* preferences;
+@property (nonatomic, strong) NSMutableDictionary* cachedChanges;
+@property (nonatomic, assign) BOOL isDirty;
++ (instancetype)shared;
+- (id)readValueForKey:(NSString*)key defaultValue:(id)defaultValue;
+- (void)setValue:(id)value forKey:(NSString*)key;
+- (void)apply;
+@end
+
+@implementation CLSettingsStore
++ (instancetype)shared {
+    static CLSettingsStore* inst = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        inst = [CLSettingsStore new];
+    });
+    return inst;
+}
+
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        _preferences = [NSMutableDictionary new];
+        _cachedChanges = [NSMutableDictionary new];
+        _isDirty = NO;
+        NSString* confPath = getConfPath();
+        if (confPath.length > 0) {
+            NSDictionary* fileDict = [NSDictionary dictionaryWithContentsOfFile:confPath];
+            if ([fileDict isKindOfClass:[NSDictionary class]]) {
+                [_preferences addEntriesFromDictionary:fileDict];
+            }
+        }
+    }
+    return self;
+}
+
+- (id)readValueForKey:(NSString*)key defaultValue:(id)defaultValue {
+    if (key.length == 0) {
+        return defaultValue;
+    }
+    id val = self.preferences[key];
+    return val ?: defaultValue;
+}
+
+- (BOOL)readBoolForKey:(NSString*)key defaultValue:(BOOL)defaultValue {
+    id val = [self readValueForKey:key defaultValue:nil];
+    if ([val isKindOfClass:[NSNumber class]]) {
+        return [val boolValue];
+    }
+    if ([val isKindOfClass:[NSString class]]) {
+        return [val boolValue];
+    }
+    return defaultValue;
+}
+
+- (int)readIntForKey:(NSString*)key defaultValue:(int)defaultValue {
+    id val = [self readValueForKey:key defaultValue:nil];
+    if ([val isKindOfClass:[NSNumber class]]) {
+        return [val intValue];
+    }
+    if ([val isKindOfClass:[NSString class]]) {
+        return [val intValue];
+    }
+    return defaultValue;
+}
+
+- (float)readFloatForKey:(NSString*)key defaultValue:(float)defaultValue {
+    id val = [self readValueForKey:key defaultValue:nil];
+    if ([val isKindOfClass:[NSNumber class]]) {
+        return [val floatValue];
+    }
+    if ([val isKindOfClass:[NSString class]]) {
+        return [val floatValue];
+    }
+    return defaultValue;
+}
+
+- (double)readDoubleForKey:(NSString*)key defaultValue:(double)defaultValue {
+    id val = [self readValueForKey:key defaultValue:nil];
+    if ([val isKindOfClass:[NSNumber class]]) {
+        return [val doubleValue];
+    }
+    if ([val isKindOfClass:[NSString class]]) {
+        return [val doubleValue];
+    }
+    return defaultValue;
+}
+
+- (NSString*)readStringForKey:(NSString*)key defaultValue:(NSString*)defaultValue {
+    id val = [self readValueForKey:key defaultValue:nil];
+    if ([val isKindOfClass:[NSString class]]) {
+        return (NSString*)val;
+    }
+    if ([val isKindOfClass:[NSNumber class]]) {
+        return [(NSNumber*)val stringValue];
+    }
+    return defaultValue;
+}
+
+- (NSArray*)readArrayForKey:(NSString*)key defaultValue:(NSArray*)defaultValue {
+    id val = [self readValueForKey:key defaultValue:nil];
+    if ([val isKindOfClass:[NSArray class]]) {
+        return (NSArray*)val;
+    }
+    return defaultValue;
+}
+
+- (NSDictionary*)readDictForKey:(NSString*)key defaultValue:(NSDictionary*)defaultValue {
+    id val = [self readValueForKey:key defaultValue:nil];
+    if ([val isKindOfClass:[NSDictionary class]]) {
+        return (NSDictionary*)val;
+    }
+    return defaultValue;
+}
+
+- (void)setValue:(id)value forKey:(NSString*)key {
+    if (key.length == 0) {
+        return;
+    }
+    if (value) {
+        self.cachedChanges[key] = value;
+        self.preferences[key] = value;
+    } else {
+        [self.cachedChanges removeObjectForKey:key];
+        [self.preferences removeObjectForKey:key];
+    }
+    self.isDirty = YES;
+}
+
+- (void)apply {
+    if (!self.isDirty) {
+        return;
+    }
+    NSString* confPath = getConfPath();
+    if (confPath.length == 0) {
+        return;
+    }
+    [self.preferences writeToFile:confPath atomically:YES];
+    [self.cachedChanges removeAllObjects];
+    self.isDirty = NO;
+}
+@end
+
 id getlocalKV(NSString* key) {
-    if (cache_kv == nil) {
-        cache_kv = [NSMutableDictionary dictionaryWithContentsOfFile:@CONF_PATH];
-    }
-    if (cache_kv == nil) {
-        return nil;
-    }
-    return cache_kv[key];
+    return [[CLSettingsStore shared] readValueForKey:key defaultValue:nil];
 }
 
 void setlocalKV(NSString* key, id val) {
-    if (cache_kv == nil) {
-        cache_kv = [NSMutableDictionary dictionaryWithContentsOfFile:@CONF_PATH];
-        if (cache_kv == nil) {
-            cache_kv = [NSMutableDictionary new];
-        }
-    }
-    cache_kv[key] = val;
-    [cache_kv writeToFile:@CONF_PATH atomically:YES];
+    CLSettingsStore* store = [CLSettingsStore shared];
+    [store setValue:val forKey:key];
+    [store apply];
 }
+
 NSDictionary* getAllKV() {
-    return cache_kv;
+    return [CLSettingsStore shared].preferences;
 }
 /* ---------------- App ---------------- */
 
+BOOL getLocalBool(NSString* key, BOOL defaultValue) {
+    return [[CLSettingsStore shared] readBoolForKey:key defaultValue:defaultValue];
+}
+
+int getLocalInt(NSString* key, int defaultValue) {
+    return [[CLSettingsStore shared] readIntForKey:key defaultValue:defaultValue];
+}
+
+float getLocalFloat(NSString* key, float defaultValue) {
+    return [[CLSettingsStore shared] readFloatForKey:key defaultValue:defaultValue];
+}
+
+double getLocalDouble(NSString* key, double defaultValue) {
+    return [[CLSettingsStore shared] readDoubleForKey:key defaultValue:defaultValue];
+}
+
+NSString* getLocalString(NSString* key, NSString* defaultValue) {
+    return [[CLSettingsStore shared] readStringForKey:key defaultValue:defaultValue];
+}
+
+NSArray* getLocalArray(NSString* key, NSArray* defaultValue) {
+    return [[CLSettingsStore shared] readArrayForKey:key defaultValue:defaultValue];
+}
+
+NSDictionary* getLocalDict(NSString* key, NSDictionary* defaultValue) {
+    return [[CLSettingsStore shared] readDictForKey:key defaultValue:defaultValue];
+}
+
+void setLocalBool(NSString* key, BOOL value) {
+    setlocalKV(key, @(value));
+}
+
+void setLocalInt(NSString* key, int value) {
+    setlocalKV(key, @(value));
+}
+
+void setLocalFloat(NSString* key, float value) {
+    setlocalKV(key, @(value));
+}
+
+void setLocalDouble(NSString* key, double value) {
+    setlocalKV(key, @(value));
+}
+
+void setLocalString(NSString* key, NSString* value) {
+    setlocalKV(key, value);
+}
+
+void setLocalArray(NSString* key, NSArray* value) {
+    setlocalKV(key, value);
+}
+
+void setLocalDict(NSString* key, NSDictionary* value) {
+    setlocalKV(key, value);
+}
+
+#pragma mark - Localization
+
+NSString * const CLAppLanguageDidChangeNotification = @"CLAppLanguageDidChangeNotification";
+
+static NSBundle *gLocalizationBundle = nil;
+
+static NSBundle *CLLocalizationBundle(void) {
+    if (!gLocalizationBundle) {
+        gLocalizationBundle = [NSBundle mainBundle];
+    }
+    return gLocalizationBundle;
+}
+
+static void CLSetLocalizationBundle(NSString *languageCode) {
+    if (!languageCode || languageCode.length == 0) {
+        gLocalizationBundle = [NSBundle mainBundle];
+        return;
+    }
+    NSString *path = [[NSBundle mainBundle] pathForResource:languageCode ofType:@"lproj"];
+    if (path.length > 0) {
+        gLocalizationBundle = [NSBundle bundleWithPath:path];
+    } else {
+        gLocalizationBundle = [NSBundle mainBundle];
+    }
+}
+
+static void CLSetAppleLanguages(NSArray<NSString *> *languages) {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    if (languages.count > 0) {
+        [defaults setObject:languages forKey:@"AppleLanguages"];
+    } else {
+        [defaults removeObjectForKey:@"AppleLanguages"];
+    }
+    [defaults synchronize];
+}
+
+NSString *CLLocalizedString(NSString *key) {
+    return [CLLocalizationBundle() localizedStringForKey:key value:key table:nil];
+}
+
+CLAppLanguage CLGetAppLanguage(void) {
+    id raw = [[NSUserDefaults standardUserDefaults] objectForKey:@"AppLanguage"];
+    if ([raw isKindOfClass:[NSString class]]) {
+        NSString *str = (NSString *)raw;
+        if ([str isEqualToString:@"en"]) return CLAppLanguageEnglish;
+        if ([str isEqualToString:@"zh-Hans"]) return CLAppLanguageChineseSimplified;
+        return CLAppLanguageSystem;
+    }
+    NSInteger val = [[NSUserDefaults standardUserDefaults] integerForKey:@"AppLanguage"];
+    if (val < CLAppLanguageSystem || val > CLAppLanguageChineseSimplified) {
+        return CLAppLanguageSystem;
+    }
+    return (CLAppLanguage)val;
+}
+
+void CLApplyLanguageFromSettings(void) {
+    CLAppLanguage lang = CLGetAppLanguage();
+    switch (lang) {
+        case CLAppLanguageEnglish:
+            CLSetLocalizationBundle(@"en");
+            CLSetAppleLanguages(@[@"en"]);
+            break;
+        case CLAppLanguageChineseSimplified:
+            CLSetLocalizationBundle(@"zh-Hans");
+            CLSetAppleLanguages(@[@"zh-Hans"]);
+            break;
+        case CLAppLanguageSystem:
+        default:
+            CLSetLocalizationBundle(nil);
+            CLSetAppleLanguages(@[]);
+            break;
+    }
+}
+
+void CLSetAppLanguage(CLAppLanguage language) {
+    [[NSUserDefaults standardUserDefaults] setInteger:language forKey:@"AppLanguage"];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+    CLApplyLanguageFromSettings();
+    [[NSNotificationCenter defaultCenter] postNotificationName:CLAppLanguageDidChangeNotification object:nil];
+}

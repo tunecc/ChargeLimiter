@@ -5,7 +5,7 @@
 	<key>platform-application</key>
 	<true/>
 	<key>application-identifier</key>
-	<string>chaoge.ChargeLimiter</string>
+	<string>com.chargelimiter.mod</string>
 	<key>com.apple.private.memorystatus</key>
 	<true/>
 	<key>com.apple.private.MobileContainerManager.allowed</key>
@@ -68,7 +68,7 @@
 	<true/>
 	<key>com.apple.private.usernotifications.bundle-identifiers</key>
     <array>
-        <string>chaoge.ChargeLimiter</string>
+        <string>com.chargelimiter.mod</string>
     </array>
 	<key>com.apple.usernotification.proxy</key>
 	<true/>
