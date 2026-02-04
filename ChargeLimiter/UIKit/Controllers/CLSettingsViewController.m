@@ -2592,6 +2592,7 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
 @property (nonatomic, strong) CLGlassCard *softwareSettingsEntryCard;
 @property (nonatomic, strong) CLGlassCard *historyEntryCard;
 @property (nonatomic, strong) CLGlassCard *moreCard;
+@property (nonatomic, strong) UIButton *refreshButton;
 @property (nonatomic, assign) NSInteger chargeBelow;
 @property (nonatomic, assign) NSInteger chargeAbove;
 @property (nonatomic, assign) NSInteger currentChargeMode; // 0=插电即充, 1=边缘触发
@@ -2661,7 +2662,7 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     self.scrollView.showsVerticalScrollIndicator = NO;
     self.scrollView.alwaysBounceVertical = YES;
     [self.view addSubview:self.scrollView];
-    
+
     self.mainStack = [[UIStackView alloc] init];
     self.mainStack.axis = UILayoutConstraintAxisVertical;
     self.mainStack.spacing = 20;
@@ -2685,7 +2686,27 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     titleLabel.text = CLL(@"ChargeLimiter");
     titleLabel.font = [UIFont systemFontOfSize:28 weight:UIFontWeightBold];
     titleLabel.textColor = [UIColor labelColor];
-    [self.mainStack addArrangedSubview:titleLabel];
+
+    self.refreshButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    self.refreshButton.translatesAutoresizingMaskIntoConstraints = NO;
+    UIImageSymbolConfiguration *refreshConfig = [UIImageSymbolConfiguration configurationWithPointSize:16 weight:UIImageSymbolWeightSemibold];
+    [self.refreshButton setImage:CLSymbolImage(@"arrow.clockwise", refreshConfig) forState:UIControlStateNormal];
+    self.refreshButton.tintColor = [UIColor secondaryLabelColor];
+    self.refreshButton.accessibilityLabel = CLL(@"立即刷新");
+    [self.refreshButton addTarget:self action:@selector(refreshNowTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self.refreshButton.widthAnchor constraintEqualToConstant:28].active = YES;
+    [self.refreshButton.heightAnchor constraintEqualToConstant:28].active = YES;
+
+    UIView *titleSpacer = [[UIView alloc] init];
+    titleSpacer.translatesAutoresizingMaskIntoConstraints = NO;
+    [titleSpacer setContentHuggingPriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
+    [titleSpacer setContentCompressionResistancePriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
+
+    UIStackView *titleStack = [[UIStackView alloc] initWithArrangedSubviews:@[titleLabel, titleSpacer, self.refreshButton]];
+    titleStack.axis = UILayoutConstraintAxisHorizontal;
+    titleStack.alignment = UIStackViewAlignmentFirstBaseline;
+    titleStack.spacing = 12;
+    [self.mainStack addArrangedSubview:titleStack];
     
     // 标题下不再显示副标题
     
@@ -2695,6 +2716,7 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     [self.batteryStatus.heightAnchor constraintEqualToConstant:80].active = YES;
     [self.mainStack addArrangedSubview:self.batteryStatus];
     [self.mainStack setCustomSpacing:12 afterView:self.batteryStatus];
+    
     
     // 控制卡片
     [self setupControlCard];
@@ -3297,6 +3319,31 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
 - (void)historyTapped {
     CLHistoryViewController *vc = [[CLHistoryViewController alloc] init];
     [self.navigationController pushViewController:vc animated:YES];
+}
+
+#pragma mark - Refresh Now
+
+- (void)refreshNowTapped {
+    self.refreshButton.enabled = NO;
+    if (@available(iOS 10.0, *)) {
+        UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+        [feedback impactOccurred];
+    }
+    [UIView animateWithDuration:0.2 animations:^{
+        self.refreshButton.transform = CGAffineTransformMakeRotation((CGFloat)M_PI);
+    } completion:^(BOOL finished) {
+        self.refreshButton.transform = CGAffineTransformIdentity;
+    }];
+
+    CLAPIClient *api = [CLAPIClient shared];
+    [api applyNowWithCompletion:^(NSDictionary * _Nullable resp, NSError * _Nullable err) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.refreshButton.enabled = YES;
+        });
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [[CLBatteryManager shared] refreshAll];
+        });
+    }];
 }
 
 #pragma mark - Update UI
