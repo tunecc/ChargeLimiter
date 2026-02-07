@@ -32,8 +32,4 @@
 #define CONF_FILENAME       "aldente.conf"
 #define DB_FILENAME         "aldente.db"
 
-#define LEGACY_LOG_PATH     "/var/root/aldente.log"
-#define LEGACY_CONF_PATH    "/var/root/aldente.conf"
-#define LEGACY_DB_PATH      "/var/root/aldente.db"
-
 #endif // common_h

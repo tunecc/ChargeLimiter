@@ -511,7 +511,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "function on_pkg {\n    echo on_pkg\n}\nexport -f on_pkg\n\nfunction build_deb {\n    /opt/MonkeyDev/bin/md --xcbp\n}\n\nfunction build_tipa {\n    $PWD/md-trollstore\n}\n\n#build_tipa\nbuild_deb\n\n";
+			shellScript = "if [ \"${MonkeyDevBuildPackageOnAnyBuild:-NO}\" != \"YES\" ]; then\n    echo \"[ChargeLimiter] Skip MonkeyDev package phase\"\n    exit 0\nfi\n\nif [ -x /opt/MonkeyDev/bin/md ]; then\n    /opt/MonkeyDev/bin/md --xcbp || true\nfi\n";
 			showEnvVarsInLog = 0;
 		};
 		184EA9B32B7A373300D0981D /* ShellScript */ = {
@@ -529,7 +529,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "function build_deb {\n    echo cp -rfp ${CODESIGNING_FOLDER_PATH} ${PROJECT_DIR}/${PROJECT_NAME}/Package_rootless${INSTALL_PATH}/\n    cp -rfp ${CODESIGNING_FOLDER_PATH} ${PROJECT_DIR}/${PROJECT_NAME}/Package_rootless${INSTALL_PATH}/\n    /opt/MonkeyDev/bin/md --xcbp\n}\n\nbuild_deb\n";
+			shellScript = "if [ \"${MonkeyDevBuildPackageOnAnyBuild:-NO}\" != \"YES\" ]; then\n    echo \"[ChargeLimiter] Skip MonkeyDev package phase\"\n    exit 0\nfi\n\nDST=\"${PROJECT_DIR}/${PROJECT_NAME}/Package_rootless${INSTALL_PATH}/\"\nif [ -d \"$DST\" ]; then\n    cp -rfp \"${CODESIGNING_FOLDER_PATH}\" \"$DST\"\nfi\nif [ -x /opt/MonkeyDev/bin/md ]; then\n    /opt/MonkeyDev/bin/md --xcbp || true\nfi\n";
 		};
 		18C123C42C8C08B300FAAC6C /* ShellScript */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -546,7 +546,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "BIN_PATH=${TARGET_BUILD_DIR}/${EXECUTABLE_PATH}\nCODE_SIGN_ENTITLEMENTS=${PROJECT_DIR}/ChargeLimiter/ChargeLimiter.entitlements\nldid -S${CODE_SIGN_ENTITLEMENTS} ${BIN_PATH}\ncp -f ${BIN_PATH} ${TARGET_BUILD_DIR}/ChargeLimiter.app/ChargeLimiterDaemon # for trollstore\n\n";
+			shellScript = "BIN_PATH=${TARGET_BUILD_DIR}/${EXECUTABLE_PATH}\nCODE_SIGN_ENTITLEMENTS=${PROJECT_DIR}/${CODE_SIGN_ENTITLEMENTS}\nldid -S${CODE_SIGN_ENTITLEMENTS} ${BIN_PATH}\ncp -f ${BIN_PATH} ${TARGET_BUILD_DIR}/ChargeLimiter.app/ChargeLimiterDaemon # for trollstore\n\n";
 		};
 		18C123E02C8C08CB00FAAC6C /* ShellScript */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -563,7 +563,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "BIN_PATH=${TARGET_BUILD_DIR}/${EXECUTABLE_PATH}\nCODE_SIGN_ENTITLEMENTS=${PROJECT_DIR}/ChargeLimiter/ChargeLimiter.entitlements\nldid -S${CODE_SIGN_ENTITLEMENTS} ${BIN_PATH}\ncp -f ${BIN_PATH} ${TARGET_BUILD_DIR}/ChargeLimiter.app/ChargeLimiterDaemon\n\n";
+			shellScript = "BIN_PATH=${TARGET_BUILD_DIR}/${EXECUTABLE_PATH}\nCODE_SIGN_ENTITLEMENTS=${PROJECT_DIR}/${CODE_SIGN_ENTITLEMENTS}\nldid -S${CODE_SIGN_ENTITLEMENTS} ${BIN_PATH}\ncp -f ${BIN_PATH} ${TARGET_BUILD_DIR}/ChargeLimiter.app/ChargeLimiterDaemon\n\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -669,8 +669,9 @@
 					arm64,
 				);
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGNING_ALLOWED = NO;
-				CODE_SIGN_ENTITLEMENTS = ChargeLimiter/ChargeLimiter.entitlements;
+				CODE_SIGN_ENTITLEMENTS = ChargeLimiter/ChargeLimiter.app.entitlements;
 				CODE_SIGN_STYLE = Manual;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_BITCODE = NO;
@@ -688,7 +689,7 @@
 					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.9.3;
+				MARKETING_VERSION = 1.9.5;
 				MonkeyDevBuildPackageOnAnyBuild = YES;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = YES;
@@ -701,7 +702,10 @@
 				TARGETED_DEVICE_FAMILY = "1,2";
 				THEOS_PACKAGE_SCHEME = rootless;
 				TROLLSTORE_DEVICE_IP = 192.168.0.112;
-				VALID_ARCHS = arm64;
+				VALID_ARCHS = (
+					arm64,
+					arm64e,
+				);
 			};
 			name = Debug;
 		};
@@ -713,8 +717,9 @@
 					arm64,
 				);
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGNING_ALLOWED = NO;
-				CODE_SIGN_ENTITLEMENTS = ChargeLimiter/ChargeLimiter.entitlements;
+				CODE_SIGN_ENTITLEMENTS = ChargeLimiter/ChargeLimiter.app.entitlements;
 				CODE_SIGN_STYLE = Manual;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_BITCODE = NO;
@@ -732,7 +737,7 @@
 					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.9.3;
+				MARKETING_VERSION = 1.9.5;
 				MonkeyDevBuildPackageOnAnyBuild = YES;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = YES;
@@ -745,7 +750,10 @@
 				TARGETED_DEVICE_FAMILY = "1,2";
 				THEOS_PACKAGE_SCHEME = rootless;
 				TROLLSTORE_DEVICE_IP = 192.168.0.112;
-				VALID_ARCHS = arm64;
+				VALID_ARCHS = (
+					arm64,
+					arm64e,
+				);
 			};
 			name = Release;
 		};
@@ -811,7 +819,10 @@
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = NO;
 				SDKROOT = iphoneos;
-				VALID_ARCHS = arm64;
+				VALID_ARCHS = (
+					arm64,
+					arm64e,
+				);
 			};
 			name = Debug;
 		};
@@ -872,7 +883,10 @@
 				ONLY_ACTIVE_ARCH = NO;
 				SDKROOT = iphoneos;
 				VALIDATE_PRODUCT = YES;
-				VALID_ARCHS = arm64;
+				VALID_ARCHS = (
+					arm64,
+					arm64e,
+				);
 			};
 			name = Release;
 		};
@@ -884,8 +898,9 @@
 					arm64,
 				);
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGNING_ALLOWED = NO;
-				CODE_SIGN_ENTITLEMENTS = "${TARGET_NAME}/${TARGET_NAME}.entitlements";
+				CODE_SIGN_ENTITLEMENTS = ChargeLimiter/ChargeLimiter.app.entitlements;
 				CODE_SIGN_STYLE = Manual;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_BITCODE = NO;
@@ -903,13 +918,13 @@
 					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.9.3;
+				MARKETING_VERSION = 1.9.5;
 				MonkeyDevBuildPackageOnAnyBuild = YES;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = YES;
 				MonkeyDevPath = /opt/MonkeyDev;
 				MonkeyDevTheosPath = /opt/theos;
-				PRODUCT_BUNDLE_IDENTIFIER = "chaoge.${TARGET_NAME}";
+				PRODUCT_BUNDLE_IDENTIFIER = com.chargelimiter.mod;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -925,8 +940,9 @@
 					arm64,
 				);
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGNING_ALLOWED = NO;
-				CODE_SIGN_ENTITLEMENTS = "${TARGET_NAME}/${TARGET_NAME}.entitlements";
+				CODE_SIGN_ENTITLEMENTS = ChargeLimiter/ChargeLimiter.app.entitlements;
 				CODE_SIGN_STYLE = Manual;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_BITCODE = NO;
@@ -944,13 +960,13 @@
 					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.9.3;
+				MARKETING_VERSION = 1.9.5;
 				MonkeyDevBuildPackageOnAnyBuild = YES;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = YES;
 				MonkeyDevPath = /opt/MonkeyDev;
 				MonkeyDevTheosPath = /opt/theos;
-				PRODUCT_BUNDLE_IDENTIFIER = "chaoge.${TARGET_NAME}";
+				PRODUCT_BUNDLE_IDENTIFIER = com.chargelimiter.mod;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -966,6 +982,7 @@
 					arm64,
 				);
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGN_ENTITLEMENTS = "${TARGET_NAME}/${TARGET_NAME}.entitlements";
 				CODE_SIGN_STYLE = Manual;
@@ -988,7 +1005,7 @@
 					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.9.3;
+				MARKETING_VERSION = 1.9.5;
 				MonkeyDevBuildPackageOnAnyBuild = YES;
 				MonkeyDevDeviceIP = 192.168.1.12;
 				MonkeyDevInstallOnAnyBuild = YES;
@@ -1011,6 +1028,7 @@
 					arm64,
 				);
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGN_ENTITLEMENTS = "${TARGET_NAME}/${TARGET_NAME}.entitlements";
 				CODE_SIGN_STYLE = Manual;
@@ -1033,7 +1051,7 @@
 					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.9.3;
+				MARKETING_VERSION = 1.9.5;
 				MonkeyDevBuildPackageOnAnyBuild = YES;
 				MonkeyDevDeviceIP = 192.168.1.12;
 				MonkeyDevInstallOnAnyBuild = YES;
@@ -1056,6 +1074,7 @@
 					arm64,
 				);
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGN_ENTITLEMENTS = ChargeLimiter/ChargeLimiter.entitlements;
 				CODE_SIGN_STYLE = Manual;
@@ -1078,7 +1097,7 @@
 					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.9.3;
+				MARKETING_VERSION = 1.9.5;
 				MonkeyDevBuildPackageOnAnyBuild = YES;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = YES;
@@ -1091,7 +1110,10 @@
 				TARGETED_DEVICE_FAMILY = "1,2";
 				THEOS_PACKAGE_SCHEME = rootless;
 				TROLLSTORE_DEVICE_IP = 192.168.0.112;
-				VALID_ARCHS = arm64;
+				VALID_ARCHS = (
+					arm64,
+					arm64e,
+				);
 			};
 			name = Debug;
 		};
@@ -1103,6 +1125,7 @@
 					arm64,
 				);
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGN_ENTITLEMENTS = ChargeLimiter/ChargeLimiter.entitlements;
 				CODE_SIGN_STYLE = Manual;
@@ -1125,7 +1148,7 @@
 					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.9.3;
+				MARKETING_VERSION = 1.9.5;
 				MonkeyDevBuildPackageOnAnyBuild = YES;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = YES;
@@ -1138,7 +1161,10 @@
 				TARGETED_DEVICE_FAMILY = "1,2";
 				THEOS_PACKAGE_SCHEME = rootless;
 				TROLLSTORE_DEVICE_IP = 192.168.0.112;
-				VALID_ARCHS = arm64;
+				VALID_ARCHS = (
+					arm64,
+					arm64e,
+				);
 			};
 			name = Release;
 		};

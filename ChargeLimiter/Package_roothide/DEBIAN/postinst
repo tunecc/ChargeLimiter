@@ -1,13 +1,44 @@
-#!/bin/bash
+#!/bin/sh
 
-chown -R root:wheel /var/jb/Applications/ChargeLimiter.app
-chmod +s /var/jb/Applications/ChargeLimiter.app/ChargeLimiterDaemon
+APP_DIR="/var/jb/Applications/ChargeLimiter.app"
+DAEMON_PLIST="/var/jb/Library/LaunchDaemons/com.chargelimiter.mod.plist"
+
+chown -R root:wheel "$APP_DIR"
+chmod +s "$APP_DIR/ChargeLimiterDaemon"
 killall -9 ChargeLimiter ChargeLimiterDaemon 2>/dev/null
 
-chown root:wheel /var/jb/Library/LaunchDaemons/com.chargelimiter.mod.plist
-launchctl load /var/jb/Library/LaunchDaemons/com.chargelimiter.mod.plist 2>/dev/null
+chown root:wheel "$DAEMON_PLIST"
+launchctl bootout system "$DAEMON_PLIST" 2>/dev/null
+launchctl bootstrap system "$DAEMON_PLIST" 2>/dev/null || launchctl load "$DAEMON_PLIST" 2>/dev/null
 
-uicache -p /var/jb/Applications/ChargeLimiter.app
+# roothide only: warn when jbroot path cannot be resolved by command or symlink.
+resolve_jbroot_dir() {
+    for cmd in /usr/bin/jbroot /var/jb/usr/bin/jbroot jbroot; do
+        if command -v "$cmd" >/dev/null 2>&1; then
+            rooted="$($cmd /var/mobile/Library/Preferences 2>/dev/null)"
+            if [ -n "$rooted" ] && [ "${rooted#/}" != "$rooted" ]; then
+                return 0
+            fi
+        elif [ -x "$cmd" ]; then
+            rooted="$($cmd /var/mobile/Library/Preferences 2>/dev/null)"
+            if [ -n "$rooted" ] && [ "${rooted#/}" != "$rooted" ]; then
+                return 0
+            fi
+        fi
+    done
+    if [ -d /var/jb ]; then
+        rooted="$(cd /var/jb 2>/dev/null && pwd -P)"
+        case "$rooted" in
+            */.jbroot-*) return 0 ;;
+        esac
+    fi
+    return 1
+}
+
+if ! resolve_jbroot_dir; then
+    printf '\033[31m[ChargeLimiter] roothide cache path resolve failed (jbroot unavailable). Please keep app opened once before uninstall; otherwise data cleanup may require manual action.\033[0m\n' >&2
+fi
+
+uicache -p "$APP_DIR" 2>/dev/null
 
 exit 0
-

@@ -377,9 +377,83 @@ static void performAction(NSString* msgid) {
 }
 
 static sqlite3* db = NULL;
-static void updateDBData(const char* tbl, int tid, NSDictionary* info) {
+static NSSet<NSString*>* allowedStatsTableSuffixes() {
+    static NSSet<NSString*>* set = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        set = [NSSet setWithArray:@[@"min5", @"hour", @"day", @"month"]];
+    });
+    return set;
+}
+
+static BOOL isSafeTableToken(NSString* token) {
+    if (token.length == 0 || token.length > 64) {
+        return NO;
+    }
+    NSCharacterSet* allowed = [NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"];
+    return [token rangeOfCharacterFromSet:[allowed invertedSet]].location == NSNotFound;
+}
+
+static NSString* sanitizeTableToken(NSString* token) {
+    if (![token isKindOfClass:[NSString class]] || token.length == 0) {
+        return nil;
+    }
+    NSMutableString* out = [NSMutableString stringWithCapacity:token.length];
+    for (NSUInteger i = 0; i < token.length; i++) {
+        unichar c = [token characterAtIndex:i];
+        BOOL ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
+        [out appendFormat:@"%c", ok ? (char)c : '_'];
+    }
+    if (out.length == 0 || out.length > 64) {
+        return nil;
+    }
+    return out;
+}
+
+static BOOL isAllowedStatsTableName(NSString* tblName) {
+    if (![tblName isKindOfClass:[NSString class]] || tblName.length == 0 || tblName.length > 140) {
+        return NO;
+    }
+    NSArray<NSString*>* parts = [tblName componentsSeparatedByString:@"."];
+    if (parts.count == 1) {
+        return [allowedStatsTableSuffixes() containsObject:parts[0]];
+    }
+    if (parts.count == 2) {
+        NSString* prefix = parts[0];
+        NSString* suffix = parts[1];
+        return isSafeTableToken(prefix) && [allowedStatsTableSuffixes() containsObject:suffix];
+    }
+    return NO;
+}
+
+static NSString* quoteSQLiteIdent(NSString* ident) {
+    if (ident.length == 0) {
+        return nil;
+    }
+    NSString* escaped = [ident stringByReplacingOccurrencesOfString:@"\"" withString:@"\"\""];
+    return [NSString stringWithFormat:@"\"%@\"", escaped];
+}
+
+static NSString* tableNameForSuffix(NSString* suffix, NSString* batId) {
+    if (![allowedStatsTableSuffixes() containsObject:suffix]) {
+        return nil;
+    }
+    if (batId.length == 0) {
+        return suffix;
+    }
+    NSString* prefix = sanitizeTableToken(batId);
+    if (prefix.length == 0) {
+        return nil;
+    }
+    return [NSString stringWithFormat:@"%@.%@", prefix, suffix];
+}
+
+static void updateDBData(NSString* tbl, int tid, NSDictionary* info) {
     @autoreleasepool {
         if (!db) {
+            return;
+        }
+        if (!isAllowedStatsTableName(tbl)) {
             return;
         }
         NSData* jdata = [NSJSONSerialization dataWithJSONObject:info options:0 error:nil];
@@ -387,10 +461,15 @@ static void updateDBData(const char* tbl, int tid, NSDictionary* info) {
             return;
         }
         NSString* jstr = [[NSString alloc] initWithData:jdata encoding:NSUTF8StringEncoding];
-        char sql[256];
-        sprintf(sql, "insert or ignore into %s values(:1, :2)", tbl);
+        NSString* quotedTbl = quoteSQLiteIdent(tbl);
+        if (quotedTbl.length == 0) {
+            return;
+        }
+        NSString* sql = [NSString stringWithFormat:@"insert or ignore into %@ values(?1, ?2)", quotedTbl];
         sqlite3_stmt* stmt = NULL;
-        sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+        if (sqlite3_prepare_v2(db, sql.UTF8String, -1, &stmt, NULL) != SQLITE_OK || stmt == NULL) {
+            return;
+        }
         sqlite3_bind_int(stmt, 1, tid);
         sqlite3_bind_text(stmt, 2, jstr.UTF8String, -1, SQLITE_STATIC);
         sqlite3_step(stmt);
@@ -413,13 +492,16 @@ static void initDB(NSString* batId) {
         }
         if (db) {
             for (NSString* rawTbl in @[@"min5", @"hour", @"day", @"month"]) {
-                NSString* tblName = rawTbl;
-                if (batId != nil) {
-                    tblName = [NSString stringWithFormat:@"%@.%@", batId, rawTbl];
+                NSString* tblName = tableNameForSuffix(rawTbl, batId);
+                if (tblName.length == 0 || !isAllowedStatsTableName(tblName)) {
+                    continue;
                 }
-                NSString* sql = [NSString stringWithFormat:@"create table if not exists %@(id integer primary key, data text)", tblName];
-                char* err;
+                NSString* sql = [NSString stringWithFormat:@"create table if not exists %@ (id integer primary key, data text)", quoteSQLiteIdent(tblName)];
+                char* err = NULL;
                 sqlite3_exec(db, sql.UTF8String, NULL, NULL, &err);
+                if (err != NULL) {
+                    sqlite3_free(err);
+                }
             }
         }
     }
@@ -427,22 +509,43 @@ static void initDB(NSString* batId) {
 
 static void uninitDB() {
     if (db != NULL) {
-        sqlite3_close(db);
+        int rc = sqlite3_close(db);
+        if (rc != SQLITE_OK) {
+            sqlite3_close_v2(db);
+        }
+        db = NULL;
     }
 }
 
-static NSArray* getDBData(const char* tbl, int n, int last_id) {
+static NSArray* getDBData(NSString* tbl, int n, int last_id) {
     @autoreleasepool {
         if (!db) {
             return @[];
         }
+        if (!isAllowedStatsTableName(tbl)) {
+            return @[];
+        }
+        if (n < 1) {
+            n = 1;
+        }
+        if (n > 1000) {
+            n = 1000;
+        }
         NSMutableArray* result = [NSMutableArray array];
-        char sql[256];
-        sprintf(sql, "select data from %s where id > %d order by id desc limit %d", tbl, last_id, n);
+        NSString* quotedTbl = quoteSQLiteIdent(tbl);
+        if (quotedTbl.length == 0) {
+            return @[];
+        }
+        NSString* sql = [NSString stringWithFormat:@"select data from %@ where id > %d order by id desc limit %d", quotedTbl, last_id, n];
         sqlite3_stmt* stmt = NULL;
-        sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+        if (sqlite3_prepare_v2(db, sql.UTF8String, -1, &stmt, NULL) != SQLITE_OK || stmt == NULL) {
+            return @[];
+        }
         while (sqlite3_step(stmt) == SQLITE_ROW) {
             const char* jstr = (const char*)sqlite3_column_text(stmt, 0);
+            if (jstr == NULL) {
+                continue;
+            }
             NSData* jdata = [NSData dataWithBytes:(void*)jstr length:strlen(jstr)];
             NSDictionary* jobj = [NSJSONSerialization JSONObjectWithData:jdata options:0 error:nil];
             if (jobj == nil) {
@@ -474,29 +577,29 @@ static void updateStatistics() {
         @"Amperage", @"AppleRawCurrentCapacity", @"CurrentCapacity", @"ExternalChargeCapable", @"ExternalConnected",
         @"InstantAmperage", @"IsCharging", @"Temperature", @"UpdateTime", @"Voltage"
     ]);
-    updateDBData("min5", ts / 300, info_h);
-    updateDBData("hour", ts / 3600, info_h);
+    updateDBData(@"min5", ts / 300, info_h);
+    updateDBData(@"hour", ts / 3600, info_h);
     info_d = getFilteredMDic(bat_info, @[
         @"CycleCount", @"DesignCapacity", @"NominalChargeCapacity", @"UpdateTime"
     ]);
-    updateDBData("day", ts / 86400, info_d);
-    updateDBData("month", ts / 2592000, info_d);
+    updateDBData(@"day", ts / 86400, info_d);
+    updateDBData(@"month", ts / 2592000, info_d);
     if (gUPSPS != nil && gUPSPS.props[@"Serial"] != nil && gUPSPS.props[@"UpdateTime"] != nil) {
         NSString* batId = gUPSPS.props[@"Serial"];
-        NSString* tblMin5 = [batId stringByAppendingString:@".min5"];
+        NSString* tblMin5 = tableNameForSuffix(@"min5", batId);
         info_h = getFilteredMDic(gUPSPS.props, @[
             @"Amperage", @"AppleRawCurrentCapacity", @"CurrentCapacity", @"IncomingCurrent", @"IncomingVoltage", @"IsCharging", @"Temperature", @"UpdateTime", @"Voltage"
         ]);
-        updateDBData(tblMin5.UTF8String, ts / 300, info_h);
-        NSString* tblHour = [batId stringByAppendingString:@".hour"];
-        updateDBData(tblHour.UTF8String, ts / 3600, info_h);
+        updateDBData(tblMin5, ts / 300, info_h);
+        NSString* tblHour = tableNameForSuffix(@"hour", batId);
+        updateDBData(tblHour, ts / 3600, info_h);
         info_d = getFilteredMDic(gUPSPS.props, @[
             @"CycleCount", @"MaxCapacity", @"NominalCapacity", @"UpdateTime"
         ]);
-        NSString* tblDay = [batId stringByAppendingString:@".day"];
-        updateDBData(tblDay.UTF8String, ts / 86400, info_d);
-        NSString* tblMonth = [batId stringByAppendingString:@".month"];
-        updateDBData(tblMonth.UTF8String, ts / 2592000, info_d);
+        NSString* tblDay = tableNameForSuffix(@"day", batId);
+        updateDBData(tblDay, ts / 86400, info_d);
+        NSString* tblMonth = tableNameForSuffix(@"month", batId);
+        updateDBData(tblMonth, ts / 2592000, info_d);
     }
 }
 
@@ -947,6 +1050,15 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
         return @{
             @"status": @0,
         };
+    } else if ([api isEqualToString:@"reload_conf"]) {
+        reloadLocalKVFromDisk();
+        // Migration may replace db file in-place. Reopen sqlite handle to pick up new file.
+        uninitDB();
+        initDB(nil);
+        initConf(NO);
+        return @{
+            @"status": @0,
+        };
     } else if ([api isEqualToString:@"get_statistics"]) {
         NSDictionary* conf = nsreq[@"conf"];
         NSMutableDictionary* data = [NSMutableDictionary dictionary];
@@ -954,7 +1066,11 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             NSDictionary* conf_for_tbl = conf[tbl];
             NSNumber* n = conf_for_tbl[@"n"];
             NSNumber* last_id = conf_for_tbl[@"last_id"];
-            data[tbl] = getDBData(tbl.UTF8String, n.intValue, last_id.intValue);
+            if (!isAllowedStatsTableName(tbl)) {
+                data[tbl] = @[];
+                continue;
+            }
+            data[tbl] = getDBData(tbl, n.intValue, last_id.intValue);
         }
         return @{
             @"status": @0,
