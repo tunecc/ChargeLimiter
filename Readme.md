@@ -12,6 +12,7 @@
   <img src="https://raw.githubusercontent.com/tunecc/ChargeLimiter/refs/heads/main/screenshots/4.PNG" width="200" />
 </p>
 
+# [点我查看更新日志](https://github.com/tunecc/ChargeLimiter/blob/main/ChangeLog.md)
 
 ## 📦 构建安装包 (快速上手)
 

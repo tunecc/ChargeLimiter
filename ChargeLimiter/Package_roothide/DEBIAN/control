@@ -1,6 +1,6 @@
 Package: com.chargelimiter.mod
 Name: ChargeLimiter
-Version: 1.9.3
+Version: 1.9.5
 Description: 优化了一下界面
 Section: Applications
 Depends: firmware (>= 13.0)
