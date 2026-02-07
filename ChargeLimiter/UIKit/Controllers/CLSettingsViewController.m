@@ -10,8 +10,11 @@
 #import "../CLAPIClient.h"
 #import "../../CLLocalization.h"
 NSString* getAppDocumentsPath_C(void);
-NSString* getConfDirPath_C(void);
 NSString* getConfPath_C(void);
+NSArray<NSString*>* getLegacyConfigDirsWithData_C(void);
+NSArray<NSString*>* getLegacyResidualFiles_C(void);
+NSDictionary* cleanupLegacyResidualFiles_C(void);
+NSDictionary* migrateLegacyConfigFiles_C(void);
 #import <objc/runtime.h>
 
 #pragma mark - 紧凑型电池状态视图
@@ -66,6 +69,102 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
         }
     }
     return img;
+}
+
+static NSString *CLFirstFailedRemovePathFromResult(NSDictionary *result) {
+    NSArray *errors = result[@"errors"];
+    if (![errors isKindOfClass:[NSArray class]]) {
+        return nil;
+    }
+    for (id item in errors) {
+        if (![item isKindOfClass:[NSString class]]) {
+            continue;
+        }
+        NSString *line = (NSString *)item;
+        NSRange mark = [line rangeOfString:@" remove failed"];
+        if (mark.location == NSNotFound) {
+            continue;
+        }
+        NSString *path = [line substringToIndex:mark.location];
+        if (path.length == 0) {
+            continue;
+        }
+        return path;
+    }
+    return nil;
+}
+
+static void CLOpenPathInFilza(UIViewController *vc, NSString *path) {
+    if (path.length == 0 || vc == nil) {
+        return;
+    }
+    NSString *pathA = path;
+    NSString *pathB = pathA;
+    if ([pathB hasPrefix:@"/private/var/"]) {
+        pathB = [@"/var/" stringByAppendingString:[pathB substringFromIndex:@"/private/var/".length]];
+    }
+
+    NSMutableArray<NSURL *> *candidates = [NSMutableArray array];
+    for (NSString *p in @[pathA ?: @"", pathB ?: @""]) {
+        if (p.length == 0) continue;
+        NSString *encodedPath = [p stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLPathAllowedCharacterSet]];
+        if (encodedPath.length == 0) continue;
+        NSURL *u1 = [NSURL URLWithString:[NSString stringWithFormat:@"filza://view%@", encodedPath]];
+        NSURL *u2 = [NSURL URLWithString:[NSString stringWithFormat:@"filza://view?path=%@", encodedPath]];
+        if (u1) [candidates addObject:u1];
+        if (u2) [candidates addObject:u2];
+    }
+    if (candidates.count == 0) {
+        return;
+    }
+
+    __block NSUInteger idx = 0;
+    __weak UIViewController *weakVC = vc;
+    void (^tryOpen)(void) = ^{
+        if (idx >= candidates.count) {
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"未检测到 Filza")
+                                                                           message:CLL(@"请先安装 Filza 文件管理器，再重试跳转。")
+                                                                    preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:CLL(@"确定") style:UIAlertActionStyleDefault handler:nil]];
+            [weakVC presentViewController:alert animated:YES completion:nil];
+            return;
+        }
+        NSURL *url = candidates[idx++];
+        [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:^(BOOL success) {
+            if (!success) {
+                tryOpen();
+            }
+        }];
+    };
+    tryOpen();
+}
+
+static NSString *CLNumberedLegacyDirsText(NSArray<NSString *> *dirs) {
+    if (![dirs isKindOfClass:[NSArray class]] || dirs.count == 0) {
+        return @"";
+    }
+    NSMutableArray<NSString *> *lines = [NSMutableArray arrayWithCapacity:dirs.count];
+    [dirs enumerateObjectsUsingBlock:^(NSString * _Nonnull obj, NSUInteger idx, BOOL * _Nonnull stop) {
+        if (![obj isKindOfClass:[NSString class]] || obj.length == 0) {
+            return;
+        }
+        [lines addObject:[NSString stringWithFormat:@"%lu. %@", (unsigned long)(idx + 1), obj]];
+    }];
+    return [lines componentsJoinedByString:@"\n"];
+}
+
+static NSString *CLNumberedPathsText(NSArray<NSString *> *paths) {
+    if (![paths isKindOfClass:[NSArray class]] || paths.count == 0) {
+        return @"";
+    }
+    NSMutableArray<NSString *> *lines = [NSMutableArray arrayWithCapacity:paths.count];
+    [paths enumerateObjectsUsingBlock:^(NSString * _Nonnull obj, NSUInteger idx, BOOL * _Nonnull stop) {
+        if (![obj isKindOfClass:[NSString class]] || obj.length == 0) {
+            return;
+        }
+        [lines addObject:[NSString stringWithFormat:@"%lu. %@", (unsigned long)(idx + 1), obj]];
+    }];
+    return [lines componentsJoinedByString:@"\n"];
 }
 
 @implementation CLGlassCard
@@ -2153,6 +2252,8 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
 @property (nonatomic, strong) UIImageView *hapticChevron;
 @property (nonatomic, strong) UISegmentedControl *hapticSegment;
 @property (nonatomic, assign) BOOL hapticExpanded;
+- (void)promptLegacyResidualCleanupWithPaths:(NSArray<NSString *> *)paths completion:(dispatch_block_t)completion;
+- (void)showLegacyResidualCleanupResult:(NSDictionary *)result;
 @end
 
 @implementation CLSoftwareSettingsViewController
@@ -2213,7 +2314,9 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     [self.settingsCard addSeparator];
     [self.settingsCard.contentStack addArrangedSubview:[self buildHapticDetailRow]];
     [self.settingsCard addSeparator];
-    [self.settingsCard addNavigationRowWithIcon:@"folder" title:CLL(@"配置文件夹") value:@"" color:[UIColor systemTealColor] target:self action:@selector(configFolderTapped)];
+    [self.settingsCard addNavigationRowWithIcon:@"folder" title:CLL(@"应用数据目录") value:@"" color:[UIColor systemTealColor] target:self action:@selector(configFolderTapped)];
+    [self.settingsCard addSeparator];
+    [self.settingsCard addNavigationRowWithIcon:@"arrow.triangle.swap" title:CLL(@"迁移/删除旧版数据") value:@"" color:[UIColor systemOrangeColor] target:self action:@selector(migrateLegacyDataTapped)];
     [self.settingsCard addSeparator];
     [self.settingsCard addNavigationRowWithIcon:@"questionmark.circle" title:CLL(@"帮助") value:@"" color:[UIColor systemBlueColor] target:self action:@selector(helpTapped)];
     
@@ -2498,32 +2601,71 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
 }
 
 - (void)configFolderTapped {
-    NSString *path = getConfDirPath_C();
-    if (path.length == 0) {
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"无法打开") message:CLL(@"未能定位配置目录") preferredStyle:UIAlertControllerStyleAlert];
+    NSString *confPath = getConfPath_C();
+    NSString *dirPath = getAppDocumentsPath_C();
+    if (confPath.length == 0 && dirPath.length == 0) {
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"无法打开") message:CLL(@"未能定位应用数据目录") preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:CLL(@"确定") style:UIAlertActionStyleDefault handler:nil]];
         [self presentViewController:alert animated:YES completion:nil];
         return;
     }
-    if (![path hasSuffix:@"/"]) {
-        path = [path stringByAppendingString:@"/"];
+
+    if (confPath.length == 0 && dirPath.length > 0) {
+        confPath = [dirPath stringByAppendingPathComponent:@"aldente.conf"];
     }
-    NSString *encodedPath = [path stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLPathAllowedCharacterSet]];
-    NSString *urlString = [NSString stringWithFormat:@"filza://view%@", encodedPath ?: @""];
-    NSURL *url = [NSURL URLWithString:urlString];
-    if (!url) {
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"无法打开") message:CLL(@"配置目录 URL 无效") preferredStyle:UIAlertControllerStyleAlert];
+    if (dirPath.length == 0 && confPath.length > 0) {
+        dirPath = [confPath stringByDeletingLastPathComponent];
+    }
+    if (![dirPath hasSuffix:@"/"]) {
+        dirPath = [dirPath stringByAppendingString:@"/"];
+    }
+
+    NSString *confPathNoPrivate = confPath ?: @"";
+    if ([confPathNoPrivate hasPrefix:@"/private/var/"]) {
+        confPathNoPrivate = [@"/var/" stringByAppendingString:[confPathNoPrivate substringFromIndex:@"/private/var/".length]];
+    }
+    NSString *dirPathNoPrivate = dirPath ?: @"";
+    if ([dirPathNoPrivate hasPrefix:@"/private/var/"]) {
+        dirPathNoPrivate = [@"/var/" stringByAppendingString:[dirPathNoPrivate substringFromIndex:@"/private/var/".length]];
+    }
+
+    NSMutableArray<NSURL *> *candidates = [NSMutableArray array];
+    // Try opening the config file first (best effort for direct file focus), then fallback to directory.
+    NSArray<NSString *> *paths = @[confPath ?: @"", confPathNoPrivate ?: @"", dirPath ?: @"", dirPathNoPrivate ?: @""];
+    for (NSString *p in paths) {
+        if (p.length == 0) continue;
+        NSString *encodedPath = [p stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLPathAllowedCharacterSet]];
+        if (encodedPath.length == 0) continue;
+        NSURL *u1 = [NSURL URLWithString:[NSString stringWithFormat:@"filza://view%@", encodedPath]];
+        NSURL *u2 = [NSURL URLWithString:[NSString stringWithFormat:@"filza://view?path=%@", encodedPath]];
+        if (u1) [candidates addObject:u1];
+        if (u2) [candidates addObject:u2];
+    }
+
+    if (candidates.count == 0) {
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"无法打开") message:CLL(@"应用数据目录 URL 无效") preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:CLL(@"确定") style:UIAlertActionStyleDefault handler:nil]];
         [self presentViewController:alert animated:YES completion:nil];
         return;
     }
-    [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:^(BOOL success) {
-        if (!success) {
-            UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"未检测到 Filza") message:CLL(@"请先安装 Filza 文件管理器，再重试打开配置目录。") preferredStyle:UIAlertControllerStyleAlert];
+
+    __block NSUInteger idx = 0;
+    __weak typeof(self) weakSelf = self;
+    void (^tryOpen)(void) = ^{
+        if (idx >= candidates.count) {
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"未检测到 Filza") message:CLL(@"请先安装 Filza 文件管理器，再重试打开应用数据目录。") preferredStyle:UIAlertControllerStyleAlert];
             [alert addAction:[UIAlertAction actionWithTitle:CLL(@"确定") style:UIAlertActionStyleDefault handler:nil]];
-            [self presentViewController:alert animated:YES completion:nil];
+            [weakSelf presentViewController:alert animated:YES completion:nil];
+            return;
         }
-    }];
+        NSURL *url = candidates[idx++];
+        [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:^(BOOL success) {
+            if (!success) {
+                tryOpen();
+            }
+        }];
+    };
+    tryOpen();
 }
 
 - (void)helpTapped {
@@ -2536,6 +2678,136 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
         [alert addAction:[UIAlertAction actionWithTitle:CLL(@"确定") style:UIAlertActionStyleDefault handler:nil]];
         [self presentViewController:alert animated:YES completion:nil];
     }
+}
+
+- (void)migrateLegacyDataTapped {
+    NSArray<NSString*> *legacyDirs = getLegacyConfigDirsWithData_C();
+    NSArray<NSString*> *residualFiles = getLegacyResidualFiles_C();
+    if (legacyDirs.count == 0 && residualFiles.count == 0) {
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"未发现旧版数据")
+                                                                       message:CLL(@"当前未检测到可迁移的旧版配置文件。")
+                                                                preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:CLL(@"确定") style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:alert animated:YES completion:nil];
+        return;
+    }
+    if (legacyDirs.count == 0) {
+        [self promptLegacyResidualCleanupWithPaths:residualFiles completion:nil];
+        return;
+    }
+
+    NSString *displayLegacyDir = CLNumberedLegacyDirsText(legacyDirs);
+    NSMutableString *message = [NSMutableString stringWithFormat:
+                                CLL(@"检测到旧版本配置文件可能在：\n%@\n\n是否迁移到当前版本的 Documents 目录？\n\n提示：迁移会覆盖当前同名文件，并删除旧目录中的原文件。"),
+                                displayLegacyDir];
+    if (residualFiles.count > 0) {
+        NSString *displayResidualFiles = CLNumberedPathsText(residualFiles);
+        [message appendFormat:CLL(@"\n\n同时检测到旧版残留文件，可先删除残留再迁移：\n%@"), displayResidualFiles];
+    }
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"迁移/删除旧版数据")
+                                                                   message:message
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"取消")
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+    if (residualFiles.count > 0) {
+        [alert addAction:[UIAlertAction actionWithTitle:CLL(@"删除残留")
+                                                  style:UIAlertActionStyleDestructive
+                                                handler:^(UIAlertAction * _Nonnull action) {
+            [weakSelf promptLegacyResidualCleanupWithPaths:residualFiles completion:nil];
+        }]];
+    }
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"立即迁移")
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction * _Nonnull action) {
+        NSDictionary *result = migrateLegacyConfigFiles_C();
+        NSInteger migrated = [result[@"migrated"] integerValue];
+        NSInteger replaced = [result[@"replaced"] integerValue];
+        NSInteger missing = [result[@"missing"] integerValue];
+        NSInteger failed = [result[@"failed"] integerValue];
+        NSString *resultMessage = [NSString stringWithFormat:
+                                   CLL(@"迁移完成。\n新建: %ld\n已覆盖: %ld\n未找到: %ld\n失败: %ld"),
+                                   (long)migrated, (long)replaced, (long)missing, (long)failed];
+        NSArray *errors = result[@"errors"];
+        if ([errors isKindOfClass:[NSArray class]] && errors.count > 0) {
+            NSString *firstError = [errors.firstObject description];
+            resultMessage = [resultMessage stringByAppendingFormat:CLL(@"\n\n首个错误：%@"), firstError];
+        }
+        NSString *failedPath = CLFirstFailedRemovePathFromResult(result);
+        UIAlertController *done = [UIAlertController alertControllerWithTitle:CLL(@"迁移结果")
+                                                                      message:resultMessage
+                                                               preferredStyle:UIAlertControllerStyleAlert];
+        [done addAction:[UIAlertAction actionWithTitle:CLL(@"确定") style:UIAlertActionStyleDefault handler:nil]];
+        if (failedPath.length > 0) {
+            [done addAction:[UIAlertAction actionWithTitle:CLL(@"跳转目录手动删除")
+                                                     style:UIAlertActionStyleDefault
+                                                   handler:^(UIAlertAction * _Nonnull action) {
+                CLOpenPathInFilza(weakSelf, failedPath);
+            }]];
+        }
+        [weakSelf presentViewController:done animated:YES completion:nil];
+        [[CLAPIClient shared] sendRequest:@{@"api": @"reload_conf"} completion:^(NSDictionary * _Nullable response, NSError * _Nullable error) {
+            [[CLAPIClient shared] applyNowWithCompletion:^(NSDictionary * _Nullable response2, NSError * _Nullable error2) {
+                [[CLBatteryManager shared] refreshAll];
+            }];
+        }];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)promptLegacyResidualCleanupWithPaths:(NSArray<NSString *> *)paths completion:(dispatch_block_t)completion {
+    NSString *displayPaths = CLNumberedPathsText(paths);
+    NSString *message = [NSString stringWithFormat:
+                         CLL(@"检测到旧版残留文件：\n%@\n\n这些文件不满足迁移条件，是否直接删除？"),
+                         displayPaths];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"检测到旧版残留文件")
+                                                                   message:message
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"暂不处理")
+                                              style:UIAlertActionStyleCancel
+                                            handler:^(UIAlertAction * _Nonnull action) {
+        if (completion) completion();
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"删除残留")
+                                              style:UIAlertActionStyleDestructive
+                                            handler:^(UIAlertAction * _Nonnull action) {
+        NSDictionary *result = cleanupLegacyResidualFiles_C();
+        [weakSelf showLegacyResidualCleanupResult:result];
+        if (completion) completion();
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)showLegacyResidualCleanupResult:(NSDictionary *)result {
+    NSInteger removed = [result[@"removed"] integerValue];
+    NSInteger failed = [result[@"failed"] integerValue];
+    NSString *message = [NSString stringWithFormat:
+                         CLL(@"残留清理完成。\n已删除: %ld\n失败: %ld"),
+                         (long)removed, (long)failed];
+    NSArray *errors = result[@"errors"];
+    if ([errors isKindOfClass:[NSArray class]] && errors.count > 0) {
+        NSString *firstError = [errors.firstObject description];
+        message = [message stringByAppendingFormat:CLL(@"\n\n首个错误：%@"), firstError];
+    }
+
+    NSString *failedPath = CLFirstFailedRemovePathFromResult(result);
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"残留清理结果")
+                                                                   message:message
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"确定")
+                                              style:UIAlertActionStyleDefault
+                                            handler:nil]];
+    if (failedPath.length > 0) {
+        __weak typeof(self) weakSelf = self;
+        [alert addAction:[UIAlertAction actionWithTitle:CLL(@"跳转目录手动删除")
+                                                  style:UIAlertActionStyleDefault
+                                                handler:^(UIAlertAction * _Nonnull action) {
+            CLOpenPathInFilza(weakSelf, failedPath);
+        }]];
+    }
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (NSString *)languageValueLabel {
@@ -2605,6 +2877,11 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
 @property (nonatomic, strong) UIView *tempSeparator2;
 @property (nonatomic, assign) NSInteger chargeTempBelow;
 @property (nonatomic, assign) NSInteger chargeTempAbove;
+@property (nonatomic, assign) BOOL didCheckLegacyMigrationPrompt;
+- (void)promptLegacyMigrationIfNeeded;
+- (void)showLegacyMigrationResult:(NSDictionary *)result;
+- (void)promptLegacyResidualCleanupWithPaths:(NSArray<NSString *> *)paths completion:(dispatch_block_t)completion;
+- (void)showLegacyResidualCleanupResult:(NSDictionary *)result;
 @end
 
 @implementation CLSettingsViewController
@@ -2642,6 +2919,12 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     [super viewWillAppear:animated];
     self.navigationController.navigationBarHidden = YES;
     [[CLBatteryManager shared] startAutoRefresh];
+    if (!self.didCheckLegacyMigrationPrompt) {
+        self.didCheckLegacyMigrationPrompt = YES;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self promptLegacyMigrationIfNeeded];
+        });
+    }
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
@@ -2652,6 +2935,171 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
 
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+#pragma mark - Legacy Migration
+
+- (void)promptLegacyMigrationIfNeeded {
+    static NSString * const kLegacyMigrationCheckedTokenKey = @"LegacyMigrationCheckedToken";
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSString *shortVer = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
+    NSString *buildVer = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleVersion"];
+    if (![shortVer isKindOfClass:[NSString class]]) {
+        shortVer = @"";
+    }
+    if (![buildVer isKindOfClass:[NSString class]]) {
+        buildVer = @"";
+    }
+    NSString *currentToken = [NSString stringWithFormat:@"%@(%@)", shortVer, buildVer];
+    NSString *checkedToken = [defaults stringForKey:kLegacyMigrationCheckedTokenKey];
+    if ([checkedToken isKindOfClass:[NSString class]] && [checkedToken isEqualToString:currentToken]) {
+        return;
+    }
+
+    NSArray<NSString*> *legacyDirs = getLegacyConfigDirsWithData_C();
+    NSArray<NSString*> *residualFiles = getLegacyResidualFiles_C();
+    if (legacyDirs.count == 0) {
+        if (residualFiles.count > 0) {
+            [self promptLegacyResidualCleanupWithPaths:residualFiles completion:^{
+                [defaults setObject:currentToken forKey:kLegacyMigrationCheckedTokenKey];
+                [defaults synchronize];
+            }];
+        } else {
+            [defaults setObject:currentToken forKey:kLegacyMigrationCheckedTokenKey];
+            [defaults synchronize];
+        }
+        return;
+    }
+
+    NSString *displayLegacyDir = CLNumberedLegacyDirsText(legacyDirs);
+    NSMutableString *message = [NSMutableString stringWithFormat:
+                                CLL(@"检测到旧版本配置文件可能在：\n%@\n\n是否迁移到当前版本的 Documents 目录？\n\n提示：新版卸载时会删除当前应用数据目录，历史记录会丢失。"),
+                                displayLegacyDir];
+    if (residualFiles.count > 0) {
+        NSString *displayResidualFiles = CLNumberedPathsText(residualFiles);
+        [message appendFormat:CLL(@"\n\n同时检测到旧版残留文件，可先删除残留再迁移：\n%@"), displayResidualFiles];
+    }
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"检测到旧版本数据")
+                                                                   message:message
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"暂不迁移")
+                                              style:UIAlertActionStyleCancel
+                                            handler:^(UIAlertAction * _Nonnull action) {
+        [defaults setObject:currentToken forKey:kLegacyMigrationCheckedTokenKey];
+        [defaults synchronize];
+    }]];
+    if (residualFiles.count > 0) {
+        [alert addAction:[UIAlertAction actionWithTitle:CLL(@"删除残留")
+                                                  style:UIAlertActionStyleDestructive
+                                                handler:^(UIAlertAction * _Nonnull action) {
+            [self promptLegacyResidualCleanupWithPaths:residualFiles completion:^{
+                [defaults setObject:currentToken forKey:kLegacyMigrationCheckedTokenKey];
+                [defaults synchronize];
+            }];
+        }]];
+    }
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"立即迁移")
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction * _Nonnull action) {
+        [defaults setObject:currentToken forKey:kLegacyMigrationCheckedTokenKey];
+        [defaults synchronize];
+        NSDictionary *result = migrateLegacyConfigFiles_C();
+        [weakSelf showLegacyMigrationResult:result];
+        [[CLAPIClient shared] sendRequest:@{@"api": @"reload_conf"} completion:^(NSDictionary * _Nullable response, NSError * _Nullable error) {
+            [[CLAPIClient shared] applyNowWithCompletion:^(NSDictionary * _Nullable response2, NSError * _Nullable error2) {
+                [[CLBatteryManager shared] refreshAll];
+            }];
+        }];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)promptLegacyResidualCleanupWithPaths:(NSArray<NSString *> *)paths completion:(dispatch_block_t)completion {
+    NSString *displayPaths = CLNumberedPathsText(paths);
+    NSString *message = [NSString stringWithFormat:
+                         CLL(@"检测到旧版残留文件：\n%@\n\n这些文件不满足迁移条件，是否直接删除？"),
+                         displayPaths];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"检测到旧版残留文件")
+                                                                   message:message
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"暂不处理")
+                                              style:UIAlertActionStyleCancel
+                                            handler:^(UIAlertAction * _Nonnull action) {
+        if (completion) completion();
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"删除残留")
+                                              style:UIAlertActionStyleDestructive
+                                            handler:^(UIAlertAction * _Nonnull action) {
+        NSDictionary *result = cleanupLegacyResidualFiles_C();
+        [weakSelf showLegacyResidualCleanupResult:result];
+        if (completion) completion();
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)showLegacyMigrationResult:(NSDictionary *)result {
+    NSInteger migrated = [result[@"migrated"] integerValue];
+    NSInteger replaced = [result[@"replaced"] integerValue];
+    NSInteger missing = [result[@"missing"] integerValue];
+    NSInteger failed = [result[@"failed"] integerValue];
+    NSString *message = [NSString stringWithFormat:
+                         CLL(@"迁移完成。\n新建: %ld\n已覆盖: %ld\n未找到: %ld\n失败: %ld"),
+                         (long)migrated, (long)replaced, (long)missing, (long)failed];
+    NSArray *errors = result[@"errors"];
+    if ([errors isKindOfClass:[NSArray class]] && errors.count > 0) {
+        NSString *firstError = [errors.firstObject description];
+        message = [message stringByAppendingFormat:CLL(@"\n\n首个错误：%@"), firstError];
+    }
+    message = [message stringByAppendingString:CLL(@"\n\n提示：若你之后卸载新版，历史记录会随应用数据目录一起删除。")];
+
+    NSString *failedPath = CLFirstFailedRemovePathFromResult(result);
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"迁移结果")
+                                                                   message:message
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"确定")
+                                              style:UIAlertActionStyleDefault
+                                            handler:nil]];
+    if (failedPath.length > 0) {
+        __weak typeof(self) weakSelf = self;
+        [alert addAction:[UIAlertAction actionWithTitle:CLL(@"跳转目录手动删除")
+                                                  style:UIAlertActionStyleDefault
+                                                handler:^(UIAlertAction * _Nonnull action) {
+            CLOpenPathInFilza(weakSelf, failedPath);
+        }]];
+    }
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)showLegacyResidualCleanupResult:(NSDictionary *)result {
+    NSInteger removed = [result[@"removed"] integerValue];
+    NSInteger failed = [result[@"failed"] integerValue];
+    NSString *message = [NSString stringWithFormat:
+                         CLL(@"残留清理完成。\n已删除: %ld\n失败: %ld"),
+                         (long)removed, (long)failed];
+    NSArray *errors = result[@"errors"];
+    if ([errors isKindOfClass:[NSArray class]] && errors.count > 0) {
+        NSString *firstError = [errors.firstObject description];
+        message = [message stringByAppendingFormat:CLL(@"\n\n首个错误：%@"), firstError];
+    }
+
+    NSString *failedPath = CLFirstFailedRemovePathFromResult(result);
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"残留清理结果")
+                                                                   message:message
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"确定")
+                                              style:UIAlertActionStyleDefault
+                                            handler:nil]];
+    if (failedPath.length > 0) {
+        __weak typeof(self) weakSelf = self;
+        [alert addAction:[UIAlertAction actionWithTitle:CLL(@"跳转目录手动删除")
+                                                  style:UIAlertActionStyleDefault
+                                                handler:^(UIAlertAction * _Nonnull action) {
+            CLOpenPathInFilza(weakSelf, failedPath);
+        }]];
+    }
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 #pragma mark - Setup

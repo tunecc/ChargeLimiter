@@ -14,9 +14,9 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "1870F6022B85A96100B3660F"
+               BlueprintIdentifier = "184EA9A22B7A373300D0981D"
                BuildableName = "ChargeLimiter.app"
-               BlueprintName = "ChargeLimiter_roothide"
+               BlueprintName = "ChargeLimiter_rootless"
                ReferencedContainer = "container:ChargeLimiter.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -44,9 +44,9 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "1870F6022B85A96100B3660F"
+            BlueprintIdentifier = "184EA9A22B7A373300D0981D"
             BuildableName = "ChargeLimiter.app"
-            BlueprintName = "ChargeLimiter_roothide"
+            BlueprintName = "ChargeLimiter_rootless"
             ReferencedContainer = "container:ChargeLimiter.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
@@ -61,9 +61,9 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "1870F6022B85A96100B3660F"
+            BlueprintIdentifier = "184EA9A22B7A373300D0981D"
             BuildableName = "ChargeLimiter.app"
-            BlueprintName = "ChargeLimiter_roothide"
+            BlueprintName = "ChargeLimiter_rootless"
             ReferencedContainer = "container:ChargeLimiter.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>

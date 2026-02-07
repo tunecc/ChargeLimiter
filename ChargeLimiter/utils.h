@@ -98,6 +98,7 @@ void setLocalDouble(NSString* key, double value);
 void setLocalString(NSString* key, NSString* value);
 void setLocalArray(NSString* key, NSArray* value);
 void setLocalDict(NSString* key, NSDictionary* value);
+void reloadLocalKVFromDisk(void);
 /* ---------------- App ---------------- */
 
 NSString* getAppDocumentsPath();
@@ -107,5 +108,9 @@ NSString* getDbPath();
 NSString* getConfDirPath();
 extern "C" NSString* getConfPath_C(void);
 extern "C" NSString* getConfDirPath_C(void);
+extern "C" NSArray<NSString*>* getLegacyConfigDirsWithData_C(void);
+extern "C" NSArray<NSString*>* getLegacyResidualFiles_C(void);
+extern "C" NSDictionary* cleanupLegacyResidualFiles_C(void);
+extern "C" NSDictionary* migrateLegacyConfigFiles_C(void);
 
 #endif // UTILS_H

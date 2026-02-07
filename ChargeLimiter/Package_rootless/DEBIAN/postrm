@@ -1,6 +1,92 @@
-#!/bin/bash
+#!/bin/sh
 
-# 卸载后刷新图标缓存
-uicache -p /var/jb/Applications/ChargeLimiter.app 2>/dev/null
+APP_DIR="/var/jb/Applications/ChargeLimiter.app"
+CACHE1="/var/jb/var/mobile/Library/Preferences/com.chargelimiter.mod.containerpath"
+CACHE2="/var/mobile/Library/Preferences/com.chargelimiter.mod.containerpath"
+
+resolve_jbroot() {
+    # roothide preferred: use jbroot tool if available.
+    for cmd in /usr/bin/jbroot /var/jb/usr/bin/jbroot jbroot; do
+        if command -v "$cmd" >/dev/null 2>&1; then
+            rooted="$($cmd /var/mobile/Library/Preferences 2>/dev/null)"
+            if [ -n "$rooted" ] && [ "${rooted#/}" != "$rooted" ]; then
+                printf '%s' "$rooted"
+                return 0
+            fi
+        elif [ -x "$cmd" ]; then
+            rooted="$($cmd /var/mobile/Library/Preferences 2>/dev/null)"
+            if [ -n "$rooted" ] && [ "${rooted#/}" != "$rooted" ]; then
+                printf '%s' "$rooted"
+                return 0
+            fi
+        fi
+    done
+
+    # fallback: resolve /var/jb symlink target
+    if [ -d /var/jb ]; then
+        rooted="$(cd /var/jb 2>/dev/null && pwd -P)"
+        if [ -n "$rooted" ] && [ "${rooted#/}" != "$rooted" ]; then
+            printf '%s' "$rooted/var/mobile/Library/Preferences"
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+CACHE3=""
+if JB_PREFS_DIR="$(resolve_jbroot)"; then
+    CACHE3="$JB_PREFS_DIR/com.chargelimiter.mod.containerpath"
+fi
+
+read_container_path() {
+    cache_file="$1"
+    [ -f "$cache_file" ] || return 1
+
+    # New format: CONTAINER_PATH=/var/... (supports bilingual comments in file)
+    path_line="$(grep -m1 '^CONTAINER_PATH=' "$cache_file" 2>/dev/null)"
+    if [ -n "$path_line" ]; then
+        printf '%s' "${path_line#CONTAINER_PATH=}"
+        return 0
+    fi
+
+    # Backward compatibility: plain path-only content
+    legacy_path="$(cat "$cache_file" 2>/dev/null | head -n 1)"
+    if [ -n "$legacy_path" ]; then
+        printf '%s' "$legacy_path"
+        return 0
+    fi
+
+    return 1
+}
+
+remove_by_cached_path() {
+    cache_file="$1"
+    [ -n "$cache_file" ] || return 1
+    [ -f "$cache_file" ] || return 1
+    container_path="$(read_container_path "$cache_file")" || return 1
+    case "$container_path" in
+        /var/mobile/Containers/Data/Application/*|/private/var/mobile/Containers/Data/Application/*|/var/jb/var/mobile/Containers/Data/Application/*|/private/var/jb/var/mobile/Containers/Data/Application/*|/var/jb/private/var/mobile/Containers/Data/Application/*)
+            rm -rf "$container_path"
+            [ ! -e "$container_path" ] || return 1
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+warn_manual_cleanup() {
+    printf '\033[31m[ChargeLimiter] Failed to remove app data container automatically. Please remove it manually from your file manager.\033[0m\n' >&2
+}
+
+case "$1" in
+    remove|purge)
+        remove_by_cached_path "$CACHE3" || remove_by_cached_path "$CACHE1" || remove_by_cached_path "$CACHE2" || warn_manual_cleanup
+        rm -f "$CACHE1" "$CACHE2"
+        [ -n "$CACHE3" ] && rm -f "$CACHE3"
+        ;;
+esac
+
+uicache -p "$APP_DIR" 2>/dev/null
 
 exit 0

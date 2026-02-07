@@ -127,7 +127,7 @@
             @"adv_def_thermal_mode": @"off",
             @"adv_limit_inflow_mode": @"off",
             @"adv_thermal_mode_lock": @NO,
-            @"ver": @"1.9.3",
+            @"ver": @"1.9.5",
             @"sysver": @"iOS 16.1.2",
             @"devmodel": @"iPhone14,2",
             @"sys_boot": @((NSInteger)[[NSDate date] timeIntervalSince1970] - 86400),

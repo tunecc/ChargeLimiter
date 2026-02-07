@@ -1,5 +1,7 @@
 #include "utils.h"
 #import "CLLocalization.h"
+#include <limits.h>
+#include <stdlib.h>
 #include <sys/utsname.h>
 #include <sys/sysctl.h>
 #include <notify.h>
@@ -9,6 +11,8 @@ static NSString* g_appDocumentsPath = nil;
 static NSString* g_logPath = nil;
 static NSString* g_confPath = nil;
 static NSString* g_dbPath = nil;
+static NSString* const kContainerCacheFileName = @"com.chargelimiter.mod.containerpath";
+typedef const char* (*jbroot_fn_t)(const char* path);
 
 static BOOL isValidAppDocumentsPath(NSString* path) {
     if (path.length == 0) {
@@ -162,6 +166,17 @@ static NSString* resolveAppDocumentsPath() {
     return nil;
 }
 
+static NSString* containerRootFromDocuments(NSString* documentsPath) {
+    if (documentsPath.length == 0) {
+        return nil;
+    }
+    NSString* last = documentsPath.lastPathComponent;
+    if ([last isEqualToString:@"Documents"]) {
+        return [documentsPath stringByDeletingLastPathComponent];
+    }
+    return nil;
+}
+
 static NSString* resolveJbRootFromSelfExe() {
     NSString* exe = getSelfExePath();
     if (exe.length == 0) {
@@ -179,106 +194,155 @@ static NSString* resolveJbRootFromSelfExe() {
     return [exe substringToIndex:tail.location];
 }
 
-static NSString* resolveFixedConfDir() {
-    int jbtype = getJBType();
-    if (jbtype == JBTYPE_TROLLSTORE || jbtype == JBTYPE_UNKNOWN) {
+static NSString* resolveRoothideCachePathByAPI() {
+    if (getJBType() != JBTYPE_ROOTHIDE) {
         return nil;
     }
-    if (jbtype == JBTYPE_ROOTHIDE) {
-        NSString* jbroot = resolveJbRootFromSelfExe();
-        if (jbroot.length > 0) {
-            return [jbroot stringByAppendingPathComponent:@"var/mobile/Library/Preferences"];
+
+    static jbroot_fn_t jbrootPtr = NULL;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        jbrootPtr = (jbroot_fn_t)dlsym(RTLD_DEFAULT, "jbroot");
+        if (jbrootPtr) {
+            return;
         }
+        const char* candidates[] = {
+            "/usr/lib/libroothide.dylib",
+            "/var/jb/usr/lib/libroothide.dylib",
+        };
+        for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+            void* h = dlopen(candidates[i], RTLD_LAZY);
+            if (!h) {
+                continue;
+            }
+            jbrootPtr = (jbroot_fn_t)dlsym(h, "jbroot");
+            if (jbrootPtr) {
+                break;
+            }
+        }
+    });
+
+    if (!jbrootPtr) {
         return nil;
     }
-    if (jbtype == JBTYPE_ROOTLESS) {
-        return @"/var/jb/var/mobile/Library/Preferences";
+
+    NSString* virtualPath = [@"/var/mobile/Library/Preferences" stringByAppendingPathComponent:kContainerCacheFileName];
+    const char* rooted = jbrootPtr(virtualPath.UTF8String);
+    if (!rooted || rooted[0] != '/') {
+        return nil;
     }
-    return @"/var/mobile/Library/Preferences";
+    return @(rooted);
 }
 
-static NSString* appContainerRootFromDocuments(NSString* documentsPath) {
-    if (documentsPath.length == 0) {
-        return nil;
+static NSArray<NSString*>* availableContainerCachePaths() {
+    NSMutableArray<NSString*>* paths = [NSMutableArray new];
+    int jbType = getJBType();
+
+    // roothide preferred: use official jbroot() API first.
+    if (jbType == JBTYPE_ROOTHIDE) {
+        NSString* roothidePath = resolveRoothideCachePathByAPI();
+        if (roothidePath.length > 0) {
+            [paths addObject:roothidePath];
+        } else {
+            // fallback: infer jbroot from executable path.
+            NSString* jbroot = resolveJbRootFromSelfExe();
+            if (jbroot.length > 0) {
+                NSString* fallbackRoothidePath = [[jbroot stringByAppendingPathComponent:@"var/mobile/Library/Preferences"] stringByAppendingPathComponent:kContainerCacheFileName];
+                if (fallbackRoothidePath.length > 0) {
+                    [paths addObject:fallbackRoothidePath];
+                }
+            }
+        }
+        // Do not fallback to /var/jb path for roothide. If both jbroot methods fail,
+        // keep empty and let caller warn user.
+    } else if (jbType == JBTYPE_ROOTLESS) {
+        // No hardcoded /var/jb write path.
+        // Use mobile preferences path as stable write location.
+        NSString* rootfulPath = [@"/var/mobile/Library/Preferences" stringByAppendingPathComponent:kContainerCacheFileName];
+        if (rootfulPath.length > 0) {
+            [paths addObject:rootfulPath];
+        }
+    } else {
+        // Rootful/default fallback path.
+        NSString* rootfulPath = [@"/var/mobile/Library/Preferences" stringByAppendingPathComponent:kContainerCacheFileName];
+        if (rootfulPath.length > 0) {
+            [paths addObject:rootfulPath];
+        }
     }
-    NSString* last = documentsPath.lastPathComponent;
-    if ([last isEqualToString:@"Documents"]) {
-        return [documentsPath stringByDeletingLastPathComponent];
+
+    // Dedupe while preserving order.
+    NSMutableArray<NSString*>* dedup = [NSMutableArray new];
+    NSMutableSet<NSString*>* seen = [NSMutableSet new];
+    for (NSString* p in paths) {
+        if (p.length == 0 || [seen containsObject:p]) {
+            continue;
+        }
+        [seen addObject:p];
+        [dedup addObject:p];
     }
-    return documentsPath;
+
+    return dedup;
 }
 
-static NSString* resolveAppLibraryPreferencesPath() {
-    NSString* doc = resolveAppDocumentsPath();
-    if (doc.length == 0) {
-        return nil;
+static void updateContainerPathCache(NSString* documentsPath) {
+    NSString* containerRoot = containerRootFromDocuments(documentsPath);
+    if (containerRoot.length == 0) {
+        return;
     }
-    NSString* root = appContainerRootFromDocuments(doc);
-    if (root.length == 0) {
-        return nil;
-    }
-    NSString* prefs = [root stringByAppendingPathComponent:@"Library/Preferences"];
-    if (isValidAppDocumentsPath([root stringByAppendingPathComponent:@"Documents"])) {
-        return prefs;
-    }
-    return nil;
-}
+    NSArray<NSString*>* cachePaths = availableContainerCachePaths();
+    NSString* cacheContent = [NSString stringWithFormat:
+                              @"# ChargeLimiter container path cache\n"
+                              "# 用途(中文): 记录当前应用数据容器根目录，供卸载脚本快速删除数据目录。\n"
+                              "# Purpose(English): Stores current app data container root path for fast uninstall cleanup.\n"
+                              "CONTAINER_PATH=%@\n", containerRoot];
+    BOOL wroteAny = NO;
+    for (NSString* cachePath in cachePaths) {
+        NSError* mkdirError = nil;
+        NSString* parent = [cachePath stringByDeletingLastPathComponent];
+        if (parent.length > 0) {
+            [[NSFileManager defaultManager] createDirectoryAtPath:parent withIntermediateDirectories:YES attributes:nil error:&mkdirError];
+        }
 
-static void migrateLegacyFileIfNeeded(NSString* newPath, NSString* legacyPath) {
-    if (newPath.length == 0 || legacyPath.length == 0) {
-        return;
+        NSError* writeError = nil;
+        BOOL ok = [cacheContent writeToFile:cachePath atomically:YES encoding:NSUTF8StringEncoding error:&writeError];
+        if (ok) {
+            wroteAny = YES;
+            NSLog2(@"[CL] container cache written: %@", cachePath);
+        } else {
+            NSLog2(@"[CL] container cache write failed: %@ mkdirErr=%@ writeErr=%@", cachePath, mkdirError, writeError);
+        }
     }
-    NSFileManager* fm = [NSFileManager defaultManager];
-    if ([fm fileExistsAtPath:newPath]) {
-        return;
-    }
-    if (![fm fileExistsAtPath:legacyPath]) {
-        return;
-    }
-    NSString* dir = [newPath stringByDeletingLastPathComponent];
-    [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
-    NSError* err = nil;
-    if ([fm copyItemAtPath:legacyPath toPath:newPath error:&err]) {
-        [fm removeItemAtPath:legacyPath error:nil];
+
+    if (!wroteAny) {
+        NSLog2(@"[CL] container cache not written. jbType=%d, docs=%@, candidates=%@", getJBType(), documentsPath, cachePaths);
     }
 }
 
 static void ensureAppPaths() {
+    static NSObject* lock = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        NSString* fixedDir = resolveFixedConfDir();
-        NSString* appDoc = resolveAppDocumentsPath();
-        NSString* appPrefs = resolveAppLibraryPreferencesPath();
-        NSString* targetDir = appDoc;
-        NSString* confDir = appDoc;
-        if (fixedDir.length > 0) {
-            targetDir = fixedDir;
-            confDir = fixedDir;
-        } else if (appPrefs.length > 0 && appDoc.length == 0) {
-            targetDir = appPrefs;
-            confDir = appPrefs;
+        lock = [NSObject new];
+    });
+    @synchronized(lock) {
+        if (g_appDocumentsPath.length > 0 && g_logPath.length > 0 && g_confPath.length > 0 && g_dbPath.length > 0) {
+            return;
         }
-        if (targetDir.length == 0 || confDir.length == 0) {
+        NSString* appDoc = resolveAppDocumentsPath();
+        // Unified behavior for TrollStore + jailbreak:
+        // all runtime files live directly under the app container Documents dir.
+        NSString* targetDir = appDoc;
+        if (targetDir.length == 0) {
             NSLog(@"[CL] Failed to resolve config dir.");
             return;
         }
         [[NSFileManager defaultManager] createDirectoryAtPath:targetDir withIntermediateDirectories:YES attributes:nil error:nil];
-        if (![targetDir isEqualToString:confDir]) {
-            [[NSFileManager defaultManager] createDirectoryAtPath:confDir withIntermediateDirectories:YES attributes:nil error:nil];
-        }
         g_appDocumentsPath = targetDir;
         g_logPath = [targetDir stringByAppendingPathComponent:@LOG_FILENAME];
-        g_confPath = [confDir stringByAppendingPathComponent:@CONF_FILENAME];
+        g_confPath = [targetDir stringByAppendingPathComponent:@CONF_FILENAME];
         g_dbPath = [targetDir stringByAppendingPathComponent:@DB_FILENAME];
-        migrateLegacyFileIfNeeded(g_confPath, @LEGACY_CONF_PATH);
-        migrateLegacyFileIfNeeded(g_dbPath, @LEGACY_DB_PATH);
-        if (fixedDir.length > 0 && appDoc.length > 0 && ![appDoc isEqualToString:fixedDir]) {
-            NSString* appConf = [appDoc stringByAppendingPathComponent:@CONF_FILENAME];
-            NSString* appDb = [appDoc stringByAppendingPathComponent:@DB_FILENAME];
-            migrateLegacyFileIfNeeded(g_confPath, appConf);
-            migrateLegacyFileIfNeeded(g_dbPath, appDb);
-        }
-    });
+        updateContainerPathCache(targetDir);
+    }
 }
 
 NSString* getAppDocumentsPath() {
@@ -319,6 +383,288 @@ NSString* getConfDirPath() {
 
 extern "C" NSString* getConfDirPath_C(void) {
     return getConfDirPath();
+}
+
+static NSArray<NSString*>* legacyConfigFileNames() {
+    return @[@CONF_FILENAME, @DB_FILENAME, @LOG_FILENAME];
+}
+
+static BOOL removeLegacyFilePreferRoot(NSString* path) {
+    if (path.length == 0) {
+        return NO;
+    }
+    NSFileManager* fm = [NSFileManager defaultManager];
+    BOOL isDir = NO;
+    if (![fm fileExistsAtPath:path isDirectory:&isDir] || isDir) {
+        return YES;
+    }
+
+    NSError* removeError = nil;
+    if ([fm removeItemAtPath:path error:&removeError]) {
+        return YES;
+    }
+
+    // Fallback with root persona for paths like /var/root.
+    int rc = spawn(@[@"/bin/rm", @"-f", path], nil, nil, nil, SPAWN_FLAG_ROOT, nil);
+    if (rc == 0 && ![fm fileExistsAtPath:path]) {
+        return YES;
+    }
+    return NO;
+}
+
+static NSArray<NSString*>* legacyConfigCandidateDirs() {
+    NSMutableArray<NSString*>* dirs = [NSMutableArray new];
+
+    // Version 1 legacy path.
+    [dirs addObject:@"/var/root"];
+
+    // Version 2 legacy path (jailbreak prefs directory family).
+    [dirs addObject:@"/var/mobile/Library/Preferences"];
+    [dirs addObject:@"/var/jb/var/mobile/Library/Preferences"];
+
+    NSString* roothideCachePath = resolveRoothideCachePathByAPI();
+    if (roothideCachePath.length > 0) {
+        [dirs addObject:[roothideCachePath stringByDeletingLastPathComponent]];
+    }
+
+    NSString* inferredJbRoot = resolveJbRootFromSelfExe();
+    if (inferredJbRoot.length > 0) {
+        [dirs addObject:[inferredJbRoot stringByAppendingPathComponent:@"var/mobile/Library/Preferences"]];
+    }
+
+    NSString* currentDir = getConfDirPath();
+    NSMutableArray<NSString*>* dedup = [NSMutableArray new];
+    NSMutableSet<NSString*>* seen = [NSMutableSet new];
+    for (NSString* dir in dirs) {
+        if (dir.length == 0 || [seen containsObject:dir]) {
+            continue;
+        }
+        if (currentDir.length > 0 && [dir isEqualToString:currentDir]) {
+            continue;
+        }
+        [seen addObject:dir];
+        [dedup addObject:dir];
+    }
+    return dedup;
+}
+
+static NSInteger legacyRuntimeFileCountInDir(NSString* dir) {
+    if (dir.length == 0) {
+        return 0;
+    }
+    NSFileManager* fm = [NSFileManager defaultManager];
+    NSInteger count = 0;
+    for (NSString* file in legacyConfigFileNames()) {
+        NSString* path = [dir stringByAppendingPathComponent:file];
+        BOOL isDir = NO;
+        if ([fm fileExistsAtPath:path isDirectory:&isDir] && !isDir) {
+            count++;
+        }
+    }
+    return count;
+}
+
+static BOOL hasCompleteLegacyRuntimeFilesInDir(NSString* dir) {
+    return legacyRuntimeFileCountInDir(dir) == (NSInteger)legacyConfigFileNames().count;
+}
+
+static NSArray<NSString*>* legacyConfigDirsWithData() {
+    NSMutableArray<NSString*>* found = [NSMutableArray new];
+    for (NSString* dir in legacyConfigCandidateDirs()) {
+        if (hasCompleteLegacyRuntimeFilesInDir(dir)) {
+            [found addObject:dir];
+        }
+    }
+    return found;
+}
+
+extern "C" NSArray<NSString*>* getLegacyConfigDirsWithData_C(void) {
+    return legacyConfigDirsWithData();
+}
+
+static NSArray<NSString*>* legacyResidualFiles(void) {
+    NSMutableArray<NSString*>* files = [NSMutableArray new];
+    NSFileManager* fm = [NSFileManager defaultManager];
+    NSInteger fullCount = (NSInteger)legacyConfigFileNames().count;
+    for (NSString* dir in legacyConfigCandidateDirs()) {
+        NSInteger count = legacyRuntimeFileCountInDir(dir);
+        if (count <= 0 || count >= fullCount) {
+            continue;
+        }
+        for (NSString* file in legacyConfigFileNames()) {
+            NSString* path = [dir stringByAppendingPathComponent:file];
+            BOOL isDir = NO;
+            if ([fm fileExistsAtPath:path isDirectory:&isDir] && !isDir) {
+                [files addObject:path];
+            }
+        }
+    }
+    return files;
+}
+
+extern "C" NSArray<NSString*>* getLegacyResidualFiles_C(void) {
+    return legacyResidualFiles();
+}
+
+extern "C" NSDictionary* cleanupLegacyResidualFiles_C(void) {
+    NSArray<NSString*>* files = legacyResidualFiles();
+    NSMutableArray<NSString*>* errors = [NSMutableArray new];
+    NSInteger removed = 0;
+    NSInteger failed = 0;
+    for (NSString* path in files) {
+        if (removeLegacyFilePreferRoot(path)) {
+            removed++;
+        } else {
+            failed++;
+            [errors addObject:[NSString stringWithFormat:@"%@ remove failed", path]];
+        }
+    }
+    return @{
+        @"removed": @(removed),
+        @"failed": @(failed),
+        @"errors": errors,
+        @"files": files
+    };
+}
+
+static NSDate* fileModifyDate(NSString* path) {
+    NSDictionary* attr = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:nil];
+    NSDate* modified = attr[NSFileModificationDate];
+    if ([modified isKindOfClass:[NSDate class]]) {
+        return modified;
+    }
+    NSDate* created = attr[NSFileCreationDate];
+    if ([created isKindOfClass:[NSDate class]]) {
+        return created;
+    }
+    return [NSDate distantPast];
+}
+
+static NSDate* legacyDirLatestDate(NSString* dir) {
+    NSDate* latest = [NSDate distantPast];
+    for (NSString* file in legacyConfigFileNames()) {
+        NSString* src = [dir stringByAppendingPathComponent:file];
+        NSDate* d = fileModifyDate(src);
+        if ([d compare:latest] == NSOrderedDescending) {
+            latest = d;
+        }
+    }
+    return latest;
+}
+
+static NSString* latestLegacySourceForFile(NSString* file, NSString* legacyDir) {
+    if (file.length == 0 || legacyDir.length == 0) {
+        return nil;
+    }
+    return [legacyDir stringByAppendingPathComponent:file];
+}
+
+static NSString* latestLegacyDir(NSArray<NSString*>* legacyDirs) {
+    NSFileManager* fm = [NSFileManager defaultManager];
+    NSString* latestDir = nil;
+    NSDate* latestDate = [NSDate distantPast];
+    for (NSString* dir in legacyDirs) {
+        BOOL hasAll = YES;
+        for (NSString* file in legacyConfigFileNames()) {
+            NSString* p = [dir stringByAppendingPathComponent:file];
+            BOOL isDir = NO;
+            if (![fm fileExistsAtPath:p isDirectory:&isDir] || isDir) {
+                hasAll = NO;
+                break;
+            }
+        }
+        if (!hasAll) {
+            continue;
+        }
+        NSDate* modified = legacyDirLatestDate(dir);
+        if (!latestDir || [modified compare:latestDate] == NSOrderedDescending) {
+            latestDir = dir;
+            latestDate = modified;
+        }
+    }
+    return latestDir;
+}
+
+extern "C" NSDictionary* migrateLegacyConfigFiles_C(void) {
+    ensureAppPaths();
+    NSString* targetDir = getConfDirPath();
+    if (targetDir.length == 0) {
+        return @{
+            @"migrated": @0,
+            @"replaced": @0,
+            @"missing": @0,
+            @"failed": @1,
+            @"errors": @[@"Target documents path is unavailable."]
+        };
+    }
+
+    NSArray<NSString*>* legacyDirs = legacyConfigDirsWithData();
+    NSString* sourceDir = latestLegacyDir(legacyDirs);
+    NSFileManager* fm = [NSFileManager defaultManager];
+    NSMutableArray<NSString*>* errors = [NSMutableArray new];
+    NSInteger migrated = 0;
+    NSInteger replaced = 0;
+    NSInteger missing = 0;
+    NSInteger failed = 0;
+
+    for (NSString* file in legacyConfigFileNames()) {
+        NSString* dst = [targetDir stringByAppendingPathComponent:file];
+        NSString* chosenSrc = latestLegacySourceForFile(file, sourceDir);
+
+        if (chosenSrc.length == 0) {
+            missing++;
+            continue;
+        }
+
+        BOOL dstExists = [fm fileExistsAtPath:dst];
+        if (dstExists) {
+            NSError* removeError = nil;
+            if (![fm removeItemAtPath:dst error:&removeError]) {
+                failed++;
+                [errors addObject:[NSString stringWithFormat:@"%@ remove failed (%@)", dst, removeError.localizedDescription ?: @"remove failed"]];
+                continue;
+            }
+        }
+
+        NSError* copyError = nil;
+        BOOL ok = [fm copyItemAtPath:chosenSrc toPath:dst error:&copyError];
+        if (ok) {
+            // Cleanup all legacy duplicates of this file after successful migration.
+            for (NSString* dir in legacyDirs) {
+                NSString* src = [dir stringByAppendingPathComponent:file];
+                BOOL srcIsDir = NO;
+                if (![fm fileExistsAtPath:src isDirectory:&srcIsDir] || srcIsDir) {
+                    continue;
+                }
+                if (!removeLegacyFilePreferRoot(src)) {
+                    failed++;
+                    [errors addObject:[NSString stringWithFormat:@"%@ remove failed", src]];
+                }
+            }
+            if (dstExists) {
+                replaced++;
+            } else {
+                migrated++;
+            }
+            continue;
+        }
+
+        failed++;
+        [errors addObject:[NSString stringWithFormat:@"%@ <- %@ (%@)", dst, chosenSrc, copyError.localizedDescription ?: @"copy failed"]];
+    }
+
+    NSLog2(@"[CL] legacy migration result: migrated=%ld replaced=%ld missing=%ld failed=%ld legacyDirs=%@ target=%@",
+           (long)migrated, (long)replaced, (long)missing, (long)failed, legacyDirs, targetDir);
+
+    return @{
+        @"migrated": @(migrated),
+        @"replaced": @(replaced),
+        @"missing": @(missing),
+        @"failed": @(failed),
+        @"errors": errors,
+        @"legacyDirs": legacyDirs,
+        @"targetDir": targetDir
+    };
 }
 
 extern "C" {
@@ -659,10 +1005,23 @@ BOOL localPortOpen(int port) {
 
 extern "C" int _NSGetExecutablePath(char* buf, uint32_t* bufsize);
 NSString* getSelfExePath() {
-    char exe[256];
-    uint32_t bufsize = sizeof(exe);
-    _NSGetExecutablePath(exe, &bufsize);
-    return @(exe);
+    uint32_t bufsize = 0;
+    _NSGetExecutablePath(NULL, &bufsize);
+    if (bufsize == 0) {
+        return @"";
+    }
+
+    char* exe = (char*)calloc(bufsize + 1, sizeof(char));
+    if (!exe) {
+        return @"";
+    }
+    int rc = _NSGetExecutablePath(exe, &bufsize);
+    NSString* path = @"";
+    if (rc == 0 && exe[0] != '\0') {
+        path = @(exe);
+    }
+    free(exe);
+    return path;
 }
 
 int getJBType() {
@@ -675,9 +1034,6 @@ int getJBType() {
         roothide:/var/containers/Bundle/Application/.jbroot-[UUID]/Applications/ChargeLimiter.app/ChargeLimiter
         TrollStore/AppStore: [/private]/var/containers/Bundle/Application/[UUID]/ChargeLimiter.app/ChargeLimiter
      */
-#ifdef THEOS_PACKAGE_INSTALL_PREFIX
-    return JBTYPE_ROOTLESS;
-#endif
     Dl_info di;
     dladdr((void*)getJBType, &di);
     NSString* path = @(di.dli_fname);
@@ -705,6 +1061,16 @@ int getJBType() {
         }
         return JBTYPE_UNKNOWN;
     } else if ([path containsString:@"LaunchDaemons/"]) { // for Daemon
+        char resolved[PATH_MAX] = {0};
+        if (realpath("/var/jb", resolved) != NULL) {
+            NSString* realJb = @(resolved);
+            if ([realJb containsString:@"/.jbroot-"]) {
+                return JBTYPE_ROOTHIDE;
+            }
+            if ([realJb containsString:@"/preboot/"]) {
+                return JBTYPE_ROOTLESS;
+            }
+        }
         return JBTYPE_ROOT;
     }
     return JBTYPE_ROOT;
@@ -911,18 +1277,28 @@ static WiFiManagerClientRef getWiFiMan() {
         WiFiManagerClientSetPower_ = (__typeof(WiFiManagerClientSetPower_))dlsym(RTLD_DEFAULT, "WiFiManagerClientSetPower");
         WiFiManagerClientGetPower_ = (__typeof(WiFiManagerClientGetPower_))dlsym(RTLD_DEFAULT, "WiFiManagerClientGetPower");
         WiFiManagerClientCreate_ = (__typeof(WiFiManagerClientCreate_))dlsym(RTLD_DEFAULT, "WiFiManagerClientCreate");
-        man = WiFiManagerClientCreate_(kCFAllocatorDefault, 0);
+        if (WiFiManagerClientCreate_ && WiFiManagerClientGetPower_ && WiFiManagerClientSetPower_) {
+            man = WiFiManagerClientCreate_(kCFAllocatorDefault, 0);
+        } else {
+            NSLog2(@"[CL] MobileWiFi symbols unavailable, WiFi control disabled.");
+        }
     }
     return man;
 }
 
 BOOL isWiFiEnable() {
     WiFiManagerClientRef man = getWiFiMan();
+    if (!man || !WiFiManagerClientGetPower_) {
+        return NO;
+    }
     return WiFiManagerClientGetPower_(man);
 }
 
 void setWiFiEnable(BOOL flag) {
     WiFiManagerClientRef man = getWiFiMan();
+    if (!man || !WiFiManagerClientGetPower_ || !WiFiManagerClientSetPower_) {
+        return;
+    }
     BOOL status = WiFiManagerClientGetPower_(man);
     if (status != flag) {
         WiFiManagerClientSetPower_(man, flag);
@@ -1053,12 +1429,20 @@ void initBrightness() {
 
 float getBrightness() {
     initBrightness();
+    if (!BrightnessGet) {
+        return 0.5f;
+    }
     return BrightnessGet();
 }
 
 void setBrightness(float val) {
     initBrightness();
-    BrightnessCreate(kCFAllocatorDefault);
+    if (!BrightnessSet) {
+        return;
+    }
+    if (BrightnessCreate) {
+        BrightnessCreate(kCFAllocatorDefault);
+    }
     BrightnessSet(val, 1);
 }
 
@@ -1216,6 +1600,7 @@ void setSmartChargeEnable(BOOL flag) {
 - (id)readValueForKey:(NSString*)key defaultValue:(id)defaultValue;
 - (void)setValue:(id)value forKey:(NSString*)key;
 - (void)apply;
+- (void)reloadFromDisk;
 @end
 
 @implementation CLSettingsStore
@@ -1249,8 +1634,10 @@ void setSmartChargeEnable(BOOL flag) {
     if (key.length == 0) {
         return defaultValue;
     }
-    id val = self.preferences[key];
-    return val ?: defaultValue;
+    @synchronized (self) {
+        id val = self.preferences[key];
+        return val ?: defaultValue;
+    }
 }
 
 - (BOOL)readBoolForKey:(NSString*)key defaultValue:(BOOL)defaultValue {
@@ -1328,27 +1715,47 @@ void setSmartChargeEnable(BOOL flag) {
     if (key.length == 0) {
         return;
     }
-    if (value) {
-        self.cachedChanges[key] = value;
-        self.preferences[key] = value;
-    } else {
-        [self.cachedChanges removeObjectForKey:key];
-        [self.preferences removeObjectForKey:key];
+    @synchronized (self) {
+        if (value) {
+            self.cachedChanges[key] = value;
+            self.preferences[key] = value;
+        } else {
+            [self.cachedChanges removeObjectForKey:key];
+            [self.preferences removeObjectForKey:key];
+        }
+        self.isDirty = YES;
     }
-    self.isDirty = YES;
 }
 
 - (void)apply {
-    if (!self.isDirty) {
-        return;
+    @synchronized (self) {
+        if (!self.isDirty) {
+            return;
+        }
+        NSString* confPath = getConfPath();
+        if (confPath.length == 0) {
+            return;
+        }
+        [self.preferences writeToFile:confPath atomically:YES];
+        [self.cachedChanges removeAllObjects];
+        self.isDirty = NO;
     }
-    NSString* confPath = getConfPath();
-    if (confPath.length == 0) {
-        return;
+}
+
+- (void)reloadFromDisk {
+    @synchronized (self) {
+        [self.preferences removeAllObjects];
+        [self.cachedChanges removeAllObjects];
+        self.isDirty = NO;
+        NSString* confPath = getConfPath();
+        if (confPath.length == 0) {
+            return;
+        }
+        NSDictionary* fileDict = [NSDictionary dictionaryWithContentsOfFile:confPath];
+        if ([fileDict isKindOfClass:[NSDictionary class]]) {
+            [self.preferences addEntriesFromDictionary:fileDict];
+        }
     }
-    [self.preferences writeToFile:confPath atomically:YES];
-    [self.cachedChanges removeAllObjects];
-    self.isDirty = NO;
 }
 @end
 
@@ -1362,8 +1769,15 @@ void setlocalKV(NSString* key, id val) {
     [store apply];
 }
 
+void reloadLocalKVFromDisk(void) {
+    [[CLSettingsStore shared] reloadFromDisk];
+}
+
 NSDictionary* getAllKV() {
-    return [CLSettingsStore shared].preferences;
+    CLSettingsStore* store = [CLSettingsStore shared];
+    @synchronized (store) {
+        return [store.preferences copy];
+    }
 }
 /* ---------------- App ---------------- */
 
