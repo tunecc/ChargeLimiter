@@ -2281,18 +2281,32 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     self.mainStack.axis = UILayoutConstraintAxisVertical;
     self.mainStack.spacing = 16;
     self.mainStack.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.scrollView addSubview:self.mainStack];
+    
+    UIView *containerView = [[UIView alloc] init];
+    containerView.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.scrollView addSubview:containerView];
+    [containerView addSubview:self.mainStack];
+    
+    NSLayoutConstraint *widthConstraint = [self.mainStack.widthAnchor constraintEqualToAnchor:containerView.widthAnchor constant:-32];
+    widthConstraint.priority = UILayoutPriorityDefaultHigh;
     
     [NSLayoutConstraint activateConstraints:@[
         [self.scrollView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
         [self.scrollView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.scrollView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         [self.scrollView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
-        [self.mainStack.topAnchor constraintEqualToAnchor:self.scrollView.topAnchor constant:20],
-        [self.mainStack.leadingAnchor constraintEqualToAnchor:self.scrollView.leadingAnchor constant:16],
-        [self.mainStack.trailingAnchor constraintEqualToAnchor:self.scrollView.trailingAnchor constant:-16],
-        [self.mainStack.bottomAnchor constraintEqualToAnchor:self.scrollView.bottomAnchor constant:-40],
-        [self.mainStack.widthAnchor constraintEqualToAnchor:self.scrollView.widthAnchor constant:-32]
+        
+        [containerView.topAnchor constraintEqualToAnchor:self.scrollView.topAnchor],
+        [containerView.bottomAnchor constraintEqualToAnchor:self.scrollView.bottomAnchor],
+        [containerView.leadingAnchor constraintEqualToAnchor:self.scrollView.leadingAnchor],
+        [containerView.trailingAnchor constraintEqualToAnchor:self.scrollView.trailingAnchor],
+        [containerView.widthAnchor constraintEqualToAnchor:self.scrollView.widthAnchor],
+        
+        [self.mainStack.topAnchor constraintEqualToAnchor:containerView.topAnchor constant:20],
+        [self.mainStack.bottomAnchor constraintEqualToAnchor:containerView.bottomAnchor constant:-40],
+        [self.mainStack.centerXAnchor constraintEqualToAnchor:containerView.centerXAnchor],
+        widthConstraint,
+        [self.mainStack.widthAnchor constraintLessThanOrEqualToConstant:600],
     ]];
     
     [self setupSettingsCard];
@@ -2370,6 +2384,11 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     }]];
     
     [alert addAction:[UIAlertAction actionWithTitle:CLL(@"取消") style:UIAlertActionStyleCancel handler:nil]];
+    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
+        alert.popoverPresentationController.sourceView = self.view;
+        alert.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width / 2, self.view.bounds.size.height / 2, 0, 0);
+        alert.popoverPresentationController.permittedArrowDirections = 0;
+    }
     [self presentViewController:alert animated:YES completion:nil];
 }
 
@@ -2394,6 +2413,11 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     }]];
     
     [alert addAction:[UIAlertAction actionWithTitle:CLL(@"取消") style:UIAlertActionStyleCancel handler:nil]];
+    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
+        alert.popoverPresentationController.sourceView = self.view;
+        alert.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width / 2, self.view.bounds.size.height / 2, 0, 0);
+        alert.popoverPresentationController.permittedArrowDirections = 0;
+    }
     [self presentViewController:alert animated:YES completion:nil];
 }
 
@@ -2414,6 +2438,11 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
         }]];
         
         [alert addAction:[UIAlertAction actionWithTitle:CLL(@"取消") style:UIAlertActionStyleCancel handler:nil]];
+        if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
+            alert.popoverPresentationController.sourceView = self.view;
+            alert.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width / 2, self.view.bounds.size.height / 2, 0, 0);
+            alert.popoverPresentationController.permittedArrowDirections = 0;
+        }
         [self presentViewController:alert animated:YES completion:nil];
     } else {
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"深色模式") message:CLL(@"iOS 13+ 才支持深色模式") preferredStyle:UIAlertControllerStyleAlert];
@@ -3115,18 +3144,32 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     self.mainStack.axis = UILayoutConstraintAxisVertical;
     self.mainStack.spacing = 20;
     self.mainStack.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.scrollView addSubview:self.mainStack];
     
+    UIView *containerView = [[UIView alloc] init];
+    containerView.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.scrollView addSubview:containerView];
+    [containerView addSubview:self.mainStack];
+    
+    NSLayoutConstraint *widthConstraint = [self.mainStack.widthAnchor constraintEqualToAnchor:containerView.widthAnchor constant:-32];
+    widthConstraint.priority = UILayoutPriorityDefaultHigh;
+
     [NSLayoutConstraint activateConstraints:@[
         [self.scrollView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
         [self.scrollView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.scrollView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         [self.scrollView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
-        [self.mainStack.topAnchor constraintEqualToAnchor:self.scrollView.topAnchor constant:60],
-        [self.mainStack.leadingAnchor constraintEqualToAnchor:self.scrollView.leadingAnchor constant:16],
-        [self.mainStack.trailingAnchor constraintEqualToAnchor:self.scrollView.trailingAnchor constant:-16],
-        [self.mainStack.bottomAnchor constraintEqualToAnchor:self.scrollView.bottomAnchor constant:-40],
-        [self.mainStack.widthAnchor constraintEqualToAnchor:self.scrollView.widthAnchor constant:-32]
+        
+        [containerView.topAnchor constraintEqualToAnchor:self.scrollView.topAnchor],
+        [containerView.bottomAnchor constraintEqualToAnchor:self.scrollView.bottomAnchor],
+        [containerView.leadingAnchor constraintEqualToAnchor:self.scrollView.leadingAnchor],
+        [containerView.trailingAnchor constraintEqualToAnchor:self.scrollView.trailingAnchor],
+        [containerView.widthAnchor constraintEqualToAnchor:self.scrollView.widthAnchor],
+        
+        [self.mainStack.topAnchor constraintEqualToAnchor:containerView.topAnchor constant:60],
+        [self.mainStack.bottomAnchor constraintEqualToAnchor:containerView.bottomAnchor constant:-40],
+        [self.mainStack.centerXAnchor constraintEqualToAnchor:containerView.centerXAnchor],
+        widthConstraint,
+        [self.mainStack.widthAnchor constraintLessThanOrEqualToConstant:600],
     ]];
     
     // 标题
@@ -3709,6 +3752,11 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     }]];
     
     [alert addAction:[UIAlertAction actionWithTitle:CLL(@"取消") style:UIAlertActionStyleCancel handler:nil]];
+    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
+        alert.popoverPresentationController.sourceView = self.view;
+        alert.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width / 2, self.view.bounds.size.height / 2, 0, 0);
+        alert.popoverPresentationController.permittedArrowDirections = 0;
+    }
     [self presentViewController:alert animated:YES completion:nil];
 }
 
