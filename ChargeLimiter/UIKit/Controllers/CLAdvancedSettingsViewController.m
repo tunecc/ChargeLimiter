@@ -289,18 +289,32 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
     self.mainStack.axis = UILayoutConstraintAxisVertical;
     self.mainStack.spacing = 20;
     self.mainStack.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.scrollView addSubview:self.mainStack];
     
+    UIView *containerView = [[UIView alloc] init];
+    containerView.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.scrollView addSubview:containerView];
+    [containerView addSubview:self.mainStack];
+    
+    NSLayoutConstraint *widthConstraint = [self.mainStack.widthAnchor constraintEqualToAnchor:containerView.widthAnchor constant:-40];
+    widthConstraint.priority = UILayoutPriorityDefaultHigh;
+
     [NSLayoutConstraint activateConstraints:@[
         [self.scrollView.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
         [self.scrollView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.scrollView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         [self.scrollView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
-        [self.mainStack.topAnchor constraintEqualToAnchor:self.scrollView.topAnchor constant:20],
-        [self.mainStack.leadingAnchor constraintEqualToAnchor:self.scrollView.leadingAnchor constant:20],
-        [self.mainStack.trailingAnchor constraintEqualToAnchor:self.scrollView.trailingAnchor constant:-20],
-        [self.mainStack.bottomAnchor constraintEqualToAnchor:self.scrollView.bottomAnchor constant:-40],
-        [self.mainStack.widthAnchor constraintEqualToAnchor:self.scrollView.widthAnchor constant:-40]
+        
+        [containerView.topAnchor constraintEqualToAnchor:self.scrollView.topAnchor],
+        [containerView.bottomAnchor constraintEqualToAnchor:self.scrollView.bottomAnchor],
+        [containerView.leadingAnchor constraintEqualToAnchor:self.scrollView.leadingAnchor],
+        [containerView.trailingAnchor constraintEqualToAnchor:self.scrollView.trailingAnchor],
+        [containerView.widthAnchor constraintEqualToAnchor:self.scrollView.widthAnchor],
+        
+        [self.mainStack.topAnchor constraintEqualToAnchor:containerView.topAnchor constant:20],
+        [self.mainStack.bottomAnchor constraintEqualToAnchor:containerView.bottomAnchor constant:-40],
+        [self.mainStack.centerXAnchor constraintEqualToAnchor:containerView.centerXAnchor],
+        widthConstraint,
+        [self.mainStack.widthAnchor constraintLessThanOrEqualToConstant:600],
     ]];
 }
 
@@ -446,6 +460,11 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
     }
     
     [alert addAction:[UIAlertAction actionWithTitle:CLL(@"取消") style:UIAlertActionStyleCancel handler:nil]];
+    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
+        alert.popoverPresentationController.sourceView = self.view;
+        alert.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width / 2, self.view.bounds.size.height / 2, 0, 0);
+        alert.popoverPresentationController.permittedArrowDirections = 0;
+    }
     [self presentViewController:alert animated:YES completion:nil];
 }
 
@@ -467,6 +486,11 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
     }
     
     [alert addAction:[UIAlertAction actionWithTitle:CLL(@"取消") style:UIAlertActionStyleCancel handler:nil]];
+    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
+        alert.popoverPresentationController.sourceView = self.view;
+        alert.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width / 2, self.view.bounds.size.height / 2, 0, 0);
+        alert.popoverPresentationController.permittedArrowDirections = 0;
+    }
     [self presentViewController:alert animated:YES completion:nil];
 }
 
