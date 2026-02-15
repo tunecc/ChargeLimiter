@@ -11,26 +11,28 @@ static NSString* g_appDocumentsPath = nil;
 static NSString* g_logPath = nil;
 static NSString* g_confPath = nil;
 static NSString* g_dbPath = nil;
+static NSString* g_appDocumentsPathOverride = nil;
 static NSString* const kContainerCacheFileName = @"com.chargelimiter.mod.containerpath";
 typedef const char* (*jbroot_fn_t)(const char* path);
+static NSArray<NSString*>* availableContainerCachePaths(void);
+static NSString* resolveDocumentsByContainerCache(void);
 
 static BOOL isValidAppDocumentsPath(NSString* path) {
     if (path.length == 0) {
         return NO;
     }
-    if ([path hasPrefix:@"/var/mobile/Containers/Data/Application/"]) {
-        return YES;
+    NSString* lower = path.lowercaseString;
+    if (![lower hasPrefix:@"/"]) {
+        return NO;
     }
-    if ([path hasPrefix:@"/private/var/mobile/Containers/Data/Application/"]) {
-        return YES;
+    if (![lower containsString:@"/containers/data/"]) {
+        return NO;
     }
-    if ([path hasPrefix:@"/var/jb/var/mobile/Containers/Data/Application/"]) {
-        return YES;
-    }
-    if ([path hasPrefix:@"/private/var/jb/var/mobile/Containers/Data/Application/"]) {
-        return YES;
-    }
-    if ([path hasPrefix:@"/var/jb/private/var/mobile/Containers/Data/Application/"]) {
+    if ([lower hasPrefix:@"/var/mobile/"] ||
+        [lower hasPrefix:@"/private/var/mobile/"] ||
+        [lower hasPrefix:@"/var/jb/var/mobile/"] ||
+        [lower hasPrefix:@"/private/var/jb/var/mobile/"] ||
+        [lower hasPrefix:@"/var/jb/private/var/mobile/"]) {
         return YES;
     }
     return NO;
@@ -49,25 +51,30 @@ static NSURL* getContainerURLFromMCM(id container) {
     return nil;
 }
 
-static NSURL* resolveMCMContainerURL(NSString* bid) {
+static NSURL* resolveMCMContainerURL(NSString* bid, BOOL allowCreate) {
     if (bid.length == 0) {
         return nil;
     }
     Class dataCls = objc_getClass("MCMAppDataContainer");
-    if (dataCls) {
+    if (!dataCls) {
+        return nil;
+    }
+
+    SEL selGet = @selector(containerWithIdentifier:error:);
+    if ([dataCls respondsToSelector:selGet]) {
+        NSError* err = nil;
+        id container = ((id(*)(id, SEL, NSString*, NSError**))objc_msgSend)(dataCls, selGet, bid, &err);
+        NSURL* url = getContainerURLFromMCM(container);
+        if (url.path.length > 0) {
+            return url;
+        }
+    }
+
+    if (allowCreate) {
         SEL selCreate = @selector(containerWithIdentifier:createIfNecessary:error:);
         if ([dataCls respondsToSelector:selCreate]) {
             NSError* err = nil;
             id container = ((id(*)(id, SEL, NSString*, BOOL, NSError**))objc_msgSend)(dataCls, selCreate, bid, YES, &err);
-            NSURL* url = getContainerURLFromMCM(container);
-            if (url.path.length > 0) {
-                return url;
-            }
-        }
-        SEL selGet = @selector(containerWithIdentifier:error:);
-        if ([dataCls respondsToSelector:selGet]) {
-            NSError* err = nil;
-            id container = ((id(*)(id, SEL, NSString*, NSError**))objc_msgSend)(dataCls, selGet, bid, &err);
             NSURL* url = getContainerURLFromMCM(container);
             if (url.path.length > 0) {
                 return url;
@@ -84,9 +91,14 @@ static NSString* resolveDocumentsByScanning(NSString* bid) {
     NSArray<NSString*>* bases = @[
         @"/var/mobile/Containers/Data/Application",
         @"/private/var/mobile/Containers/Data/Application",
+        @"/var/mobile/containers/data/application",
+        @"/private/var/mobile/containers/data/application",
         @"/var/jb/var/mobile/Containers/Data/Application",
         @"/private/var/jb/var/mobile/Containers/Data/Application",
-        @"/var/jb/private/var/mobile/Containers/Data/Application"
+        @"/var/jb/private/var/mobile/Containers/Data/Application",
+        @"/var/jb/var/mobile/containers/data/application",
+        @"/private/var/jb/var/mobile/containers/data/application",
+        @"/var/jb/private/var/mobile/containers/data/application"
     ];
     for (NSString* base in bases) {
         NSError* error = nil;
@@ -126,8 +138,53 @@ static NSString* resolveAppBundleIdentifier() {
     return bid;
 }
 
+static NSString* ensureValidDocumentsPath(NSString* docsPath) {
+    if (!isValidAppDocumentsPath(docsPath)) {
+        return nil;
+    }
+    [[NSFileManager defaultManager] createDirectoryAtPath:docsPath withIntermediateDirectories:YES attributes:nil error:nil];
+    return docsPath;
+}
+
+static NSString* documentsPathFromContainerRoot(NSString* rootPath) {
+    if (rootPath.length == 0) {
+        return nil;
+    }
+    NSString* root = [rootPath stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (root.length == 0) {
+        return nil;
+    }
+    if (([root hasPrefix:@"\""] && [root hasSuffix:@"\""]) || ([root hasPrefix:@"'"] && [root hasSuffix:@"'"])) {
+        if (root.length <= 2) {
+            return nil;
+        }
+        root = [root substringWithRange:NSMakeRange(1, root.length - 2)];
+    }
+    NSString* docsPath = nil;
+    if ([[root lastPathComponent] isEqualToString:@"Documents"]) {
+        docsPath = root;
+    } else {
+        docsPath = [root stringByAppendingPathComponent:@"Documents"];
+    }
+    return ensureValidDocumentsPath(docsPath);
+}
+
 static NSString* resolveAppDocumentsPath() {
     NSString* docPath = nil;
+
+    if (g_appDocumentsPathOverride.length > 0) {
+        docPath = ensureValidDocumentsPath(g_appDocumentsPathOverride);
+        if (docPath.length > 0) {
+            return docPath;
+        }
+        NSLog2(@"[CL] Invalid app documents override ignored: %@", g_appDocumentsPathOverride);
+    }
+
+    docPath = ensureValidDocumentsPath([NSHomeDirectory() stringByAppendingPathComponent:@"Documents"]);
+    if (docPath.length > 0) {
+        return docPath;
+    }
+
     NSString* bid = resolveAppBundleIdentifier();
     if (bid.length > 0) {
         Class proxyCls = objc_getClass("LSApplicationProxy");
@@ -139,31 +196,66 @@ static NSString* resolveAppDocumentsPath() {
             if (proxy && [proxy respondsToSelector:@selector(dataContainerURL)]) {
                 NSURL* url = ((LSApplicationProxy*)proxy).dataContainerURL;
                 if (url.path.length > 0) {
-                    docPath = [url.path stringByAppendingPathComponent:@"Documents"];
+                    docPath = ensureValidDocumentsPath([url.path stringByAppendingPathComponent:@"Documents"]);
+                    if (docPath.length > 0) {
+                        return docPath;
+                    }
                 }
             }
         }
     }
-    if (isValidAppDocumentsPath(docPath)) {
-        return docPath;
-    }
-    NSURL* mcmURL = resolveMCMContainerURL(bid);
+
+    NSURL* mcmURL = resolveMCMContainerURL(bid, NO);
     if (mcmURL.path.length > 0) {
-        docPath = [mcmURL.path stringByAppendingPathComponent:@"Documents"];
-        if (isValidAppDocumentsPath(docPath)) {
-            [[NSFileManager defaultManager] createDirectoryAtPath:docPath withIntermediateDirectories:YES attributes:nil error:nil];
+        docPath = ensureValidDocumentsPath([mcmURL.path stringByAppendingPathComponent:@"Documents"]);
+        if (docPath.length > 0) {
             return docPath;
         }
     }
-    NSString* scanPath = resolveDocumentsByScanning(bid);
-    if (isValidAppDocumentsPath(scanPath)) {
+
+    NSString* scanPath = ensureValidDocumentsPath(resolveDocumentsByScanning(bid));
+    if (scanPath.length > 0) {
         return scanPath;
     }
-    NSString* fallback = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-    if (isValidAppDocumentsPath(fallback)) {
+
+    NSString* cachedPath = resolveDocumentsByContainerCache();
+    if (cachedPath.length > 0) {
+        return cachedPath;
+    }
+
+    mcmURL = resolveMCMContainerURL(bid, YES);
+    if (mcmURL.path.length > 0) {
+        docPath = ensureValidDocumentsPath([mcmURL.path stringByAppendingPathComponent:@"Documents"]);
+        if (docPath.length > 0) {
+            return docPath;
+        }
+    }
+
+    NSString* fallback = ensureValidDocumentsPath(NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject);
+    if (fallback.length > 0) {
         return fallback;
     }
+    NSLog2(@"[CL] resolveAppDocumentsPath failed. bid=%@ home=%@", bid, NSHomeDirectory());
     return nil;
+}
+
+void setAppDocumentsPathOverride(NSString* docsPath) {
+    if (docsPath.length == 0) {
+        return;
+    }
+    NSString* fixed = ensureValidDocumentsPath(docsPath);
+    if (fixed.length == 0) {
+        NSLog2(@"[CL] setAppDocumentsPathOverride rejected invalid path: %@", docsPath);
+        return;
+    }
+    @synchronized(NSFileManager.defaultManager) {
+        g_appDocumentsPathOverride = fixed;
+        g_appDocumentsPath = nil;
+        g_logPath = nil;
+        g_confPath = nil;
+        g_dbPath = nil;
+    }
+    NSLog2(@"[CL] app documents override set: %@", fixed);
 }
 
 static NSString* containerRootFromDocuments(NSString* documentsPath) {
@@ -284,6 +376,64 @@ static NSArray<NSString*>* availableContainerCachePaths() {
     return dedup;
 }
 
+static NSString* parseContainerRootFromCacheFile(NSString* cachePath) {
+    if (cachePath.length == 0) {
+        return nil;
+    }
+    NSError* readError = nil;
+    NSString* content = [NSString stringWithContentsOfFile:cachePath encoding:NSUTF8StringEncoding error:&readError];
+    if (content.length == 0) {
+        return nil;
+    }
+
+    NSArray<NSString*>* lines = [content componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
+    for (NSString* line in lines) {
+        NSString* trimmed = [line stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (![trimmed hasPrefix:@"CONTAINER_PATH="]) {
+            continue;
+        }
+        NSString* value = [trimmed substringFromIndex:[@"CONTAINER_PATH=" length]];
+        value = [value stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (value.length > 0) {
+            return value;
+        }
+    }
+    return nil;
+}
+
+static NSString* resolveDocumentsByContainerCache() {
+    NSMutableArray<NSString*>* candidates = [NSMutableArray arrayWithArray:availableContainerCachePaths()];
+    [candidates addObject:[@"/var/mobile/Library/Preferences" stringByAppendingPathComponent:kContainerCacheFileName]];
+    [candidates addObject:[@"/private/var/mobile/Library/Preferences" stringByAppendingPathComponent:kContainerCacheFileName]];
+    [candidates addObject:[@"/var/jb/var/mobile/Library/Preferences" stringByAppendingPathComponent:kContainerCacheFileName]];
+    [candidates addObject:[@"/private/var/jb/var/mobile/Library/Preferences" stringByAppendingPathComponent:kContainerCacheFileName]];
+    [candidates addObject:[@"/var/jb/private/var/mobile/Library/Preferences" stringByAppendingPathComponent:kContainerCacheFileName]];
+
+    NSString* roothidePath = resolveRoothideCachePathByAPI();
+    if (roothidePath.length > 0) {
+        [candidates addObject:roothidePath];
+    }
+    NSString* jbroot = resolveJbRootFromSelfExe();
+    if (jbroot.length > 0) {
+        NSString* inferred = [[jbroot stringByAppendingPathComponent:@"var/mobile/Library/Preferences"] stringByAppendingPathComponent:kContainerCacheFileName];
+        [candidates addObject:inferred];
+    }
+
+    NSMutableSet<NSString*>* seen = [NSMutableSet new];
+    for (NSString* cachePath in candidates) {
+        if (cachePath.length == 0 || [seen containsObject:cachePath]) {
+            continue;
+        }
+        [seen addObject:cachePath];
+        NSString* containerRoot = parseContainerRootFromCacheFile(cachePath);
+        NSString* docsPath = documentsPathFromContainerRoot(containerRoot);
+        if (docsPath.length > 0) {
+            return docsPath;
+        }
+    }
+    return nil;
+}
+
 static void updateContainerPathCache(NSString* documentsPath) {
     NSString* containerRoot = containerRootFromDocuments(documentsPath);
     if (containerRoot.length == 0) {
@@ -333,7 +483,7 @@ static void ensureAppPaths() {
         // all runtime files live directly under the app container Documents dir.
         NSString* targetDir = appDoc;
         if (targetDir.length == 0) {
-            NSLog(@"[CL] Failed to resolve config dir.");
+            NSLog2(@"[CL] Failed to resolve config dir. jbType=%d exe=%@", getJBType(), getSelfExePath());
             return;
         }
         [[NSFileManager defaultManager] createDirectoryAtPath:targetDir withIntermediateDirectories:YES attributes:nil error:nil];
@@ -1077,6 +1227,43 @@ int getJBType() {
     // todo
 }
 
+extern "C" int restartDaemonForApp_C(NSString* appDocs) {
+    NSString* bundlePath = [getSelfExePath() stringByDeletingLastPathComponent];
+    NSString* daemonPath = [bundlePath stringByAppendingPathComponent:@"ChargeLimiterDaemon"];
+    if (![[NSFileManager defaultManager] fileExistsAtPath:daemonPath]) {
+        NSLog2(@"[CL] restartDaemonForApp_C daemon missing: %@", daemonPath);
+        return -3;
+    }
+
+    NSMutableArray* argv = [NSMutableArray arrayWithObject:daemonPath];
+    if ([appDocs isKindOfClass:[NSString class]] && appDocs.length > 0) {
+        [argv addObject:@"--app-docs"];
+        [argv addObject:appDocs];
+    }
+
+    int jbType = getJBType();
+    int spawnFlags = SPAWN_FLAG_NOWAIT;
+    BOOL triedRoot = NO;
+    if (jbType != JBTYPE_TROLLSTORE) {
+        spawnFlags |= SPAWN_FLAG_ROOT;
+        triedRoot = YES;
+    }
+    int rc = spawn(argv, nil, nil, nil, spawnFlags, nil);
+    NSLog2(@"[CL] restartDaemonForApp_C spawn rc=%d jbType=%d flags=%d argv=%@", rc, jbType, spawnFlags, argv);
+
+    // Some environments report non-TrollStore jbType in app process and root persona spawn fails with EPERM.
+    // Retry once without root to keep daemon reachable for config/API path.
+    if (rc != 0 && triedRoot) {
+        int retryFlags = SPAWN_FLAG_NOWAIT;
+        int rc2 = spawn(argv, nil, nil, nil, retryFlags, nil);
+        NSLog2(@"[CL] restartDaemonForApp_C retry-nonroot rc=%d flags=%d argv=%@", rc2, retryFlags, argv);
+        if (rc2 == 0) {
+            return 0;
+        }
+    }
+    return rc;
+}
+
 void NSFileLog(NSString* fmt, ...) {
     va_list va;
     va_start(va, fmt);
@@ -1734,9 +1921,27 @@ void setSmartChargeEnable(BOOL flag) {
         }
         NSString* confPath = getConfPath();
         if (confPath.length == 0) {
+            NSLog2(@"[CL] conf path empty, skip apply");
             return;
         }
-        [self.preferences writeToFile:confPath atomically:YES];
+        NSString* parent = [confPath stringByDeletingLastPathComponent];
+        if (parent.length > 0) {
+            [[NSFileManager defaultManager] createDirectoryAtPath:parent withIntermediateDirectories:YES attributes:nil error:nil];
+        }
+        NSError* plistError = nil;
+        NSData* plistData = [NSPropertyListSerialization dataWithPropertyList:self.preferences
+                                                                        format:NSPropertyListBinaryFormat_v1_0
+                                                                       options:0
+                                                                         error:&plistError];
+        if (!plistData) {
+            NSLog2(@"[CL] conf serialize failed: path=%@ err=%@", confPath, plistError);
+            return;
+        }
+        NSError* writeError = nil;
+        if (![plistData writeToFile:confPath options:NSDataWritingAtomic error:&writeError]) {
+            NSLog2(@"[CL] conf write failed: path=%@ err=%@", confPath, writeError);
+            return;
+        }
         [self.cachedChanges removeAllObjects];
         self.isDirty = NO;
     }
@@ -1769,6 +1974,10 @@ void setlocalKV(NSString* key, id val) {
     [store apply];
 }
 
+extern "C" void setlocalKV_C(NSString* key, id val) {
+    setlocalKV(key, val);
+}
+
 void reloadLocalKVFromDisk(void) {
     [[CLSettingsStore shared] reloadFromDisk];
 }
@@ -1778,6 +1987,14 @@ NSDictionary* getAllKV() {
     @synchronized (store) {
         return [store.preferences copy];
     }
+}
+
+extern "C" NSDictionary* getAllKV_C(void) {
+    return getAllKV();
+}
+
+extern "C" BOOL localPortOpen_C(int port) {
+    return localPortOpen(port);
 }
 /* ---------------- App ---------------- */
 

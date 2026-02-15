@@ -5,6 +5,7 @@
 
 #import "CLBatteryManager.h"
 #import "CLAPIClient.h"
+extern NSDictionary* getAllKV_C(void);
 
 NSNotificationName const CLBatteryInfoDidUpdateNotification = @"CLBatteryInfoDidUpdateNotification";
 NSNotificationName const CLConfigDidUpdateNotification = @"CLConfigDidUpdateNotification";
@@ -51,6 +52,65 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
 @end
 
 @implementation CLBatteryManager
+
+- (void)applyConfigData:(NSDictionary *)data {
+    if (![data isKindOfClass:[NSDictionary class]]) return;
+
+    _enabled = [data[@"enable"] boolValue];
+
+    NSString *mode = data[@"mode"];
+    if ([mode isEqualToString:@"charge_on_plug"]) {
+        _chargeMode = CLChargeModePlugAndCharge;
+    } else if ([mode isEqualToString:@"edge_trigger"]) {
+        _chargeMode = CLChargeModeEdgeTrigger;
+    }
+
+    _updateFrequency = [data[@"update_freq"] integerValue];
+    _chargeBelow = [data[@"charge_below"] integerValue];
+    _chargeAbove = [data[@"charge_above"] integerValue];
+    _tempControlEnabled = [data[@"enable_temp"] boolValue];
+    _chargeTempBelow = [data[@"charge_temp_below"] integerValue];
+    _chargeTempAbove = [data[@"charge_temp_above"] integerValue];
+
+    _accChargeEnabled = [data[@"acc_charge"] boolValue];
+    _accChargeAirMode = [data[@"acc_charge_airmode"] boolValue];
+    _accChargeWifi = [data[@"acc_charge_wifi"] boolValue];
+    _accChargeBluetooth = [data[@"acc_charge_blue"] boolValue];
+    _accChargeBrightness = [data[@"acc_charge_bright"] boolValue];
+    _accChargeLPM = [data[@"acc_charge_lpm"] boolValue];
+
+    _predictiveInhibitCharge = [data[@"adv_predictive_inhibit_charge"] boolValue];
+    _disableInflow = [data[@"adv_disable_inflow"] boolValue];
+    _limitInflow = [data[@"adv_limit_inflow"] boolValue];
+    _thermalModeLock = [data[@"adv_thermal_mode_lock"] boolValue];
+
+    _thermalMode = [self thermalModeFromString:data[@"adv_def_thermal_mode"]];
+    _limitInflowThermalMode = [self thermalModeFromString:data[@"adv_limit_inflow_mode"]];
+    _thermalSimulateMode = [self thermalModeFromString:data[@"thermal_simulate_mode"]];
+
+    _appVersion = data[@"ver"];
+    _systemVersion = data[@"sysver"];
+    _deviceModel = data[@"devmodel"];
+    _systemBootTime = [data[@"sys_boot"] doubleValue];
+    _serviceBootTime = [data[@"serv_boot"] doubleValue];
+}
+
+- (NSDictionary *)localConfigFallback {
+    NSDictionary *all = getAllKV_C();
+    if (![all isKindOfClass:[NSDictionary class]] || all.count == 0) {
+        return nil;
+    }
+    NSMutableDictionary *m = [all mutableCopy];
+    if (!m[@"enable"]) m[@"enable"] = @YES;
+    if (!m[@"mode"]) m[@"mode"] = @"charge_on_plug";
+    if (!m[@"update_freq"]) m[@"update_freq"] = @1;
+    if (!m[@"charge_below"]) m[@"charge_below"] = @20;
+    if (!m[@"charge_above"]) m[@"charge_above"] = @80;
+    if (!m[@"enable_temp"]) m[@"enable_temp"] = @NO;
+    if (!m[@"charge_temp_below"]) m[@"charge_temp_below"] = @35;
+    if (!m[@"charge_temp_above"]) m[@"charge_temp_above"] = @40;
+    return m;
+}
 
 + (instancetype)shared {
     static CLBatteryManager *instance = nil;
@@ -131,6 +191,11 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
     [[CLAPIClient shared] getConfigWithKey:nil completion:^(NSDictionary * _Nullable response, NSError * _Nullable error) {
         if (error || !response) {
             [self updateDaemonStatus:NO];
+            NSDictionary *localData = [self localConfigFallback];
+            if (localData) {
+                [self applyConfigData:localData];
+                [[NSNotificationCenter defaultCenter] postNotificationName:CLConfigDidUpdateNotification object:self];
+            }
             return;
         }
         
@@ -138,46 +203,7 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
         
         NSDictionary *data = response[@"data"];
         if (!data) return;
-        
-        // 解析配置 - 直接设置 ivar 避免触发 setter 重新保存到服务器
-        _enabled = [data[@"enable"] boolValue];
-        
-        NSString *mode = data[@"mode"];
-        if ([mode isEqualToString:@"charge_on_plug"]) {
-            _chargeMode = CLChargeModePlugAndCharge;
-        } else if ([mode isEqualToString:@"edge_trigger"]) {
-            _chargeMode = CLChargeModeEdgeTrigger;
-        }
-        
-        _updateFrequency = [data[@"update_freq"] integerValue];
-        _chargeBelow = [data[@"charge_below"] integerValue];
-        _chargeAbove = [data[@"charge_above"] integerValue];
-        _tempControlEnabled = [data[@"enable_temp"] boolValue];
-        _chargeTempBelow = [data[@"charge_temp_below"] integerValue];
-        _chargeTempAbove = [data[@"charge_temp_above"] integerValue];
-        
-        _accChargeEnabled = [data[@"acc_charge"] boolValue];
-        _accChargeAirMode = [data[@"acc_charge_airmode"] boolValue];
-        _accChargeWifi = [data[@"acc_charge_wifi"] boolValue];
-        _accChargeBluetooth = [data[@"acc_charge_blue"] boolValue];
-        _accChargeBrightness = [data[@"acc_charge_bright"] boolValue];
-        _accChargeLPM = [data[@"acc_charge_lpm"] boolValue];
-        
-        _predictiveInhibitCharge = [data[@"adv_predictive_inhibit_charge"] boolValue];
-        _disableInflow = [data[@"adv_disable_inflow"] boolValue];
-        _limitInflow = [data[@"adv_limit_inflow"] boolValue];
-        _thermalModeLock = [data[@"adv_thermal_mode_lock"] boolValue];
-        
-        _thermalMode = [self thermalModeFromString:data[@"adv_def_thermal_mode"]];
-        _limitInflowThermalMode = [self thermalModeFromString:data[@"adv_limit_inflow_mode"]];
-        _thermalSimulateMode = [self thermalModeFromString:data[@"thermal_simulate_mode"]];
-        
-        // 系统信息
-        _appVersion = data[@"ver"];
-        _systemVersion = data[@"sysver"];
-        _deviceModel = data[@"devmodel"];
-        _systemBootTime = [data[@"sys_boot"] doubleValue];
-        _serviceBootTime = [data[@"serv_boot"] doubleValue];
+        [self applyConfigData:data];
         
         [[NSNotificationCenter defaultCenter] postNotificationName:CLConfigDidUpdateNotification object:self];
     }];

@@ -4,7 +4,8 @@
 xcuserdata/
 
 # Build outputs
-build/
+build roothide/
+build rootless/
 Packages/
 LatestBuild/
 DerivedData/

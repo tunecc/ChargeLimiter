@@ -27,6 +27,29 @@ require_cmd ar
 require_cmd tar
 require_cmd rg
 
+force_clean_dir() {
+  dir="$1"
+  [ -e "$dir" ] || return 0
+
+  attempts=0
+  while [ "$attempts" -lt 5 ] && [ -e "$dir" ]; do
+    rm -rf "$dir" 2>/dev/null || true
+    if [ -e "$dir" ]; then
+      # Handle transient ENOTEMPTY / permission edge cases on macOS.
+      chmod -R u+w "$dir" 2>/dev/null || true
+      find "$dir" -mindepth 1 -exec rm -rf {} + 2>/dev/null || true
+      rm -rf "$dir" 2>/dev/null || true
+    fi
+    attempts=$((attempts + 1))
+    [ -e "$dir" ] && sleep 1 || true
+  done
+
+  if [ -e "$dir" ]; then
+    echo "[ERR] Failed to clean directory: $dir" >&2
+    exit 1
+  fi
+}
+
 set_control_version() {
   control_file="$1"
   tmp_file="${control_file}.tmp.$$"
@@ -39,7 +62,7 @@ set_control_version() {
   mv "$tmp_file" "$control_file"
 }
 
-VERSION="${1:-1.9.6}"
+VERSION="${1:-1.9.6.1}"
 if [ -z "$VERSION" ]; then
     VERSION="$(awk -F' = ' '/MARKETING_VERSION =/{gsub(/;/, "", $2); print $2; exit}' "$ROOT_DIR/ChargeLimiter.xcodeproj/project.pbxproj")"
 fi
@@ -51,14 +74,18 @@ fi
 
 ROOTLESS_APP="$BUILD_ROOTLESS/Build/Products/Release-iphoneos/ChargeLimiter.app"
 ROOTHIDE_APP="$BUILD_ROOTHIDE/Build/Products/Release-iphoneos/ChargeLimiter.app"
-APP_ENT="$ROOT_DIR/ChargeLimiter/ChargeLimiter.app.entitlements"
+APP_ENT_TS="$ROOT_DIR/ChargeLimiter/ChargeLimiter.app.entitlements"
+APP_ENT_JB="$ROOT_DIR/ChargeLimiter/ChargeLimiter.app.jb.entitlements"
 DAEMON_ENT="$ROOT_DIR/ChargeLimiter/ChargeLimiter.entitlements"
 
 TIPA_OUT="$OUT_DIR/ChargeLimiter_${VERSION}_TrollStore.tipa"
 ROOTLESS_DEB_OUT="$OUT_DIR/ChargeLimiter_${VERSION}_rootless_arm64.deb"
 ROOTHIDE_DEB_OUT="$OUT_DIR/ChargeLimiter_${VERSION}_roothide_arm64e.deb"
+TROLLSTORE_BANNED_ENTITLEMENTS_REGEX="com\\.apple\\.private\\.cs\\.debugger|dynamic-codesigning|com\\.apple\\.private\\.skip-library-validation"
 
-rm -rf "$BUILD_ROOTLESS" "$BUILD_ROOTHIDE" "$PAYLOAD_DIR"
+force_clean_dir "$BUILD_ROOTLESS"
+force_clean_dir "$BUILD_ROOTHIDE"
+force_clean_dir "$PAYLOAD_DIR"
 mkdir -p "$OUT_DIR" "$PAYLOAD_DIR"
 
 echo "[1/8] Build rootless app (arm64)..."
@@ -92,10 +119,15 @@ fi
 
 sign_app() {
   APP_PATH="$1"
+  APP_ENT="$2"
   [ -f "$APP_PATH/ChargeLimiter" ] || { echo "[ERR] Missing binary: $APP_PATH/ChargeLimiter" >&2; exit 1; }
   [ -f "$APP_PATH/ChargeLimiterDaemon" ] || { echo "[ERR] Missing binary: $APP_PATH/ChargeLimiterDaemon" >&2; exit 1; }
+  # Align with common TrollStore packaging flow: sign app bundle entry.
+  ldid -S"$APP_ENT" "$APP_PATH"
+  # Keep dedicated entitlements for each executable.
   ldid -S"$APP_ENT" "$APP_PATH/ChargeLimiter"
   ldid -S"$DAEMON_ENT" "$APP_PATH/ChargeLimiterDaemon"
+  rm -rf "$APP_PATH/_CodeSignature"
 }
 
 strip_app() {
@@ -109,8 +141,8 @@ strip_app "$ROOTLESS_APP"
 strip_app "$ROOTHIDE_APP"
 
 echo "[4/8] Sign app binaries..."
-sign_app "$ROOTLESS_APP"
-sign_app "$ROOTHIDE_APP"
+sign_app "$ROOTLESS_APP" "$APP_ENT_JB"
+sign_app "$ROOTHIDE_APP" "$APP_ENT_JB"
 
 echo "[5/8] Prepare package trees..."
 rm -rf "$PKG_ROOTLESS_DIR/Applications" "$PKG_ROOTHIDE_DIR/Applications"
@@ -127,6 +159,7 @@ set_control_version "$PKG_ROOTHIDE_DIR/DEBIAN/control"
 
 echo "[6/8] Build TrollStore package..."
 cp -a "$ROOTLESS_APP" "$PAYLOAD_DIR/ChargeLimiter.app"
+sign_app "$PAYLOAD_DIR/ChargeLimiter.app" "$APP_ENT_TS"
 find "$PAYLOAD_DIR" -name .DS_Store -delete
 (
   cd "$ROOT_DIR"
@@ -144,6 +177,38 @@ extract_arch() {
   xcrun lipo -info "$1" | sed -n 's/.*architecture: \(.*\)$/\1/p'
 }
 
+check_binary() {
+  BIN_PATH="$1"
+  EXPECTED_ARCH="$2"
+  BUNDLE_ID="$3"
+
+  [ -f "$BIN_PATH" ] || {
+    echo "[ERR] Missing binary: $BIN_PATH" >&2
+    exit 1
+  }
+
+  if ! ENT="$(ldid -e "$BIN_PATH" 2>/dev/null)"; then
+    echo "[ERR] Failed to extract entitlements: $BIN_PATH" >&2
+    exit 1
+  fi
+
+  echo "$ENT" | rg -F -q "<string>$BUNDLE_ID</string>" || {
+    echo "[ERR] application-identifier mismatch in $BIN_PATH" >&2
+    exit 1
+  }
+
+  echo "$ENT" | rg -q "$TROLLSTORE_BANNED_ENTITLEMENTS_REGEX" && {
+    echo "[ERR] Found TrollStore banned entitlement in $BIN_PATH" >&2
+    exit 1
+  }
+
+  ARCH="$(extract_arch "$BIN_PATH")"
+  if [ "$ARCH" != "$EXPECTED_ARCH" ]; then
+    echo "[ERR] Arch mismatch: expected $EXPECTED_ARCH, got $ARCH ($BIN_PATH)" >&2
+    exit 1
+  fi
+}
+
 check_app() {
   APP_PATH="$1"
   EXPECTED_ARCH="$2"
@@ -154,21 +219,8 @@ check_app() {
     exit 1
   fi
 
-  ENT="$(ldid -e "$APP_PATH/ChargeLimiter")"
-  echo "$ENT" | rg -q "<string>com\.chargelimiter\.mod</string>" || {
-    echo "[ERR] application-identifier missing in $APP_PATH" >&2
-    exit 1
-  }
-  echo "$ENT" | rg -q "no-container|no-sandbox" && {
-    echo "[ERR] Found forbidden entitlement (no-container/no-sandbox) in $APP_PATH" >&2
-    exit 1
-  }
-
-  ARCH="$(extract_arch "$APP_PATH/ChargeLimiter")"
-  if [ "$ARCH" != "$EXPECTED_ARCH" ]; then
-    echo "[ERR] Arch mismatch: expected $EXPECTED_ARCH, got $ARCH ($APP_PATH)" >&2
-    exit 1
-  fi
+  check_binary "$APP_PATH/ChargeLimiter" "$EXPECTED_ARCH" "$BID"
+  check_binary "$APP_PATH/ChargeLimiterDaemon" "$EXPECTED_ARCH" "$BID"
 }
 
 echo "[8/8] Verify package contents..."

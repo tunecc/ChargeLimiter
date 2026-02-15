@@ -2,13 +2,37 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>platform-application</key>
+	<key>SBAppUsesLocalNotifications</key>
 	<true/>
 	<key>application-identifier</key>
 	<string>com.chargelimiter.mod</string>
-	<key>com.apple.private.memorystatus</key>
+	<key>com.apple.Pasteboard.background-access</key>
+	<true/>
+	<key>com.apple.SystemConfiguration.SCPreferences-write-access</key>
+	<array>
+		<string>preferences.plist</string>
+		<string>com.apple.radios.plist</string>
+		<string>com.apple.jetsam.plist</string>
+	</array>
+	<key>com.apple.backboard.displaybrightness</key>
+	<true/>
+	<key>com.apple.bluetooth.system</key>
+	<true/>
+	<key>com.apple.coreduetd.allow</key>
+	<true/>
+	<key>com.apple.coreduetd.batterysaver.allow</key>
+	<true/>
+	<key>com.apple.coreduetd.context</key>
+	<true/>
+	<key>com.apple.localnotification.schedulingproxy</key>
+	<true/>
+	<key>com.apple.powerd.lowpowermode.allow</key>
 	<true/>
 	<key>com.apple.private.MobileContainerManager.allowed</key>
+	<true/>
+	<key>com.apple.private.applesmartbattery-smcdatastream</key>
+	<true/>
+	<key>com.apple.private.memorystatus</key>
 	<true/>
 	<key>com.apple.private.persona-mgmt</key>
 	<true/>
@@ -18,15 +42,17 @@
 	<true/>
 	<key>com.apple.private.powersource-write-all</key>
 	<true/>
-	<key>com.apple.private.applesmartbattery-smcdatastream</key>
-	<true/>
 	<key>com.apple.private.security.container-manager</key>
-	<true/>
-	<key>com.apple.private.security.no-sandbox</key>
 	<true/>
 	<key>com.apple.private.security.storage.AppBundles</key>
 	<true/>
 	<key>com.apple.private.security.storage.AppDataContainers</key>
+	<true/>
+	<key>com.apple.private.usernotifications.bundle-identifiers</key>
+	<array>
+		<string>com.chargelimiter.mod</string>
+	</array>
+	<key>com.apple.runningboard.process-state</key>
 	<true/>
 	<key>com.apple.security.exception.files.absolute-path.read-write</key>
 	<array>
@@ -36,49 +62,21 @@
 	<array>
 		<string>IOUserClient</string>
 	</array>
-	<key>com.apple.springboard.launchapplications</key>
-	<true/>
-	<key>com.apple.SystemConfiguration.SCPreferences-write-access</key>
-	<array>
-		<string>preferences.plist</string>
-		<string>com.apple.radios.plist</string>
-		<string>com.apple.jetsam.plist</string>
-	</array>
-	<key>com.apple.coreduetd.allow</key>
-	<true/>
-	<key>com.apple.coreduetd.batterysaver.allow</key>
-	<true/>
-	<key>com.apple.coreduetd.context</key>
-	<true/>
-	<key>com.apple.backboard.displaybrightness</key>
-	<true/>
-	<key>com.apple.bluetooth.system</key>
-	<true/>
-	<key>com.apple.powerd.lowpowermode.allow</key>
-	<true/>
-	<key>com.apple.wifi.manager-access</key>
-	<true/>
-	<key>com.apple.Pasteboard.background-access</key>
-	<true/>
 	<key>com.apple.springboard.accessibility-window-hosting</key>
 	<true/>
-	<key>SBAppUsesLocalNotifications</key>
-	<true/>
-	<key>com.apple.private.usernotifications.bundle-identifiers</key>
-	<array>
-		<string>com.chargelimiter.mod</string>
-	</array>
-	<key>com.apple.usernotification.proxy</key>
-	<true/>
-	<key>com.apple.localnotification.schedulingproxy</key>
+	<key>com.apple.springboard.launchapplications</key>
 	<true/>
 	<key>com.apple.usernotification.notificationregistrarproxy</key>
 	<true/>
 	<key>com.apple.usernotification.notificationschedulerproxy</key>
 	<true/>
+	<key>com.apple.usernotification.proxy</key>
+	<true/>
+	<key>com.apple.wifi.manager-access</key>
+	<true/>
 	<key>get-task-allow</key>
 	<true/>
-	<key>com.apple.runningboard.process-state</key>
+	<key>platform-application</key>
 	<true/>
 </dict>
 </plist>

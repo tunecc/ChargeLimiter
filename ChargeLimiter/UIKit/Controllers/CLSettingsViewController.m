@@ -94,10 +94,165 @@ static NSString *CLFirstFailedRemovePathFromResult(NSDictionary *result) {
     return nil;
 }
 
+static id CLPerformSelectorNoArg(id target, SEL selector) {
+    if (!target || !selector || ![target respondsToSelector:selector]) {
+        return nil;
+    }
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+    return [target performSelector:selector];
+#pragma clang diagnostic pop
+}
+
+static NSArray<NSString *> *CLKnownFilzaBundleIDs(void) {
+    return @[
+        @"com.tigisoftware.Filza",
+        @"com.tigisoftware.Filza64bit",
+        @"com.tigisoftware.filza",
+        @"com.tigisoftware.filza64bit",
+        @"com.filza.filemanager"
+    ];
+}
+
+static NSArray *CLGetInstalledApplications(void) {
+    Class wsClass = NSClassFromString(@"LSApplicationWorkspace");
+    id workspace = CLPerformSelectorNoArg(wsClass, NSSelectorFromString(@"defaultWorkspace"));
+    for (NSString *selName in @[@"allInstalledApplications", @"allApplications"]) {
+        id val = CLPerformSelectorNoArg(workspace, NSSelectorFromString(selName));
+        if ([val isKindOfClass:[NSArray class]]) {
+            return (NSArray *)val;
+        }
+    }
+    return @[];
+}
+
+static BOOL CLCanOpenURLString(NSString *urlString) {
+    if (urlString.length == 0) {
+        return NO;
+    }
+    NSURL *url = [NSURL URLWithString:urlString];
+    if (!url) {
+        return NO;
+    }
+    return [[UIApplication sharedApplication] canOpenURL:url];
+}
+
+static NSArray<NSString *> *CLCollectFilzaInstallHints(void) {
+    NSMutableArray<NSString *> *hints = [NSMutableArray array];
+    NSArray *apps = CLGetInstalledApplications();
+    NSMutableSet<NSString *> *installedBIDs = [NSMutableSet set];
+    for (id app in apps) {
+        NSString *bid = CLPerformSelectorNoArg(app, NSSelectorFromString(@"bundleIdentifier"));
+        NSString *name = CLPerformSelectorNoArg(app, NSSelectorFromString(@"localizedName"));
+        if (name.length == 0) {
+            name = CLPerformSelectorNoArg(app, NSSelectorFromString(@"itemName"));
+        }
+        NSString *lower = [NSString stringWithFormat:@"%@ %@", bid ?: @"", name ?: @""].lowercaseString;
+        if ([lower containsString:@"filza"]) {
+            [hints addObject:[NSString stringWithFormat:@"installed: %@ (%@)", name ?: @"<no-name>", bid ?: @"<no-bid>"]];
+            if (bid.length > 0) {
+                [installedBIDs addObject:bid];
+            }
+        }
+    }
+
+    for (NSString *knownBid in CLKnownFilzaBundleIDs()) {
+        [hints addObject:[NSString stringWithFormat:@"known-bid %@ installed=%@", knownBid, [installedBIDs containsObject:knownBid] ? @"yes" : @"no"]];
+    }
+    [hints addObject:[NSString stringWithFormat:@"canOpen filza:// = %@", CLCanOpenURLString(@"filza://") ? @"yes" : @"no"]];
+    [hints addObject:[NSString stringWithFormat:@"canOpen filzaescaped:// = %@", CLCanOpenURLString(@"filzaescaped://") ? @"yes" : @"no"]];
+
+    // Dedupe
+    NSMutableArray<NSString *> *dedup = [NSMutableArray array];
+    NSMutableSet<NSString *> *seen = [NSMutableSet set];
+    for (NSString *line in hints) {
+        if (line.length == 0 || [seen containsObject:line]) {
+            continue;
+        }
+        [seen addObject:line];
+        [dedup addObject:line];
+    }
+    return dedup;
+}
+
+static NSString *CLBuildFilzaDebugReport(NSString *targetPath, NSArray<NSURL *> *candidates, NSArray<NSString *> *attemptLogs) {
+    NSMutableArray<NSString *> *lines = [NSMutableArray array];
+    NSString *appDocsPath = getAppDocumentsPath_C() ?: @"";
+    NSString *confPath = getConfPath_C() ?: @"";
+    BOOL targetIsDir = NO;
+    BOOL targetExists = (targetPath.length > 0) && [[NSFileManager defaultManager] fileExistsAtPath:targetPath isDirectory:&targetIsDir];
+    BOOL confExists = (confPath.length > 0) && [[NSFileManager defaultManager] fileExistsAtPath:confPath];
+
+    [lines addObject:@"[ChargeLimiter Filza Debug]"];
+    [lines addObject:[NSString stringWithFormat:@"bundleID=%@", NSBundle.mainBundle.bundleIdentifier ?: @""]];
+    [lines addObject:[NSString stringWithFormat:@"home=%@", NSHomeDirectory() ?: @""]];
+    [lines addObject:[NSString stringWithFormat:@"appDocuments=%@", appDocsPath]];
+    [lines addObject:[NSString stringWithFormat:@"confPath=%@", confPath]];
+    [lines addObject:[NSString stringWithFormat:@"targetPath=%@", targetPath ?: @""]];
+    [lines addObject:[NSString stringWithFormat:@"targetExists=%@ isDir=%@", targetExists ? @"yes" : @"no", targetIsDir ? @"yes" : @"no"]];
+    [lines addObject:[NSString stringWithFormat:@"confExists=%@", confExists ? @"yes" : @"no"]];
+    [lines addObject:[NSString stringWithFormat:@"canOpen(filza://)=%@", CLCanOpenURLString(@"filza://") ? @"yes" : @"no"]];
+    [lines addObject:[NSString stringWithFormat:@"canOpen(filzaescaped://)=%@", CLCanOpenURLString(@"filzaescaped://") ? @"yes" : @"no"]];
+    [lines addObject:[NSString stringWithFormat:@"candidateCount=%lu", (unsigned long)candidates.count]];
+    for (NSUInteger i = 0; i < candidates.count; i++) {
+        NSURL *u = candidates[i];
+        NSString *result = (i < attemptLogs.count) ? attemptLogs[i] : @"not-tried";
+        [lines addObject:[NSString stringWithFormat:@"[%lu] %@ => %@", (unsigned long)i, u.absoluteString ?: @"<nil>", result]];
+    }
+
+    NSArray<NSString *> *hints = CLCollectFilzaInstallHints();
+    if (hints.count == 0) {
+        [lines addObject:@"filzaHints=none"];
+    } else {
+        [lines addObject:@"filzaHints:"];
+        for (NSString *hint in hints) {
+            [lines addObject:[NSString stringWithFormat:@"- %@", hint]];
+        }
+    }
+    return [lines componentsJoinedByString:@"\n"];
+}
+
+static void CLPresentFilzaOpenedWithoutPathAlert(UIViewController *vc, NSString *targetPath) {
+    if (!vc) {
+        return;
+    }
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"已打开 Filza")
+                                                                   message:CLL(@"当前 Filza 版本未接受目录直达 URL，已复制路径，请在 Filza 中粘贴后前往。")
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"确定") style:UIAlertActionStyleDefault handler:nil]];
+    [vc presentViewController:alert animated:YES completion:nil];
+    [UIPasteboard generalPasteboard].string = targetPath ?: @"";
+}
+
+static void CLPresentFilzaFailureAlert(UIViewController *vc, NSString *targetPath, NSArray<NSURL *> *candidates, NSArray<NSString *> *attemptLogs) {
+    if (!vc) {
+        return;
+    }
+    NSString *debugInfo = CLBuildFilzaDebugReport(targetPath, candidates, attemptLogs);
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"未检测到 Filza")
+                                                                   message:CLL(@"请先安装 Filza 文件管理器，再重试跳转。")
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"复制路径")
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction * _Nonnull action) {
+        [UIPasteboard generalPasteboard].string = targetPath ?: @"";
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"复制调试信息")
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction * _Nonnull action) {
+        [UIPasteboard generalPasteboard].string = debugInfo ?: @"";
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"确定")
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+    [vc presentViewController:alert animated:YES completion:nil];
+}
+
 static void CLOpenPathInFilza(UIViewController *vc, NSString *path) {
     if (path.length == 0 || vc == nil) {
         return;
     }
+
     NSString *pathA = path;
     NSString *pathB = pathA;
     if ([pathB hasPrefix:@"/private/var/"]) {
@@ -105,36 +260,112 @@ static void CLOpenPathInFilza(UIViewController *vc, NSString *path) {
     }
 
     NSMutableArray<NSURL *> *candidates = [NSMutableArray array];
+    NSArray<NSString *> *schemes = @[@"filza", @"filzaescaped"];
     for (NSString *p in @[pathA ?: @"", pathB ?: @""]) {
         if (p.length == 0) continue;
         NSString *encodedPath = [p stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLPathAllowedCharacterSet]];
         if (encodedPath.length == 0) continue;
-        NSURL *u1 = [NSURL URLWithString:[NSString stringWithFormat:@"filza://view%@", encodedPath]];
-        NSURL *u2 = [NSURL URLWithString:[NSString stringWithFormat:@"filza://view?path=%@", encodedPath]];
-        if (u1) [candidates addObject:u1];
-        if (u2) [candidates addObject:u2];
+        NSString *queryEncodedPath = [p stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]];
+        NSString *fileURLPath = [NSString stringWithFormat:@"file://%@", p];
+        NSString *queryEncodedFileURLPath = [fileURLPath stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]];
+        NSString *withTrailingSlash = [p hasSuffix:@"/"] ? p : [p stringByAppendingString:@"/"];
+        NSString *queryEncodedTrailing = [withTrailingSlash stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]];
+        for (NSString *scheme in schemes) {
+            NSURL *u1 = [NSURL URLWithString:[NSString stringWithFormat:@"%@://view%@", scheme, encodedPath]];
+            NSURL *u2 = [NSURL URLWithString:[NSString stringWithFormat:@"%@://view?path=%@", scheme, encodedPath]];
+            NSURL *u3 = [NSURL URLWithString:[NSString stringWithFormat:@"%@://view?path=%@", scheme, queryEncodedPath ?: encodedPath]];
+            NSURL *u4 = [NSURL URLWithString:[NSString stringWithFormat:@"%@://view?path=%@", scheme, queryEncodedFileURLPath ?: @""]];
+            NSURL *u5 = [NSURL URLWithString:[NSString stringWithFormat:@"%@://view?path=%@", scheme, queryEncodedTrailing ?: queryEncodedPath ?: encodedPath]];
+            if (u1) [candidates addObject:u1];
+            if (u2) [candidates addObject:u2];
+            if (u3) [candidates addObject:u3];
+            if (u4) [candidates addObject:u4];
+            if (u5) [candidates addObject:u5];
+        }
     }
+
+    // Dedupe deep-link candidates first.
+    NSMutableArray<NSURL *> *deduped = [NSMutableArray array];
+    NSMutableSet<NSString *> *seen = [NSMutableSet set];
+    for (NSURL *u in candidates) {
+        NSString *abs = u.absoluteString ?: @"";
+        if (abs.length == 0 || [seen containsObject:abs]) {
+            continue;
+        }
+        [seen addObject:abs];
+        [deduped addObject:u];
+    }
+    candidates = deduped;
+    NSUInteger deepLinkCount = candidates.count;
+
+    for (NSString *scheme in schemes) {
+        NSURL *probe1 = [NSURL URLWithString:[NSString stringWithFormat:@"%@://", scheme]];
+        NSURL *probe2 = [NSURL URLWithString:[NSString stringWithFormat:@"%@://view", scheme]];
+        if (probe1) [candidates addObject:probe1];
+        if (probe2) [candidates addObject:probe2];
+    }
+
+    // Dedupe again after adding probes.
+    deduped = [NSMutableArray array];
+    seen = [NSMutableSet set];
+    for (NSURL *u in candidates) {
+        NSString *abs = u.absoluteString ?: @"";
+        if (abs.length == 0 || [seen containsObject:abs]) {
+            continue;
+        }
+        [seen addObject:abs];
+        [deduped addObject:u];
+    }
+    candidates = deduped;
+
     if (candidates.count == 0) {
+        CLPresentFilzaFailureAlert(vc, path, candidates, @[]);
         return;
     }
 
-    __block NSUInteger idx = 0;
     __weak UIViewController *weakVC = vc;
-    void (^tryOpen)(void) = ^{
+    __block NSUInteger idx = 0;
+    __block NSMutableArray<NSString *> *attemptLogs = [NSMutableArray array];
+    __block void (^tryOpen)(void) = nil;
+    tryOpen = ^{
         if (idx >= candidates.count) {
-            UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"未检测到 Filza")
-                                                                           message:CLL(@"请先安装 Filza 文件管理器，再重试跳转。")
-                                                                    preferredStyle:UIAlertControllerStyleAlert];
-            [alert addAction:[UIAlertAction actionWithTitle:CLL(@"确定") style:UIAlertActionStyleDefault handler:nil]];
-            [weakVC presentViewController:alert animated:YES completion:nil];
+            CLPresentFilzaFailureAlert(weakVC, path, candidates, attemptLogs);
+            tryOpen = nil;
             return;
         }
+
         NSURL *url = candidates[idx++];
-        [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:^(BOOL success) {
-            if (!success) {
+        __block BOOL handled = NO;
+        void (^finish)(BOOL, NSString *) = ^(BOOL success, NSString *source) {
+            if (handled) {
+                return;
+            }
+            handled = YES;
+            [attemptLogs addObject:[NSString stringWithFormat:@"%@ (%@)", success ? @"ok" : @"fail", source ?: @""]];
+            if (success) {
+                NSUInteger succeededIndex = idx - 1;
+                if (succeededIndex >= deepLinkCount) {
+                    CLPresentFilzaOpenedWithoutPathAlert(weakVC, path);
+                }
+                tryOpen = nil;
+                return;
+            }
+            if (tryOpen) {
                 tryOpen();
             }
+        };
+
+        [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:^(BOOL success) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                finish(success, @"completion");
+            });
         }];
+
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(700 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+            if (!handled) {
+                finish(NO, @"timeout");
+            }
+        });
     };
     tryOpen();
 }
@@ -2632,69 +2863,25 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
 - (void)configFolderTapped {
     NSString *confPath = getConfPath_C();
     NSString *dirPath = getAppDocumentsPath_C();
-    if (confPath.length == 0 && dirPath.length == 0) {
+    NSString *targetPath = confPath;
+
+    // Prefer opening the config file directly, matching previous behavior.
+    if (targetPath.length == 0 && dirPath.length > 0) {
+        targetPath = [dirPath stringByAppendingPathComponent:@"aldente.conf"];
+    }
+
+    // Fallback to app data directory when file path cannot be resolved.
+    if (targetPath.length == 0 && dirPath.length > 0) {
+        targetPath = dirPath;
+    }
+
+    if (targetPath.length == 0) {
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"无法打开") message:CLL(@"未能定位应用数据目录") preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:CLL(@"确定") style:UIAlertActionStyleDefault handler:nil]];
         [self presentViewController:alert animated:YES completion:nil];
         return;
     }
-
-    if (confPath.length == 0 && dirPath.length > 0) {
-        confPath = [dirPath stringByAppendingPathComponent:@"aldente.conf"];
-    }
-    if (dirPath.length == 0 && confPath.length > 0) {
-        dirPath = [confPath stringByDeletingLastPathComponent];
-    }
-    if (![dirPath hasSuffix:@"/"]) {
-        dirPath = [dirPath stringByAppendingString:@"/"];
-    }
-
-    NSString *confPathNoPrivate = confPath ?: @"";
-    if ([confPathNoPrivate hasPrefix:@"/private/var/"]) {
-        confPathNoPrivate = [@"/var/" stringByAppendingString:[confPathNoPrivate substringFromIndex:@"/private/var/".length]];
-    }
-    NSString *dirPathNoPrivate = dirPath ?: @"";
-    if ([dirPathNoPrivate hasPrefix:@"/private/var/"]) {
-        dirPathNoPrivate = [@"/var/" stringByAppendingString:[dirPathNoPrivate substringFromIndex:@"/private/var/".length]];
-    }
-
-    NSMutableArray<NSURL *> *candidates = [NSMutableArray array];
-    // Try opening the config file first (best effort for direct file focus), then fallback to directory.
-    NSArray<NSString *> *paths = @[confPath ?: @"", confPathNoPrivate ?: @"", dirPath ?: @"", dirPathNoPrivate ?: @""];
-    for (NSString *p in paths) {
-        if (p.length == 0) continue;
-        NSString *encodedPath = [p stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLPathAllowedCharacterSet]];
-        if (encodedPath.length == 0) continue;
-        NSURL *u1 = [NSURL URLWithString:[NSString stringWithFormat:@"filza://view%@", encodedPath]];
-        NSURL *u2 = [NSURL URLWithString:[NSString stringWithFormat:@"filza://view?path=%@", encodedPath]];
-        if (u1) [candidates addObject:u1];
-        if (u2) [candidates addObject:u2];
-    }
-
-    if (candidates.count == 0) {
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"无法打开") message:CLL(@"应用数据目录 URL 无效") preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:CLL(@"确定") style:UIAlertActionStyleDefault handler:nil]];
-        [self presentViewController:alert animated:YES completion:nil];
-        return;
-    }
-
-    __block NSUInteger idx = 0;
-    __weak typeof(self) weakSelf = self;
-    void (^tryOpen)(void) = ^{
-        if (idx >= candidates.count) {
-            UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"未检测到 Filza") message:CLL(@"请先安装 Filza 文件管理器，再重试打开应用数据目录。") preferredStyle:UIAlertControllerStyleAlert];
-            [alert addAction:[UIAlertAction actionWithTitle:CLL(@"确定") style:UIAlertActionStyleDefault handler:nil]];
-            [weakSelf presentViewController:alert animated:YES completion:nil];
-            return;
-        }
-        NSURL *url = candidates[idx++];
-        [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:^(BOOL success) {
-            if (!success) {
-                tryOpen();
-            }
-        }];
-    };
-    tryOpen();
+    CLOpenPathInFilza(self, targetPath);
 }
 
 - (void)helpTapped {
@@ -3352,9 +3539,10 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     
     // 温度控制开关
     [self.tempCard addSwitchRowWithIcon:@"thermometer.sun" title:CLL(@"温度控制") isOn:manager.tempControlEnabled color:[UIColor systemOrangeColor] tag:250 onChange:^(BOOL isOn) {
-        [[CLAPIClient shared] setConfigWithKey:@"enable_temp" value:@(isOn) completion:nil];
         [CLBatteryManager shared].tempControlEnabled = isOn;
         [weakSelf updateTempControlVisibility:isOn];
+        [weakSelf.view setNeedsLayout];
+        [weakSelf.view layoutIfNeeded];
     }];
     
     self.tempSeparator1 = [self.tempCard addSeparator];
@@ -3403,16 +3591,41 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
 }
 
 - (void)updateTempControlVisibility:(BOOL)visible {
-    [UIView animateWithDuration:0.3 animations:^{
-        self.tempBelowRow.hidden = !visible;
-        self.tempBelowRow.alpha = visible ? 1 : 0;
-        self.tempAboveRow.hidden = !visible;
-        self.tempAboveRow.alpha = visible ? 1 : 0;
-        self.tempSeparator1.hidden = !visible;
-        self.tempSeparator1.alpha = visible ? 1 : 0;
-        self.tempSeparator2.hidden = !visible;
-        self.tempSeparator2.alpha = visible ? 1 : 0;
-    }];
+    NSMutableArray<UIView *> *targets = [NSMutableArray array];
+    if (self.tempAboveRow) [targets addObject:self.tempAboveRow];
+    if (self.tempSeparator2) [targets addObject:self.tempSeparator2];
+    if (self.tempBelowRow) [targets addObject:self.tempBelowRow];
+    if (self.tempSeparator1) [targets addObject:self.tempSeparator1];
+    if (targets.count == 0) {
+        return;
+    }
+
+    if (visible) {
+        for (UIView *v in targets) {
+            if (v.hidden) {
+                v.alpha = 0.0;
+            }
+            v.hidden = NO;
+        }
+        [self.view layoutIfNeeded];
+        [UIView animateWithDuration:0.2 animations:^{
+            for (UIView *v in targets) {
+                v.alpha = 1.0;
+            }
+            [self.mainStack layoutIfNeeded];
+        }];
+    } else {
+        [UIView animateWithDuration:0.2 animations:^{
+            for (UIView *v in targets) {
+                v.alpha = 0.0;
+            }
+            [self.mainStack layoutIfNeeded];
+        } completion:^(BOOL finished) {
+            for (UIView *v in targets) {
+                v.hidden = YES;
+            }
+        }];
+    }
 }
 
 - (void)setupAdapterCard {
@@ -3914,6 +4127,16 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     }
 }
 
+- (UISwitch *)switchInCard:(CLGlassCard *)card tag:(NSInteger)tag {
+    for (UIView *row in card.contentStack.arrangedSubviews) {
+        UISwitch *switchControl = [row viewWithTag:tag];
+        if ([switchControl isKindOfClass:[UISwitch class]]) {
+            return switchControl;
+        }
+    }
+    return nil;
+}
+
 - (NSString *)thermalModeLabel:(CLThermalMode)mode {
     switch (mode) {
         case CLThermalModeNominal: return CLL(@"正常");
@@ -3961,8 +4184,13 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     self.batteryStatus.chargeAbove = chargeAbove;
     
     // 更新温度控制卡片
-    [self updateSwitchInCard:self.tempCard tag:250 value:manager.tempControlEnabled];
-    [self updateTempControlVisibility:manager.tempControlEnabled];
+    UISwitch *tempSwitch = [self switchInCard:self.tempCard tag:250];
+    BOOL effectiveTempEnabled = manager.tempControlEnabled;
+    if (tempSwitch && tempSwitch.on != manager.tempControlEnabled) {
+        effectiveTempEnabled = tempSwitch.on;
+    }
+    [self updateSwitchInCard:self.tempCard tag:250 value:effectiveTempEnabled];
+    [self updateTempControlVisibility:effectiveTempEnabled];
     
     // 更新高温模拟状态
     [self updateCardValue:self.infoCard title:CLL(@"高温模拟") value:[self thermalModeLabel:manager.thermalSimulateMode]];
