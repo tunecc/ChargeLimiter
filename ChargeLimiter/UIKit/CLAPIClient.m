@@ -18,6 +18,10 @@
 // 仅在非 Mock 模式下包含 common.h
 #if !CL_USE_MOCK_DATA
 #import "../common.h"
+extern void setlocalKV_C(NSString* key, id val);
+extern NSString* getAppDocumentsPath_C(void);
+extern BOOL localPortOpen_C(int port);
+extern int restartDaemonForApp_C(NSString* appDocs);
 #else
 #define GSERV_PORT 1230
 #endif
@@ -29,6 +33,23 @@
 @end
 
 @implementation CLAPIClient
+
+#if !CL_USE_MOCK_DATA
+static void CLPersistLocalConfig(NSString *key, id value) {
+    if (key.length == 0) {
+        return;
+    }
+    // Keep a local on-disk mirror so settings survive even if daemon IPC fails.
+    setlocalKV_C(key, value ?: @"");
+}
+
+static int CLStartDaemonBestEffort(void) {
+    NSString *appDocs = getAppDocumentsPath_C();
+    int rc = restartDaemonForApp_C(appDocs);
+    NSLog(@"[CL-API] daemon restart requested rc=%d docs=%@", rc, appDocs ?: @"");
+    return rc;
+}
+#endif
 
 + (instancetype)shared {
     static CLAPIClient *instance = nil;
@@ -48,6 +69,11 @@
         _session = [NSURLSession sessionWithConfiguration:config];
         _baseURL = [NSURL URLWithString:[NSString stringWithFormat:@"http://127.0.0.1:%d", GSERV_PORT]];
         _useMockData = CL_USE_MOCK_DATA;
+#if !CL_USE_MOCK_DATA
+        if (!localPortOpen_C(GSERV_PORT)) {
+            CLStartDaemonBestEffort();
+        }
+#endif
     }
     return self;
 }
@@ -206,11 +232,19 @@
 
 #pragma mark - 基础请求
 
-- (void)sendRequest:(NSDictionary *)params completion:(CLAPICallback)completion {
+- (void)sendRequestInternal:(NSDictionary *)params allowRetry:(BOOL)allowRetry completion:(CLAPICallback)completion {
+    NSMutableDictionary *effectiveParams = [params mutableCopy];
+#if !CL_USE_MOCK_DATA
+    NSString *appDocs = getAppDocumentsPath_C();
+    if (appDocs.length > 0) {
+        effectiveParams[@"app_docs"] = appDocs;
+    }
+#endif
+
     // Mock 模式
     if (self.useMockData) {
-        NSString *api = params[@"api"];
-        NSDictionary *response = [self mockResponseForAPI:api params:params];
+        NSString *api = effectiveParams[@"api"];
+        NSDictionary *response = [self mockResponseForAPI:api params:effectiveParams];
         NSLog(@"[CL-Mock] API: %@ -> %@", api, response[@"status"]);
         
         // 模拟网络延迟
@@ -228,7 +262,7 @@
     [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
     
     NSError *jsonError = nil;
-    NSData *jsonData = [NSJSONSerialization dataWithJSONObject:params options:0 error:&jsonError];
+    NSData *jsonData = [NSJSONSerialization dataWithJSONObject:effectiveParams options:0 error:&jsonError];
     if (jsonError) {
         NSLog(@"[CL-API] JSON序列化错误: %@", jsonError);
         if (completion) {
@@ -243,6 +277,27 @@
     NSURLSessionDataTask *task = [self.session dataTaskWithRequest:request completionHandler:^(NSData * _Nullable data, NSURLResponse * _Nullable response, NSError * _Nullable error) {
         if (error) {
             NSLog(@"[CL-API] 请求错误: %@", error);
+#if !CL_USE_MOCK_DATA
+            BOOL canRetry = allowRetry && (error.code == NSURLErrorCannotConnectToHost || error.code == NSURLErrorNetworkConnectionLost || error.code == NSURLErrorTimedOut);
+            if (canRetry) {
+                int rc = CLStartDaemonBestEffort();
+                dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                    BOOL opened = NO;
+                    for (int i = 0; i < 10; i++) {
+                        if (localPortOpen_C(GSERV_PORT)) {
+                            opened = YES;
+                            break;
+                        }
+                        usleep(200 * 1000);
+                    }
+                    NSLog(@"[CL-API] retry after daemon start rc=%d portOpened=%d", rc, opened);
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        [self sendRequestInternal:params allowRetry:NO completion:completion];
+                    });
+                });
+                return;
+            }
+#endif
             if (completion) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     completion(nil, error);
@@ -282,6 +337,10 @@
     [task resume];
 }
 
+- (void)sendRequest:(NSDictionary *)params completion:(CLAPICallback)completion {
+    [self sendRequestInternal:params allowRetry:YES completion:completion];
+}
+
 #pragma mark - 便捷方法
 
 - (void)getConfigWithKey:(NSString *)key completion:(CLAPICallback)completion {
@@ -298,7 +357,14 @@
         @"key": key,
         @"val": value
     };
-    [self sendRequest:params completion:completion];
+    [self sendRequest:params completion:^(NSDictionary * _Nullable response, NSError * _Nullable error) {
+#if !CL_USE_MOCK_DATA
+        CLPersistLocalConfig(key, value);
+#endif
+        if (completion) {
+            completion(response, error);
+        }
+    }];
 }
 
 - (void)getBatteryInfoWithCompletion:(CLAPICallback)completion {

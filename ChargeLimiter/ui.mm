@@ -427,10 +427,21 @@ void daemonRun(NSArray* argv) {
     NSString* daemonPath = [bundlePath stringByAppendingPathComponent:@"ChargeLimiterDaemon"];
     NSMutableArray* mArgv = [NSMutableArray array];
     [mArgv addObject:daemonPath];
+    if (g_jbtype == JBTYPE_TROLLSTORE) {
+        NSString* appDocs = getAppDocumentsPath();
+        if (appDocs.length > 0) {
+            [mArgv addObject:@"--app-docs"];
+            [mArgv addObject:appDocs];
+        }
+    }
     if (argv != nil) {
         [mArgv addObjectsFromArray:argv];
     }
-    spawn(mArgv, nil, nil, 0, SPAWN_FLAG_ROOT | SPAWN_FLAG_NOWAIT);
+    int spawnFlags = SPAWN_FLAG_NOWAIT;
+    if (g_jbtype != JBTYPE_TROLLSTORE) {
+        spawnFlags |= SPAWN_FLAG_ROOT;
+    }
+    spawn(mArgv, nil, nil, 0, spawnFlags);
 }
 
 static void start_daemon() {
@@ -452,22 +463,20 @@ static void start_daemon() {
 int main(int argc, char** argv) { // ChargeLimiter
     @autoreleasepool {
         g_jbtype = getJBType();
-        if (argc == 1) {
+        if (argc > 1 && 0 == strcmp(argv[1], "floatwnd")) {
             start_daemon();
-            return UIApplicationMain(argc, argv, nil, @"AppDelegate");
-        } else if (argc > 1) {
-            if (0 == strcmp(argv[1], "floatwnd")) {
-                start_daemon();
-                g_wind_type = 1;
-                static id<UIApplicationDelegate> appDelegate = [AppDelegate new];
-                UIApplicationInstantiateSingleton(HUDMainApplication.class);
-                static UIApplication* app = [UIApplication sharedApplication];
-                [app setDelegate:appDelegate];
-                [app __completeAndRunAsPlugin];
-                CFRunLoopRun();
-                return 0;
-            }
+            g_wind_type = 1;
+            static id<UIApplicationDelegate> appDelegate = [AppDelegate new];
+            UIApplicationInstantiateSingleton(HUDMainApplication.class);
+            static UIApplication* app = [UIApplication sharedApplication];
+            [app setDelegate:appDelegate];
+            [app __completeAndRunAsPlugin];
+            CFRunLoopRun();
+            return 0;
         }
-        return -1;
+        // Some launchers (including TrollStore "Open") may pass extra argv.
+        // Treat unknown argv as normal app launch instead of exiting.
+        start_daemon();
+        return UIApplicationMain(argc, argv, nil, @"AppDelegate");
     }
 }

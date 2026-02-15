@@ -910,7 +910,7 @@ static void initConf(BOOL reset) {
     } else {
         NSMutableDictionary* def_mdic = def_dic.mutableCopy;
         [def_mdic addEntriesFromDictionary:@{
-            @"enable": @NO,
+            @"enable": @YES,
             @"disable_smart_charge": @YES, // Disable "Optimized Battery Charging" within Settings app
             @"mode": @"charge_on_plug",
             @"update_freq": @1,
@@ -924,7 +924,7 @@ static void initConf(BOOL reset) {
             }
         }
     }
-    g_enable = getLocalBool(@"enable", NO);
+    g_enable = getLocalBool(@"enable", YES);
 }
 
 static void showFloatwnd(BOOL flag) {
@@ -946,7 +946,42 @@ static void showFloatwnd(BOOL flag) {
     }
 }
 
+static void syncDaemonDocumentsForRequest(NSDictionary* nsreq) {
+    NSString* appDocs = nsreq[@"app_docs"];
+    if (![appDocs isKindOfClass:[NSString class]] || appDocs.length == 0) {
+        return;
+    }
+
+    NSString* currentDocs = getAppDocumentsPath();
+    if ([currentDocs isEqualToString:appDocs]) {
+        return;
+    }
+
+    NSString* oldConf = getConfPath();
+    NSString* oldDbPath = getDbPath();
+    setAppDocumentsPathOverride(appDocs);
+    reloadLocalKVFromDisk();
+    // Keep sqlite handle aligned with the active app_docs container.
+    uninitDB();
+    initDB(nil);
+    NSString* serial = gUPSPS.props[@"Serial"];
+    if (serial.length > 0) {
+        initDB(serial);
+    }
+    initConf(NO);
+
+    NSString* newDocs = getAppDocumentsPath();
+    NSString* newConf = getConfPath();
+    NSString* newDbPath = getDbPath();
+    BOOL confExists = (newConf.length > 0) && [[NSFileManager defaultManager] fileExistsAtPath:newConf];
+    BOOL dbExists = (newDbPath.length > 0) && [[NSFileManager defaultManager] fileExistsAtPath:newDbPath];
+    NSFileLog(@"[CL] sync app_docs old=%@ req=%@ old_conf=%@ new_docs=%@ new_conf=%@ conf_exists=%d old_db=%@ new_db=%@ db_exists=%d",
+              currentDocs ?: @"", appDocs ?: @"", oldConf ?: @"", newDocs ?: @"", newConf ?: @"", confExists,
+              oldDbPath ?: @"", newDbPath ?: @"", dbExists);
+}
+
 NSDictionary* handleReq(NSDictionary* nsreq) {
+    syncDaemonDocumentsForRequest(nsreq);
     NSString* api = nsreq[@"api"];
     if ([api isEqualToString:@"get_conf"]) {
         NSString* key = nsreq[@"key"];
@@ -1436,7 +1471,17 @@ void detectUPSBattery() {
 int main(int argc, char** argv) { // daemon_main
     @autoreleasepool {
         g_jbtype = getJBType();
-        if (argc == 1) {
+        int argIndex = 1;
+        while (argIndex + 1 < argc) {
+            if (0 == strcmp(argv[argIndex], "--app-docs")) {
+                setAppDocumentsPathOverride(@(argv[argIndex + 1]));
+                argIndex += 2;
+                continue;
+            }
+            break;
+        }
+
+        if (argIndex >= argc) {
             NSFileLog(@"CLv%@ start pid=%d", NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"], getpid());
             g_serv_boot = (int)time(0);
             if (g_jbtype == JBTYPE_TROLLSTORE) {
@@ -1465,12 +1510,12 @@ int main(int argc, char** argv) { // daemon_main
             [NSRunLoop.mainRunLoop run];
             NSFileLog(@"daemon unexpected");
             return 0;
-        } else if (argc > 1) {
-            if (0 == strcmp(argv[1], "reset")) { // 越狱下卸载前重置
+        } else if (argIndex < argc) {
+            if (0 == strcmp(argv[argIndex], "reset")) { // 越狱下卸载前重置
                 resetBatteryStatus();
                 return 0;
-            } else if (0 == strcmp(argv[1], "watch_bat_info")) {
-                BOOL slim = argc == 3;
+            } else if (0 == strcmp(argv[argIndex], "watch_bat_info")) {
+                BOOL slim = (argc - argIndex) >= 2;
                 while (true) {
                     getBatInfo(&bat_info, slim);
                     NSLog(@"%@", bat_info);
@@ -1478,12 +1523,12 @@ int main(int argc, char** argv) { // daemon_main
                     spawn(@[@"clear"], nil, nil, nil, 0, nil);
                 }
                 return 0;
-            } else if (0 == strcmp(argv[1], "set_charge")) {
-                bool flag = argv[2][0] - '0';
+            } else if (0 == strcmp(argv[argIndex], "set_charge") && (argIndex + 1) < argc) {
+                bool flag = argv[argIndex + 1][0] - '0';
                 setChargeStatus(flag);
                 return 0;
-            } else if (0 == strcmp(argv[1], "set_inflow")) {
-                bool flag = argv[2][0] - '0';
+            } else if (0 == strcmp(argv[argIndex], "set_inflow") && (argIndex + 1) < argc) {
+                bool flag = argv[argIndex + 1][0] - '0';
                 setInflowStatus(flag);
                 return 0;
             }

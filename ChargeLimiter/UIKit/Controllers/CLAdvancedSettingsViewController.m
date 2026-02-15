@@ -35,7 +35,6 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
 }
 
 @interface CLAdvSettingsCard : UIView
-@property (nonatomic, strong) UIVisualEffectView *blurView;
 @property (nonatomic, strong) UIStackView *contentStack;
 @end
 
@@ -50,29 +49,21 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
 }
 
 - (void)setupView {
-    self.layer.cornerRadius = 16;
+    self.layer.cornerRadius = 12;
     self.clipsToBounds = YES;
-    
-    UIBlurEffect *blur = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterial];
-    self.blurView = [[UIVisualEffectView alloc] initWithEffect:blur];
-    self.blurView.translatesAutoresizingMaskIntoConstraints = NO;
-    [self addSubview:self.blurView];
+    self.backgroundColor = [UIColor secondarySystemGroupedBackgroundColor];
     
     self.contentStack = [[UIStackView alloc] init];
     self.contentStack.axis = UILayoutConstraintAxisVertical;
     self.contentStack.spacing = 0;
     self.contentStack.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.blurView.contentView addSubview:self.contentStack];
+    [self addSubview:self.contentStack];
     
     [NSLayoutConstraint activateConstraints:@[
-        [self.blurView.topAnchor constraintEqualToAnchor:self.topAnchor],
-        [self.blurView.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
-        [self.blurView.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
-        [self.blurView.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
-        [self.contentStack.topAnchor constraintEqualToAnchor:self.blurView.contentView.topAnchor],
-        [self.contentStack.leadingAnchor constraintEqualToAnchor:self.blurView.contentView.leadingAnchor],
-        [self.contentStack.trailingAnchor constraintEqualToAnchor:self.blurView.contentView.trailingAnchor],
-        [self.contentStack.bottomAnchor constraintEqualToAnchor:self.blurView.contentView.bottomAnchor]
+        [self.contentStack.topAnchor constraintEqualToAnchor:self.topAnchor],
+        [self.contentStack.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
+        [self.contentStack.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+        [self.contentStack.bottomAnchor constraintEqualToAnchor:self.bottomAnchor]
     ]];
 }
 
@@ -353,9 +344,8 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
     // 限流控制
     CLAdvSettingsCard *limitCard = [[CLAdvSettingsCard alloc] init];
     [limitCard addSectionHeader:CLL(@"限流控制")];
-    [limitCard addSwitchRowWithIcon:@"thermometer" title:CLL(@"充电时自动限流") subtitle:CLL(@"充电时启用高温模拟以限制电流") isOn:manager.limitInflow color:[UIColor systemOrangeColor] tag:302 target:self action:@selector(limitInflowChanged:)];
-    [limitCard addSeparator];
-    [limitCard addPickerRowWithIcon:@"thermometer.sun.fill" title:CLL(@"限流等级") value:[self thermalModeString:manager.limitInflowThermalMode] color:[UIColor systemOrangeColor] tag:306 target:self action:@selector(limitInflowModeTapped:)];
+    [limitCard addPickerRowWithIcon:@"thermometer.sun.fill" title:CLL(@"限流等级") value:[self limitInflowValueText] color:[UIColor systemOrangeColor] tag:306 target:self action:@selector(limitInflowModeTapped:)];
+    [self addTipRowToCard:limitCard text:CLL(@"选择“关闭”可禁用自动限流；其他等级会自动启用。")];
     [self.mainStack addArrangedSubview:limitCard];
     
     // 高温模拟
@@ -417,6 +407,14 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
     }
 }
 
+- (NSString *)limitInflowValueText {
+    CLBatteryManager *manager = [CLBatteryManager shared];
+    if (!manager.limitInflow) {
+        return CLL(@"关闭");
+    }
+    return [self thermalModeString:manager.limitInflowThermalMode];
+}
+
 #pragma mark - Actions
 
 - (void)accChargeTapped {
@@ -437,20 +435,18 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
     [[CLAPIClient shared] setConfigWithKey:@"adv_disable_inflow" value:@(sender.on) completion:nil];
 }
 
-- (void)limitInflowChanged:(UISwitch *)sender {
-    [CLBatteryManager shared].limitInflow = sender.on;
-    [[CLAPIClient shared] setConfigWithKey:@"adv_limit_inflow" value:@(sender.on) completion:nil];
-}
-
 - (void)limitInflowModeTapped:(UITapGestureRecognizer *)tap {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"限流等级") message:CLL(@"充电时使用的高温模拟等级\n等级越高，充电电流越小") preferredStyle:UIAlertControllerStyleActionSheet];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"限流等级") message:CLL(@"选择“关闭”可禁用自动限流\n等级越高，充电电流越小") preferredStyle:UIAlertControllerStyleAlert];
     
     NSArray *modes = @[CLL(@"关闭"), CLL(@"正常"), CLL(@"轻度"), CLL(@"中度"), CLL(@"重度")];
     NSArray *modeValues = @[@"off", @"nominal", @"light", @"moderate", @"heavy"];
     __weak typeof(self) weakSelf = self;
     for (NSInteger i = 0; i < modes.count; i++) {
         UIAlertAction *action = [UIAlertAction actionWithTitle:modes[i] style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+            BOOL enableLimit = (i != 0);
             [CLBatteryManager shared].limitInflowThermalMode = (CLThermalMode)i;
+            [CLBatteryManager shared].limitInflow = enableLimit;
+            [[CLAPIClient shared] setConfigWithKey:@"adv_limit_inflow" value:@(enableLimit) completion:nil];
             [[CLAPIClient shared] setConfigWithKey:@"adv_limit_inflow_mode" value:modeValues[i] completion:nil];
             // 刷新页面
             [weakSelf.mainStack.arrangedSubviews makeObjectsPerformSelector:@selector(removeFromSuperview)];
@@ -460,16 +456,11 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
     }
     
     [alert addAction:[UIAlertAction actionWithTitle:CLL(@"取消") style:UIAlertActionStyleCancel handler:nil]];
-    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
-        alert.popoverPresentationController.sourceView = self.view;
-        alert.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width / 2, self.view.bounds.size.height / 2, 0, 0);
-        alert.popoverPresentationController.permittedArrowDirections = 0;
-    }
     [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)thermalModeTapped:(UITapGestureRecognizer *)tap {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"默认高温模拟等级") message:CLL(@"非充电时的高温模拟等级\n等级越高，性能越低，发热越少") preferredStyle:UIAlertControllerStyleActionSheet];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"默认高温模拟等级") message:CLL(@"非充电时的高温模拟等级\n等级越高，性能越低，发热越少") preferredStyle:UIAlertControllerStyleAlert];
     
     NSArray *modes = @[CLL(@"关闭"), CLL(@"正常"), CLL(@"轻度"), CLL(@"中度"), CLL(@"重度")];
     NSArray *modeValues = @[@"off", @"nominal", @"light", @"moderate", @"heavy"];
@@ -486,11 +477,6 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
     }
     
     [alert addAction:[UIAlertAction actionWithTitle:CLL(@"取消") style:UIAlertActionStyleCancel handler:nil]];
-    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
-        alert.popoverPresentationController.sourceView = self.view;
-        alert.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width / 2, self.view.bounds.size.height / 2, 0, 0);
-        alert.popoverPresentationController.permittedArrowDirections = 0;
-    }
     [self presentViewController:alert animated:YES completion:nil];
 }
 

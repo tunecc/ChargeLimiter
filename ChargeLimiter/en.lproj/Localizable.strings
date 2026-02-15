@@ -63,6 +63,11 @@
 "配置目录 URL 无效" = "Invalid config URL.";
 "未检测到 Filza" = "Filza Not Found";
 "请先安装 Filza 文件管理器，再重试打开配置目录。" = "Install Filza to open the config folder.";
+"请先安装 Filza 文件管理器，再重试跳转。" = "Install Filza and try opening again.";
+"复制路径" = "Copy Path";
+"复制调试信息" = "Copy Debug Info";
+"已打开 Filza" = "Filza Opened";
+"当前 Filza 版本未接受目录直达 URL，已复制路径，请在 Filza 中粘贴后前往。" = "This Filza build rejected deep-link path URLs. The path has been copied; paste it in Filza to navigate.";
 "未能定位应用数据目录" = "Unable to locate app data folder.";
 "应用数据目录 URL 无效" = "App data folder URL is invalid.";
 "请先安装 Filza 文件管理器，再重试打开应用数据目录。" = "Install Filza to open the app data folder.";
@@ -112,6 +117,7 @@
 "充电时自动限流" = "Auto Limit While Charging";
 "充电时启用高温模拟以限制电流" = "Use thermal sim to limit current";
 "限流等级" = "Limit Level";
+"选择“关闭”可禁用自动限流；其他等级会自动启用。" = "Select Off to disable auto current limit; other levels enable it.";
 "高温模拟 (Powercuff)" = "Thermal Sim (Powercuff)";
 "默认等级" = "Default Level";
 "锁定等级" = "Lock Level";
@@ -119,6 +125,7 @@
 "默认高温模拟等级" = "Default Thermal Level";
 "非充电时的高温模拟等级\n等级越高，性能越低，发热越少" = "Thermal level when not charging\nHigher level reduces performance and heat";
 "充电时使用的高温模拟等级\n等级越高，充电电流越小" = "Thermal level while charging\nHigher level reduces current";
+"选择“关闭”可禁用自动限流\n等级越高，充电电流越小" = "Select Off to disable auto current limit\nHigher level reduces current";
 "重置所有设置" = "Reset All Settings";
 "确认重置" = "Confirm Reset";
 "这将重置所有设置为默认值" = "This will reset all settings to defaults.";
