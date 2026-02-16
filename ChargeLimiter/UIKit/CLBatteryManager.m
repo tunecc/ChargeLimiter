@@ -333,6 +333,18 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
     }
 }
 
+- (void)setUpdateFrequency:(NSInteger)updateFrequency {
+    NSInteger normalized = MAX(updateFrequency, 1);
+    if (_updateFrequency != normalized) {
+        _updateFrequency = normalized;
+        [self saveConfigKey:@"update_freq" value:@(normalized) completion:nil];
+        // Recreate timer immediately so runtime refresh interval matches UI selection.
+        if (self.refreshTimer) {
+            [self startAutoRefresh];
+        }
+    }
+}
+
 - (void)setChargeBelow:(NSInteger)chargeBelow {
     if (_chargeBelow != chargeBelow) {
         _chargeBelow = chargeBelow;

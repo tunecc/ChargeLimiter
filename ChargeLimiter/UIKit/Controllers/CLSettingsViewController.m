@@ -104,6 +104,8 @@ static id CLPerformSelectorNoArg(id target, SEL selector) {
 #pragma clang diagnostic pop
 }
 
+static const void *kCLCardValueTitleKey = &kCLCardValueTitleKey;
+
 static NSArray<NSString *> *CLKnownFilzaBundleIDs(void) {
     return @[
         @"com.tigisoftware.Filza",
@@ -454,6 +456,7 @@ static NSString *CLNumberedPathsText(NSArray<NSString *> *paths) {
     valueLabel.textColor = [UIColor secondaryLabelColor];
     valueLabel.textAlignment = NSTextAlignmentRight;
     valueLabel.tag = [title hash];
+    objc_setAssociatedObject(valueLabel, kCLCardValueTitleKey, title, OBJC_ASSOCIATION_COPY_NONATOMIC);
     [row addSubview:valueLabel];
     
     [NSLayoutConstraint activateConstraints:@[
@@ -708,11 +711,12 @@ static NSString *CLNumberedPathsText(NSArray<NSString *> *paths) {
 - (void)stopContinuousAdjust {
     NSTimer *timer = objc_getAssociatedObject(self, "adjustTimer");
     [timer invalidate];
+    UISlider *slider = objc_getAssociatedObject(self, "adjustingSlider");
     objc_setAssociatedObject(self, "adjustTimer", nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(self, "adjustingSlider", nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    
+    objc_setAssociatedObject(self, "adjustAmount", nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
     // 触发最终的 onChange
-    UISlider *slider = objc_getAssociatedObject(self, "adjustingSlider");
     if (slider) {
         [self sliderEnded:slider];
     }
@@ -889,6 +893,7 @@ static NSString *CLNumberedPathsText(NSArray<NSString *> *paths) {
     valueLabel.font = [UIFont monospacedDigitSystemFontOfSize:15 weight:UIFontWeightMedium];
     valueLabel.textColor = [UIColor secondaryLabelColor];
     valueLabel.tag = [title hash];
+    objc_setAssociatedObject(valueLabel, kCLCardValueTitleKey, title, OBJC_ASSOCIATION_COPY_NONATOMIC);
     [row addSubview:valueLabel];
     
     UIImageView *chevron = [[UIImageView alloc] init];
@@ -2624,7 +2629,6 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
 }
 
 - (void)setUpdateFrequency:(NSInteger)freq {
-    [[CLAPIClient shared] setConfigWithKey:@"update_freq" value:@(freq) completion:nil];
     [CLBatteryManager shared].updateFrequency = freq;
     [self updateCardValue:self.settingsCard title:CLL(@"刷新频率") value:[self frequencyString:freq]];
 }
@@ -3435,7 +3439,6 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
 - (void)setupControlCard {
     self.controlCard = [[CLGlassCard alloc] init];
     [self.controlCard addSwitchRowWithIcon:@"bolt.fill" title:CLL(@"启用") isOn:YES color:[UIColor systemGreenColor] tag:100 onChange:^(BOOL isOn) {
-        [[CLAPIClient shared] setConfigWithKey:@"enable" value:@(isOn) completion:nil];
         [CLBatteryManager shared].enabled = isOn;
     }];
     [self.controlCard addSeparator];
@@ -3467,7 +3470,6 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
         weakSelf.chargeAbove = adjustedAbove;
         weakSelf.batteryStatus.chargeAbove = adjustedAbove;
         [CLBatteryManager shared].chargeAbove = adjustedAbove;
-        [[CLAPIClient shared] setConfigWithKey:@"charge_above" value:@(adjustedAbove) completion:nil];
     } onLiveChange:^(NSInteger value) {
         // 实时更新电池图标上的标记线
         NSInteger adjustedValue = value;
@@ -3505,7 +3507,6 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
         weakSelf.chargeBelow = adjustedBelow;
         weakSelf.batteryStatus.chargeBelow = adjustedBelow;
         [CLBatteryManager shared].chargeBelow = adjustedBelow;
-        [[CLAPIClient shared] setConfigWithKey:@"charge_below" value:@(adjustedBelow) completion:nil];
     } onLiveChange:^(NSInteger value) {
         // 实时更新电池图标上的标记线
         NSInteger adjustedValue = value;
@@ -3558,7 +3559,6 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
         }
         weakSelf.chargeTempAbove = value;
         [CLBatteryManager shared].chargeTempAbove = value;
-        [[CLAPIClient shared] setConfigWithKey:@"charge_temp_above" value:@(value) completion:nil];
     } onLiveChange:nil];
     
     self.tempSeparator2 = [self.tempCard addSeparator];
@@ -3573,7 +3573,6 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
         }
         weakSelf.chargeTempBelow = value;
         [CLBatteryManager shared].chargeTempBelow = value;
-        [[CLAPIClient shared] setConfigWithKey:@"charge_temp_below" value:@(value) completion:nil];
     } onLiveChange:nil];
     
     [self.mainStack addArrangedSubview:self.tempCard];
@@ -3966,7 +3965,6 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     
     [alert addAction:[UIAlertAction actionWithTitle:CLL(@"插电即充") style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
         [CLBatteryManager shared].chargeMode = CLChargeModePlugAndCharge;
-        [[CLAPIClient shared] setConfigWithKey:@"mode" value:@"charge_on_plug" completion:nil];
         [self updateCardValue:self.controlCard title:CLL(@"充电模式") value:CLL(@"插电即充")];
         self.currentChargeMode = 0;
         [self updateChargeBelowVisibility];
@@ -3974,7 +3972,6 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     
     [alert addAction:[UIAlertAction actionWithTitle:CLL(@"边缘触发") style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
         [CLBatteryManager shared].chargeMode = CLChargeModeEdgeTrigger;
-        [[CLAPIClient shared] setConfigWithKey:@"mode" value:@"edge_trigger" completion:nil];
         [self updateCardValue:self.controlCard title:CLL(@"充电模式") value:CLL(@"边缘触发")];
         self.currentChargeMode = 1;
         [self updateChargeBelowVisibility];
@@ -4119,10 +4116,22 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
 - (void)updateCardValue:(CLGlassCard *)card title:(NSString *)title value:(NSString *)value {
     NSInteger tag = [title hash];
     for (UIView *row in card.contentStack.arrangedSubviews) {
-        UILabel *label = [row viewWithTag:tag];
-        if ([label isKindOfClass:[UILabel class]]) {
-            label.text = value;
-            return;
+        for (UIView *subview in row.subviews) {
+            if (![subview isKindOfClass:[UILabel class]]) {
+                continue;
+            }
+            UILabel *label = (UILabel *)subview;
+            NSString *labelTitle = objc_getAssociatedObject(label, kCLCardValueTitleKey);
+            if (labelTitle.length > 0) {
+                if ([labelTitle isEqualToString:title]) {
+                    label.text = value;
+                    return;
+                }
+            } else if (label.tag == tag) {
+                // Fallback for legacy labels not carrying title association.
+                label.text = value;
+                return;
+            }
         }
     }
 }
@@ -4184,8 +4193,6 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
             if (chargeBelow >= chargeAbove) {
                 chargeAbove = MIN(100, chargeBelow + 5);
             }
-            [[CLAPIClient shared] setConfigWithKey:@"charge_below" value:@(chargeBelow) completion:nil];
-            [[CLAPIClient shared] setConfigWithKey:@"charge_above" value:@(chargeAbove) completion:nil];
             manager.chargeBelow = chargeBelow;
             manager.chargeAbove = chargeAbove;
         }
