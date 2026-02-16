@@ -3094,6 +3094,7 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
 @property (nonatomic, assign) NSInteger chargeTempBelow;
 @property (nonatomic, assign) NSInteger chargeTempAbove;
 @property (nonatomic, assign) BOOL didCheckLegacyMigrationPrompt;
+@property (nonatomic, assign) BOOL tempControlsShouldBeVisible;
 - (void)promptLegacyMigrationIfNeeded;
 - (void)showLegacyMigrationResult:(NSDictionary *)result;
 - (void)promptLegacyResidualCleanupWithPaths:(NSArray<NSString *> *)paths completion:(dispatch_block_t)completion;
@@ -3591,6 +3592,8 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
 }
 
 - (void)updateTempControlVisibility:(BOOL)visible {
+    self.tempControlsShouldBeVisible = visible;
+
     NSMutableArray<UIView *> *targets = [NSMutableArray array];
     if (self.tempAboveRow) [targets addObject:self.tempAboveRow];
     if (self.tempSeparator2) [targets addObject:self.tempSeparator2];
@@ -3598,6 +3601,10 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     if (self.tempSeparator1) [targets addObject:self.tempSeparator1];
     if (targets.count == 0) {
         return;
+    }
+
+    for (UIView *v in targets) {
+        [v.layer removeAllAnimations];
     }
 
     if (visible) {
@@ -3608,19 +3615,28 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
             v.hidden = NO;
         }
         [self.view layoutIfNeeded];
-        [UIView animateWithDuration:0.2 animations:^{
+        [UIView animateWithDuration:0.2
+                              delay:0
+                            options:UIViewAnimationOptionBeginFromCurrentState
+                         animations:^{
             for (UIView *v in targets) {
                 v.alpha = 1.0;
             }
             [self.mainStack layoutIfNeeded];
-        }];
+        } completion:nil];
     } else {
-        [UIView animateWithDuration:0.2 animations:^{
+        [UIView animateWithDuration:0.2
+                              delay:0
+                            options:UIViewAnimationOptionBeginFromCurrentState
+                         animations:^{
             for (UIView *v in targets) {
                 v.alpha = 0.0;
             }
             [self.mainStack layoutIfNeeded];
         } completion:^(BOOL finished) {
+            if (self.tempControlsShouldBeVisible) {
+                return;
+            }
             for (UIView *v in targets) {
                 v.hidden = YES;
             }
@@ -4184,13 +4200,8 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     self.batteryStatus.chargeAbove = chargeAbove;
     
     // 更新温度控制卡片
-    UISwitch *tempSwitch = [self switchInCard:self.tempCard tag:250];
-    BOOL effectiveTempEnabled = manager.tempControlEnabled;
-    if (tempSwitch && tempSwitch.on != manager.tempControlEnabled) {
-        effectiveTempEnabled = tempSwitch.on;
-    }
-    [self updateSwitchInCard:self.tempCard tag:250 value:effectiveTempEnabled];
-    [self updateTempControlVisibility:effectiveTempEnabled];
+    [self updateSwitchInCard:self.tempCard tag:250 value:manager.tempControlEnabled];
+    [self updateTempControlVisibility:manager.tempControlEnabled];
     
     // 更新高温模拟状态
     [self updateCardValue:self.infoCard title:CLL(@"高温模拟") value:[self thermalModeLabel:manager.thermalSimulateMode]];
