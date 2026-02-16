@@ -153,7 +153,7 @@ static int CLStartDaemonBestEffort(void) {
             @"adv_def_thermal_mode": @"off",
             @"adv_limit_inflow_mode": @"off",
             @"adv_thermal_mode_lock": @NO,
-            @"ver": @"1.9.5",
+            @"ver": @"1.9.6.2",
             @"sysver": @"iOS 16.1.2",
             @"devmodel": @"iPhone14,2",
             @"sys_boot": @((NSInteger)[[NSDate date] timeIntervalSince1970] - 86400),
@@ -359,7 +359,13 @@ static int CLStartDaemonBestEffort(void) {
     };
     [self sendRequest:params completion:^(NSDictionary * _Nullable response, NSError * _Nullable error) {
 #if !CL_USE_MOCK_DATA
-        CLPersistLocalConfig(key, value);
+        BOOL accepted = (response && [response[@"status"] intValue] == 0);
+        BOOL transportFailure = (error != nil || response == nil);
+        // Keep local mirror for successful updates and transport failures (offline resilience),
+        // but avoid persisting when daemon explicitly rejects the write.
+        if (accepted || transportFailure) {
+            CLPersistLocalConfig(key, value);
+        }
 #endif
         if (completion) {
             completion(response, error);
