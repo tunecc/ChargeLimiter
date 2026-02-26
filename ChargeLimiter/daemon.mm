@@ -724,6 +724,9 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
     }
     int charge_below = getLocalInt(@"charge_below", 0);
     int charge_above = getLocalInt(@"charge_above", 100);
+    // charge_above >= 100 means "hand over capacity control to system";
+    // keep only temperature-based protection logic.
+    BOOL disable_capacity_control = (charge_above >= 100);
     BOOL enable_temp = getLocalBool(@"enable_temp", NO);
     NSNumber* capacity = safeInfo[@"CurrentCapacity"];
     BOOL is_charging = [safeInfo[@"IsCharging"] boolValue];
@@ -753,7 +756,7 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
             }
             break;
         }
-        if (capacity.intValue >= charge_above) { // 停充-电量高,优先级=2
+        if (!disable_capacity_control && capacity.intValue >= charge_above) { // 停充-电量高,优先级=2
             if (is_charging) {
                 NSFileLog(@"stop charging for high capacity %@ >= %d", capacity, charge_above);
                 setBatteryStatus(NO);
@@ -796,7 +799,7 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
                 break;
             }
         }
-        if (capacity.intValue <= charge_below) { // 充电-电量低,优先级=5
+        if (!disable_capacity_control && capacity.intValue <= charge_below) { // 充电-电量低,优先级=5
             // 禁流模式下电量下降后恢复充电
             if (is_adaptor_connected) {
                 if (adv_disable_inflow && !is_inflow_enabled.boolValue) {
@@ -810,28 +813,30 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
             }
             break;
         }
-        if (mode == CL_MODE_PLUG) {
-            if (is_adaptor_new_connected) { // 充电-插电,优先级=6
-                if (adv_disable_inflow && !is_inflow_enabled.boolValue) {
-                    NSFileLog(@"enable inflow for plug in");
-                    setInflowStatus(YES);
+        if (!disable_capacity_control) {
+            if (mode == CL_MODE_PLUG) {
+                if (is_adaptor_new_connected) { // 充电-插电,优先级=6
+                    if (adv_disable_inflow && !is_inflow_enabled.boolValue) {
+                        NSFileLog(@"enable inflow for plug in");
+                        setInflowStatus(YES);
+                    }
+                    NSFileLog(@"start charging for plug in");
+                    setBatteryStatus(YES);
+                    performAction(@"start_charge");
+                    performAcccharge(YES);
+                    break;
                 }
-                NSFileLog(@"start charging for plug in");
-                setBatteryStatus(YES);
-                performAction(@"start_charge");
-                performAcccharge(YES);
+            } else if (mode == CL_MODE_EDGE) {
+                if (is_adaptor_new_connected) {
+                    NSFileLog(@"stop charging for plug in");
+                    setBatteryStatus(NO);
+                    if (adv_disable_inflow && is_inflow_enabled.boolValue) {
+                        NSFileLog(@"disable inflow for plug in");
+                        setInflowStatus(NO);
+                    }
+                }
                 break;
             }
-        } else if (mode == CL_MODE_EDGE) {
-            if (is_adaptor_new_connected) {
-                NSFileLog(@"stop charging for plug in");
-                setBatteryStatus(NO);
-                if (adv_disable_inflow && is_inflow_enabled.boolValue) {
-                    NSFileLog(@"disable inflow for plug in");
-                    setInflowStatus(NO);
-                }
-            }
-            break;
         }
     } while(false);
     if (is_adaptor_new_disconnected) {
@@ -1039,6 +1044,10 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             resetBatteryStatus();
         } else if ([key isEqualToString:@"adv_disable_inflow"]) {
             resetBatteryStatus();
+        } else if ([key isEqualToString:@"charge_above"]) {
+            if ([val intValue] >= 100) {
+                resetBatteryStatus();
+            }
         } else if ([key isEqualToString:@"adv_prefer_smart"]) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC), dispatch_get_global_queue(0, 0), ^{
                 exit(0);

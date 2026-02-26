@@ -20,7 +20,7 @@
 	<key>CFBundlePackageType</key>
 	<string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.9.6.2</string>
+	<string>1.9.6.3</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

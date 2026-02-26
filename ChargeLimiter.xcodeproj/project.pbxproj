@@ -689,7 +689,7 @@
 					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.9.6.1;
+				MARKETING_VERSION = 1.9.6.3;
 				MonkeyDevBuildPackageOnAnyBuild = YES;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = YES;
@@ -737,7 +737,7 @@
 					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.9.6.1;
+				MARKETING_VERSION = 1.9.6.3;
 				MonkeyDevBuildPackageOnAnyBuild = YES;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = YES;
@@ -918,7 +918,7 @@
 					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.9.6.1;
+				MARKETING_VERSION = 1.9.6.3;
 				MonkeyDevBuildPackageOnAnyBuild = YES;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = YES;
@@ -960,7 +960,7 @@
 					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.9.6.1;
+				MARKETING_VERSION = 1.9.6.3;
 				MonkeyDevBuildPackageOnAnyBuild = YES;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = YES;
@@ -1005,7 +1005,7 @@
 					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.9.6.1;
+				MARKETING_VERSION = 1.9.6.3;
 				MonkeyDevBuildPackageOnAnyBuild = YES;
 				MonkeyDevDeviceIP = 192.168.1.12;
 				MonkeyDevInstallOnAnyBuild = YES;
@@ -1051,7 +1051,7 @@
 					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.9.6.1;
+				MARKETING_VERSION = 1.9.6.3;
 				MonkeyDevBuildPackageOnAnyBuild = YES;
 				MonkeyDevDeviceIP = 192.168.1.12;
 				MonkeyDevInstallOnAnyBuild = YES;
@@ -1097,7 +1097,7 @@
 					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.9.6.1;
+				MARKETING_VERSION = 1.9.6.3;
 				MonkeyDevBuildPackageOnAnyBuild = YES;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = YES;
@@ -1148,7 +1148,7 @@
 					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.9.6.1;
+				MARKETING_VERSION = 1.9.6.3;
 				MonkeyDevBuildPackageOnAnyBuild = YES;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = YES;
