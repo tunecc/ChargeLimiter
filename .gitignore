@@ -4,8 +4,8 @@
 xcuserdata/
 
 # Build outputs
-build roothide/
-build rootless/
+build_roothide/
+build_rootless/
 Packages/
 LatestBuild/
 DerivedData/
@@ -16,6 +16,7 @@ ChargeLimiter_rootless/Package/Applications
 ChargeLimiter_rootless/Package_tmp
 ChargeLimiter_roothide
 .theos
+out/
 
 # macOS
 .DS_Store
@@ -35,3 +36,4 @@ Readme2.md
 SWIFTUI_CHANGES_LOG.txt
 REFACTOR_SUMMARY.md
 /docs
+LatestBuild

@@ -153,7 +153,7 @@ static int CLStartDaemonBestEffort(void) {
             @"adv_def_thermal_mode": @"off",
             @"adv_limit_inflow_mode": @"off",
             @"adv_thermal_mode_lock": @NO,
-            @"ver": @"1.9.6.2",
+            @"ver": @"1.9.6.3",
             @"sysver": @"iOS 16.1.2",
             @"devmodel": @"iPhone14,2",
             @"sys_boot": @((NSInteger)[[NSDate date] timeIntervalSince1970] - 86400),

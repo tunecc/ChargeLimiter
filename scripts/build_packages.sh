@@ -62,7 +62,7 @@ set_control_version() {
   mv "$tmp_file" "$control_file"
 }
 
-VERSION="${1:-1.9.6.2}"
+VERSION="${1:-1.9.6.3}"
 if [ -z "$VERSION" ]; then
     VERSION="$(awk -F' = ' '/MARKETING_VERSION =/{gsub(/;/, "", $2); print $2; exit}' "$ROOT_DIR/ChargeLimiter.xcodeproj/project.pbxproj")"
 fi

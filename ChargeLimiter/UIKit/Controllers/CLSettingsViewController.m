@@ -3075,6 +3075,7 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
 @interface CLSettingsViewController ()
 @property (nonatomic, strong) UIScrollView *scrollView;
 @property (nonatomic, strong) UIStackView *mainStack;
+@property (nonatomic, strong) UIView *contentContainerView;
 @property (nonatomic, strong) CLBatteryStatusView *batteryStatus;
 @property (nonatomic, strong) CLGlassCard *controlCard;
 @property (nonatomic, strong) CLGlassCard *limitCard;
@@ -3097,12 +3098,19 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
 @property (nonatomic, strong) UIView *tempSeparator2;
 @property (nonatomic, assign) NSInteger chargeTempBelow;
 @property (nonatomic, assign) NSInteger chargeTempAbove;
+@property (nonatomic, strong) UIView *systemControlHintView;
+@property (nonatomic, strong) UILabel *systemControlHintLabel;
+@property (nonatomic, strong) NSTimer *systemControlHintTimer;
+@property (nonatomic, assign) NSInteger lastChargeAboveForHint;
 @property (nonatomic, assign) BOOL didCheckLegacyMigrationPrompt;
 @property (nonatomic, assign) BOOL tempControlsShouldBeVisible;
 - (void)promptLegacyMigrationIfNeeded;
 - (void)showLegacyMigrationResult:(NSDictionary *)result;
 - (void)promptLegacyResidualCleanupWithPaths:(NSArray<NSString *> *)paths completion:(dispatch_block_t)completion;
 - (void)showLegacyResidualCleanupResult:(NSDictionary *)result;
+- (void)setupSystemControlHintFloating;
+- (void)updateSystemControlHintForChargeAbove:(NSInteger)newValue;
+- (void)showSystemControlHint;
 @end
 
 @implementation CLSettingsViewController
@@ -3115,6 +3123,7 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     (void)getAppDocumentsPath_C();
     self.chargeBelow = 20;
     self.chargeAbove = 80;
+    self.lastChargeAboveForHint = self.chargeAbove;
     self.chargeTempBelow = 35;  // 降温恢复温度
     self.chargeTempAbove = 40;  // 高温停充温度
     
@@ -3152,6 +3161,10 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     [super viewWillDisappear:animated];
     self.navigationController.navigationBarHidden = NO;
     [[CLBatteryManager shared] stopAutoRefresh];
+    [self.systemControlHintTimer invalidate];
+    self.systemControlHintTimer = nil;
+    self.systemControlHintView.alpha = 0;
+    self.systemControlHintView.hidden = YES;
 }
 
 - (void)dealloc {
@@ -3341,6 +3354,7 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     containerView.translatesAutoresizingMaskIntoConstraints = NO;
     [self.scrollView addSubview:containerView];
     [containerView addSubview:self.mainStack];
+    self.contentContainerView = containerView;
     
     NSLayoutConstraint *widthConstraint = [self.mainStack.widthAnchor constraintEqualToAnchor:containerView.widthAnchor constant:-32];
     widthConstraint.priority = UILayoutPriorityDefaultHigh;
@@ -3406,6 +3420,9 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     
     // 充电限制卡片
     [self setupLimitCard];
+
+    // 系统接管电量控制提示（悬浮显示在控制卡片和充电限制卡片之间）
+    [self setupSystemControlHintFloating];
     
     // 温度控制卡片
     [self setupTempCard];
@@ -3447,6 +3464,66 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     [self.mainStack addArrangedSubview:self.controlCard];
 }
 
+- (void)setupSystemControlHintFloating {
+    UIView *hint = [[UIView alloc] init];
+    hint.translatesAutoresizingMaskIntoConstraints = NO;
+    hint.backgroundColor = [[UIColor secondarySystemBackgroundColor] colorWithAlphaComponent:0.96];
+    hint.layer.cornerRadius = 10;
+    hint.layer.borderWidth = 1.0 / UIScreen.mainScreen.scale;
+    hint.layer.borderColor = [[UIColor separatorColor] colorWithAlphaComponent:0.55].CGColor;
+    hint.layer.shadowColor = [UIColor blackColor].CGColor;
+    hint.layer.shadowOpacity = 0.12;
+    hint.layer.shadowRadius = 8;
+    hint.layer.shadowOffset = CGSizeMake(0, 3);
+    hint.userInteractionEnabled = NO;
+    hint.hidden = YES;
+    hint.alpha = 0;
+
+    UIImageView *icon = [[UIImageView alloc] init];
+    icon.translatesAutoresizingMaskIntoConstraints = NO;
+    icon.tintColor = [UIColor systemBlueColor];
+    UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:14 weight:UIFontWeightSemibold];
+    icon.image = CLSymbolImage(@"info.circle.fill", config);
+
+    UILabel *label = [[UILabel alloc] init];
+    label.translatesAutoresizingMaskIntoConstraints = NO;
+    label.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+    label.textColor = [UIColor labelColor];
+    label.numberOfLines = 0;
+    label.text = CLL(@"已切换为系统电量控制，温度控制仍生效");
+
+    [hint addSubview:icon];
+    [hint addSubview:label];
+    [NSLayoutConstraint activateConstraints:@[
+        [icon.leadingAnchor constraintEqualToAnchor:hint.leadingAnchor constant:12],
+        [icon.centerYAnchor constraintEqualToAnchor:label.centerYAnchor],
+        [icon.widthAnchor constraintEqualToConstant:16],
+        [icon.heightAnchor constraintEqualToConstant:16],
+
+        [label.leadingAnchor constraintEqualToAnchor:icon.trailingAnchor constant:8],
+        [label.trailingAnchor constraintEqualToAnchor:hint.trailingAnchor constant:-12],
+        [label.topAnchor constraintEqualToAnchor:hint.topAnchor constant:10],
+        [label.bottomAnchor constraintEqualToAnchor:hint.bottomAnchor constant:-10]
+    ]];
+
+    UIView *container = self.contentContainerView ?: self.view;
+    [container addSubview:hint];
+    UILayoutGuide *betweenGuide = [[UILayoutGuide alloc] init];
+    [container addLayoutGuide:betweenGuide];
+    [NSLayoutConstraint activateConstraints:@[
+        [betweenGuide.topAnchor constraintEqualToAnchor:self.controlCard.bottomAnchor],
+        [betweenGuide.bottomAnchor constraintEqualToAnchor:self.limitCard.topAnchor],
+
+        [hint.centerXAnchor constraintEqualToAnchor:self.mainStack.centerXAnchor],
+        [hint.centerYAnchor constraintEqualToAnchor:betweenGuide.centerYAnchor],
+        [hint.widthAnchor constraintLessThanOrEqualToAnchor:self.mainStack.widthAnchor constant:-24],
+        [hint.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.mainStack.leadingAnchor constant:12],
+        [hint.trailingAnchor constraintLessThanOrEqualToAnchor:self.mainStack.trailingAnchor constant:-12]
+    ]];
+    self.systemControlHintView = hint;
+    self.systemControlHintLabel = label;
+}
+
 - (void)setupLimitCard {
     self.limitCard = [[CLGlassCard alloc] init];
     self.limitCard.viewController = self;
@@ -3470,6 +3547,7 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
         weakSelf.chargeAbove = adjustedAbove;
         weakSelf.batteryStatus.chargeAbove = adjustedAbove;
         [CLBatteryManager shared].chargeAbove = adjustedAbove;
+        [weakSelf updateSystemControlHintForChargeAbove:adjustedAbove];
     } onLiveChange:^(NSInteger value) {
         // 实时更新电池图标上的标记线
         NSInteger adjustedValue = value;
@@ -3485,6 +3563,7 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
             [weakSelf updateSliderLabel:weakSelf.chargeAboveRow value:adjustedValue suffix:@"%"];
         }
         weakSelf.batteryStatus.chargeAbove = adjustedValue;
+        [weakSelf updateSystemControlHintForChargeAbove:adjustedValue];
     }];
 
     // 保存分隔线引用
@@ -3999,6 +4078,42 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     }];
 }
 
+- (void)updateSystemControlHintForChargeAbove:(NSInteger)newValue {
+    NSInteger oldValue = self.lastChargeAboveForHint;
+    self.lastChargeAboveForHint = newValue;
+    if (oldValue != 100 && newValue == 100) {
+        [self showSystemControlHint];
+    }
+}
+
+- (void)showSystemControlHint {
+    if (!self.isViewLoaded) {
+        return;
+    }
+    if (!self.systemControlHintView || !self.systemControlHintLabel) {
+        return;
+    }
+
+    self.systemControlHintLabel.text = CLL(@"已切换为系统电量控制，温度控制仍生效");
+    [self.systemControlHintTimer invalidate];
+    self.systemControlHintView.hidden = NO;
+    self.systemControlHintView.transform = CGAffineTransformMakeTranslation(0, -4);
+    self.systemControlHintTimer = [NSTimer scheduledTimerWithTimeInterval:2.0 repeats:NO block:^(NSTimer * _Nonnull timer) {
+        [UIView animateWithDuration:0.2 animations:^{
+            self.systemControlHintView.alpha = 0;
+            self.systemControlHintView.transform = CGAffineTransformMakeTranslation(0, -4);
+        } completion:^(BOOL finished) {
+            self.systemControlHintView.hidden = YES;
+            self.systemControlHintView.transform = CGAffineTransformIdentity;
+        }];
+    }];
+
+    [UIView animateWithDuration:0.2 animations:^{
+        self.systemControlHintView.alpha = 1;
+        self.systemControlHintView.transform = CGAffineTransformIdentity;
+    }];
+}
+
 - (void)advancedTapped {
     Class vcClass = NSClassFromString(@"CLAdvancedSettingsViewController");
     if (vcClass) {
@@ -4199,6 +4314,7 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     }
     self.chargeBelow = chargeBelow;
     self.chargeAbove = chargeAbove;
+    self.lastChargeAboveForHint = chargeAbove;
     [self updateSliderValue:self.chargeBelowRow value:chargeBelow];
     [self updateSliderValue:self.chargeAboveRow value:chargeAbove];
     [self updateSliderLabel:self.chargeBelowRow value:chargeBelow suffix:@"%"];
