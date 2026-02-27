@@ -2441,12 +2441,14 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     // 标记线起始位置 = BATTERY_FILL_PADDING (fillView的左边距)
     CGFloat lowX = BATTERY_FILL_PADDING + BATTERY_USABLE_WIDTH * (self.chargeBelow / 100.0);
     CGFloat highX = BATTERY_FILL_PADDING + BATTERY_USABLE_WIDTH * (self.chargeAbove / 100.0);
+    BOOL showHighMarker = (self.chargeAbove < 100);
     
     void (^updateBlock)(void) = ^{
         // 标记线高度和 fillView 一致
         self.lowMarker.frame = CGRectMake(lowX - 1.5, BATTERY_FILL_PADDING, 3, BATTERY_USABLE_HEIGHT);
         self.lowMarker.alpha = self.showLowMarker ? 1.0 : 0.0;
         self.highMarker.frame = CGRectMake(highX - 1.5, BATTERY_FILL_PADDING, 3, BATTERY_USABLE_HEIGHT);
+        self.highMarker.alpha = showHighMarker ? 1.0 : 0.0;
     };
     
     if (animated) {
