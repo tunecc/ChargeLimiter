@@ -87,6 +87,10 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
     _thermalMode = [self thermalModeFromString:data[@"adv_def_thermal_mode"]];
     _limitInflowThermalMode = [self thermalModeFromString:data[@"adv_limit_inflow_mode"]];
     _thermalSimulateMode = [self thermalModeFromString:data[@"thermal_simulate_mode"]];
+    _fullChargeScheduleEnabled = [data[@"full_charge_sched_enabled"] boolValue];
+    _fullChargeScheduleIntervalDays = [data[@"full_charge_sched_interval_days"] integerValue];
+    _fullChargeScheduleStartMinute = [data[@"full_charge_sched_start_minute"] integerValue];
+    _fullChargeScheduleDurationHours = [data[@"full_charge_sched_duration_hours"] integerValue];
 
     _appVersion = data[@"ver"];
     _systemVersion = data[@"sysver"];
@@ -109,6 +113,10 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
     if (!m[@"enable_temp"]) m[@"enable_temp"] = @NO;
     if (!m[@"charge_temp_below"]) m[@"charge_temp_below"] = @35;
     if (!m[@"charge_temp_above"]) m[@"charge_temp_above"] = @40;
+    if (!m[@"full_charge_sched_enabled"]) m[@"full_charge_sched_enabled"] = @NO;
+    if (!m[@"full_charge_sched_interval_days"]) m[@"full_charge_sched_interval_days"] = @7;
+    if (!m[@"full_charge_sched_start_minute"]) m[@"full_charge_sched_start_minute"] = @120;
+    if (!m[@"full_charge_sched_duration_hours"]) m[@"full_charge_sched_duration_hours"] = @4;
     return m;
 }
 
@@ -130,6 +138,9 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
         _chargeTempBelow = 35;  // 降温恢复温度
         _chargeTempAbove = 40;  // 高温停充温度
         _chargeMode = CLChargeModePlugAndCharge;
+        _fullChargeScheduleIntervalDays = 7;
+        _fullChargeScheduleStartMinute = 120;
+        _fullChargeScheduleDurationHours = 4;
     }
     return self;
 }

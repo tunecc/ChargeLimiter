@@ -98,12 +98,18 @@ static BOOL g_enable_floatwnd = NO;
 static BOOL g_use_smart = NO;
 static int g_jbtype = -1;
 static int g_serv_boot = 0;
+static BOOL g_fullChargeWindowActive = NO;
+static NSTimer* g_fullChargeScheduleTimer = nil;
+static time_t g_fullChargeScheduleBoundaryTs = 0;
 
 static IONotificationPortRef gNotifyPort = NULL;
 static io_object_t iopmpsNoti = IO_OBJECT_NULL;
 static UPSDataSlim* gUPSPS = nil;
 
 NSDictionary* handleReq(NSDictionary* nsreq);
+static void onBatteryEventEnd(void);
+static void updateStatistics(void);
+static void evaluateFullChargeSchedule(BOOL forceApply);
 
 @interface Service: NSObject<UNUserNotificationCenterDelegate>
 + (instancetype)inst;
@@ -111,7 +117,245 @@ NSDictionary* handleReq(NSDictionary* nsreq);
 - (void)serve;
 - (void)initLocalPush;
 - (void)localPush:(NSString*)title msg:(NSString*)msg;
+- (void)systemTimeContextDidChange:(NSNotification*)note;
 @end
+
+static int clampIntValue(int value, int minValue, int maxValue) {
+    if (value < minValue) {
+        return minValue;
+    }
+    if (value > maxValue) {
+        return maxValue;
+    }
+    return value;
+}
+
+static BOOL isFullChargeScheduleEnabled() {
+    return getLocalBool(@"full_charge_sched_enabled", NO);
+}
+
+static int getFullChargeScheduleIntervalDays() {
+    return clampIntValue(getLocalInt(@"full_charge_sched_interval_days", 7), 1, 90);
+}
+
+static int getFullChargeScheduleStartMinute() {
+    return clampIntValue(getLocalInt(@"full_charge_sched_start_minute", 120), 0, 23 * 60 + 59);
+}
+
+static int getFullChargeScheduleDurationHours() {
+    return clampIntValue(getLocalInt(@"full_charge_sched_duration_hours", 4), 1, 12);
+}
+
+static NSCalendar* fullChargeScheduleCalendar() {
+    return [NSCalendar autoupdatingCurrentCalendar];
+}
+
+static NSString* fullChargeScheduleAnchorDateStringForDate(NSDate* date) {
+    if (date == nil) {
+        return @"";
+    }
+    NSDateComponents* comps = [[fullChargeScheduleCalendar() components:NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay fromDate:date] copy];
+    return [NSString stringWithFormat:@"%04ld-%02ld-%02ld", (long)comps.year, (long)comps.month, (long)comps.day];
+}
+
+static NSDate* fullChargeScheduleAnchorDateFromString(NSString* dateString) {
+    if (![dateString isKindOfClass:[NSString class]] || dateString.length != 10) {
+        return nil;
+    }
+    NSArray<NSString*>* parts = [dateString componentsSeparatedByString:@"-"];
+    if (parts.count != 3) {
+        return nil;
+    }
+    NSInteger year = [parts[0] integerValue];
+    NSInteger month = [parts[1] integerValue];
+    NSInteger day = [parts[2] integerValue];
+    if (year < 2000 || month < 1 || month > 12 || day < 1 || day > 31) {
+        return nil;
+    }
+    NSDateComponents* comps = [[NSDateComponents alloc] init];
+    comps.year = year;
+    comps.month = month;
+    comps.day = day;
+    comps.hour = 0;
+    comps.minute = 0;
+    comps.second = 0;
+    NSDate* date = [fullChargeScheduleCalendar() dateFromComponents:comps];
+    if (date == nil) {
+        return nil;
+    }
+    if (![fullChargeScheduleAnchorDateStringForDate(date) isEqualToString:dateString]) {
+        return nil;
+    }
+    return date;
+}
+
+static NSDate* fullChargeScheduleStartDateForDay(NSDate* day, int startMinute) {
+    NSCalendar* calendar = fullChargeScheduleCalendar();
+    NSDateComponents* comps = [calendar components:NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay fromDate:day];
+    comps.hour = startMinute / 60;
+    comps.minute = startMinute % 60;
+    comps.second = 0;
+    return [calendar dateFromComponents:comps];
+}
+
+static NSString* computeInitialFullChargeScheduleAnchorDateString(time_t now) {
+    if (!isFullChargeScheduleEnabled()) {
+        return @"";
+    }
+    int startMinute = getFullChargeScheduleStartMinute();
+    int durationHours = getFullChargeScheduleDurationHours();
+    NSDate* nowDate = [NSDate dateWithTimeIntervalSince1970:now];
+    NSCalendar* calendar = fullChargeScheduleCalendar();
+    NSDate* todayDay = [calendar startOfDayForDate:nowDate];
+    NSDate* todayStart = fullChargeScheduleStartDateForDay(todayDay, startMinute);
+    NSDate* todayEnd = [todayStart dateByAddingTimeInterval:durationHours * 3600.0];
+    if ([nowDate compare:todayEnd] == NSOrderedAscending) {
+        return fullChargeScheduleAnchorDateStringForDate(todayDay);
+    }
+    NSDate* nextDay = [calendar dateByAddingUnit:NSCalendarUnitDay value:1 toDate:todayDay options:0];
+    return fullChargeScheduleAnchorDateStringForDate(nextDay);
+}
+
+static void resetFullChargeScheduleAnchorDate(time_t now) {
+    NSString* anchorDate = computeInitialFullChargeScheduleAnchorDateString(now);
+    setLocalString(@"full_charge_sched_anchor_date", anchorDate ?: @"");
+    // Legacy key retained for cleanup compatibility; no longer used for scheduling.
+    setLocalInt(@"full_charge_sched_next_ts", 0);
+}
+
+static NSDate* resolvedFullChargeScheduleAnchorDate(time_t now) {
+    if (!isFullChargeScheduleEnabled()) {
+        return nil;
+    }
+    NSString* anchorString = getLocalString(@"full_charge_sched_anchor_date", @"");
+    NSDate* anchorDate = fullChargeScheduleAnchorDateFromString(anchorString);
+    if (anchorDate == nil) {
+        resetFullChargeScheduleAnchorDate(now);
+        anchorString = getLocalString(@"full_charge_sched_anchor_date", @"");
+        anchorDate = fullChargeScheduleAnchorDateFromString(anchorString);
+    }
+    return anchorDate;
+}
+
+typedef struct {
+    BOOL enabled;
+    BOOL active;
+    time_t startTs;
+    time_t endTs;
+    time_t nextBoundaryTs;
+} CLFullChargeScheduleState;
+
+static CLFullChargeScheduleState fullChargeScheduleStateForScheduledDay(NSDate* scheduledDay) {
+    CLFullChargeScheduleState state = {};
+    NSDate* scheduledStart = fullChargeScheduleStartDateForDay(scheduledDay, getFullChargeScheduleStartMinute());
+    NSDate* scheduledEnd = [scheduledStart dateByAddingTimeInterval:getFullChargeScheduleDurationHours() * 3600.0];
+    state.startTs = (time_t)llround(scheduledStart.timeIntervalSince1970);
+    state.endTs = (time_t)llround(scheduledEnd.timeIntervalSince1970);
+    return state;
+}
+
+static CLFullChargeScheduleState getFullChargeScheduleState(time_t now) {
+    CLFullChargeScheduleState state = {};
+    state.enabled = isFullChargeScheduleEnabled();
+    if (!state.enabled) {
+        return state;
+    }
+
+    NSDate* anchorDay = resolvedFullChargeScheduleAnchorDate(now);
+    if (anchorDay == nil) {
+        return state;
+    }
+
+    NSCalendar* calendar = fullChargeScheduleCalendar();
+    NSDate* nowDate = [NSDate dateWithTimeIntervalSince1970:now];
+    NSDate* todayDay = [calendar startOfDayForDate:nowDate];
+    NSInteger intervalDays = getFullChargeScheduleIntervalDays();
+    NSInteger dayOffset = [calendar components:NSCalendarUnitDay fromDate:anchorDay toDate:todayDay options:0].day;
+    NSInteger baseCycle = 0;
+    if (dayOffset > 0) {
+        baseCycle = dayOffset / intervalDays;
+    }
+
+    CLFullChargeScheduleState nextState = {};
+    nextState.enabled = state.enabled;
+    BOOL hasNextState = NO;
+    NSInteger startCycle = MAX((NSInteger)0, baseCycle - 1);
+    NSInteger endCycle = baseCycle + 1;
+    for (NSInteger cycleIndex = startCycle; cycleIndex <= endCycle; cycleIndex++) {
+        NSDate* scheduledDay = [calendar dateByAddingUnit:NSCalendarUnitDay value:(cycleIndex * intervalDays) toDate:anchorDay options:0];
+        CLFullChargeScheduleState candidate = fullChargeScheduleStateForScheduledDay(scheduledDay);
+        candidate.enabled = state.enabled;
+        if (now >= candidate.startTs && now < candidate.endTs) {
+            candidate.active = YES;
+            candidate.nextBoundaryTs = candidate.endTs;
+            return candidate;
+        }
+        if (candidate.startTs > now && (!hasNextState || candidate.startTs < nextState.startTs)) {
+            candidate.nextBoundaryTs = candidate.startTs;
+            nextState = candidate;
+            hasNextState = YES;
+        }
+    }
+
+    if (hasNextState) {
+        return nextState;
+    }
+
+    NSDate* fallbackDay = [calendar dateByAddingUnit:NSCalendarUnitDay value:((baseCycle + 2) * intervalDays) toDate:anchorDay options:0];
+    CLFullChargeScheduleState fallbackState = fullChargeScheduleStateForScheduledDay(fallbackDay);
+    fallbackState.enabled = state.enabled;
+    fallbackState.nextBoundaryTs = fallbackState.startTs;
+    return fallbackState;
+}
+
+static BOOL isFullChargeWindowActive(time_t now, time_t* startOut, time_t* endOut) {
+    CLFullChargeScheduleState state = getFullChargeScheduleState(now);
+    if (startOut) {
+        *startOut = state.startTs;
+    }
+    if (endOut) {
+        *endOut = state.endTs;
+    }
+    return state.enabled && state.active;
+}
+
+static void refreshFullChargeScheduleTimer(time_t nextBoundaryTs) {
+    BOOL shouldRun = (g_enable && isFullChargeScheduleEnabled() && nextBoundaryTs > 0);
+    if (!shouldRun) {
+        if (g_fullChargeScheduleTimer != nil) {
+            [g_fullChargeScheduleTimer invalidate];
+            g_fullChargeScheduleTimer = nil;
+        }
+        g_fullChargeScheduleBoundaryTs = 0;
+        if (!isFullChargeScheduleEnabled()) {
+            g_fullChargeWindowActive = NO;
+        }
+        return;
+    }
+    if (g_fullChargeScheduleTimer != nil && g_fullChargeScheduleBoundaryTs == nextBoundaryTs) {
+        return;
+    }
+    if (g_fullChargeScheduleTimer != nil) {
+        [g_fullChargeScheduleTimer invalidate];
+        g_fullChargeScheduleTimer = nil;
+    }
+
+    NSDate* fireDate = [NSDate dateWithTimeIntervalSince1970:nextBoundaryTs];
+    if (fireDate.timeIntervalSinceNow <= 0) {
+        fireDate = [NSDate dateWithTimeIntervalSinceNow:1.0];
+        nextBoundaryTs = (time_t)llround(fireDate.timeIntervalSince1970);
+    }
+
+    g_fullChargeScheduleBoundaryTs = nextBoundaryTs;
+    g_fullChargeScheduleTimer = [[NSTimer alloc] initWithFireDate:fireDate interval:0 repeats:NO block:^(NSTimer* timer) {
+        @synchronized (Service.inst) {
+            g_fullChargeScheduleTimer = nil;
+            g_fullChargeScheduleBoundaryTs = 0;
+            evaluateFullChargeSchedule(NO);
+        }
+    }];
+    [[NSRunLoop mainRunLoop] addTimer:g_fullChargeScheduleTimer forMode:NSRunLoopCommonModes];
+}
 
 
 static io_service_t getIOPMPSServ() {
@@ -634,13 +878,18 @@ static void initConfKeySets() {
             @"adv_predictive_inhibit_charge",
             @"adv_disable_inflow",
             @"adv_limit_inflow",
-            @"adv_thermal_mode_lock"
+            @"adv_thermal_mode_lock",
+            @"full_charge_sched_enabled"
         ]];
         gConfIntKeys = [NSSet setWithArray:@[
             @"charge_below",
             @"charge_above",
             @"temp_mode",
-            @"update_freq"
+            @"update_freq",
+            @"full_charge_sched_interval_days",
+            @"full_charge_sched_start_minute",
+            @"full_charge_sched_duration_hours",
+            @"full_charge_sched_next_ts"
         ]];
         gConfFloatKeys = [NSSet setWithArray:@[
             @"charge_temp_below",
@@ -651,7 +900,8 @@ static void initConfKeySets() {
             @"lang",
             @"action",
             @"adv_limit_inflow_mode",
-            @"adv_def_thermal_mode"
+            @"adv_def_thermal_mode",
+            @"full_charge_sched_anchor_date"
         ]];
     });
 }
@@ -724,6 +974,11 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
     }
     int charge_below = getLocalInt(@"charge_below", 0);
     int charge_above = getLocalInt(@"charge_above", 100);
+    BOOL full_charge_window_active = isFullChargeWindowActive(time(0), nil, nil);
+    if (full_charge_window_active) {
+        // 满充计划窗口内只解除电量上限，温控逻辑仍然保留。
+        charge_above = 100;
+    }
     // charge_above >= 100 means "hand over capacity control to system";
     // keep only temperature-based protection logic.
     BOOL disable_capacity_control = (charge_above >= 100);
@@ -779,6 +1034,19 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
             if (adv_disable_inflow && is_inflow_enabled.boolValue) {
                 NSFileLog(@"disable inflow for high temperature %lf >= %lf", temperature, charge_temp_above);
                 setInflowStatus(NO);
+            }
+            break;
+        }
+        if (full_charge_window_active) { // 满充计划窗口内，只跳过电量上限控制
+            if (is_adaptor_connected && !is_charging && capacity.intValue < 100) {
+                if (adv_disable_inflow && !is_inflow_enabled.boolValue) {
+                    NSFileLog(@"enable inflow for scheduled full-charge window");
+                    setInflowStatus(YES);
+                }
+                NSFileLog(@"start charging for scheduled full-charge window");
+                setBatteryStatus(YES);
+                performAction(@"start_charge");
+                performAcccharge(YES);
             }
             break;
         }
@@ -844,6 +1112,39 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
     }
 }
 
+static void refreshBatteryStateAndApplyPolicy(void) {
+    NSDictionary* old_bat_info = bat_info;
+    if (0 != getBatInfo(&bat_info)) {
+        return;
+    }
+    updateStatistics();
+    if (!g_enable) {
+        return;
+    }
+    applyChargePolicy(old_bat_info, bat_info);
+    onBatteryEventEnd();
+}
+
+static void evaluateFullChargeSchedule(BOOL forceApply) {
+    time_t now = time(0);
+    BOOL wasActive = g_fullChargeWindowActive;
+    CLFullChargeScheduleState state = getFullChargeScheduleState(now);
+    g_fullChargeWindowActive = state.active;
+    refreshFullChargeScheduleTimer(state.nextBoundaryTs);
+    if (!g_enable) {
+        return;
+    }
+    if (!forceApply && wasActive == state.active) {
+        return;
+    }
+    if (wasActive != state.active) {
+        NSFileLog(@"scheduled full-charge window %@", state.active ? @"entered" : @"ended");
+    } else {
+        NSFileLog(@"scheduled full-charge config updated");
+    }
+    refreshBatteryStateAndApplyPolicy();
+}
+
 static void onBatteryEvent(io_service_t serv) {
     @autoreleasepool {
         NSDictionary* old_bat_info = bat_info;
@@ -886,6 +1187,12 @@ static void initConf(BOOL reset) {
         @"adv_limit_inflow_mode": @"moderate",
         @"adv_def_thermal_mode": @"off", // powercuff
         @"adv_thermal_mode_lock": @NO,
+        @"full_charge_sched_enabled": @NO,
+        @"full_charge_sched_interval_days": @7,
+        @"full_charge_sched_start_minute": @120,
+        @"full_charge_sched_duration_hours": @4,
+        @"full_charge_sched_anchor_date": @"",
+        @"full_charge_sched_next_ts": @0,
         @"action": @"",
     };
     if (reset) {
@@ -974,6 +1281,8 @@ static void syncDaemonDocumentsForRequest(NSDictionary* nsreq) {
         initDB(serial);
     }
     initConf(NO);
+    refreshFullChargeScheduleTimer(0);
+    evaluateFullChargeSchedule(NO);
 
     NSString* newDocs = getAppDocumentsPath();
     NSString* newConf = getConfPath();
@@ -1026,6 +1335,7 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
         }
         if ([key isEqualToString:@"enable"]) {
             g_enable = [val boolValue];
+            refreshFullChargeScheduleTimer(0);
             if (!g_enable) {
                 resetBatteryStatus();
             } else { // 启用时检查
@@ -1035,6 +1345,7 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
                         setSmartChargeEnable(NO);
                     }
                 }
+                evaluateFullChargeSchedule(YES);
             }
         } else if ([key isEqualToString:@"action"]) {
             if ([val isEqualToString:@"noti"]) {
@@ -1048,6 +1359,15 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             if ([val intValue] >= 100) {
                 resetBatteryStatus();
             }
+        } else if ([@[
+            @"full_charge_sched_enabled",
+            @"full_charge_sched_interval_days",
+            @"full_charge_sched_start_minute",
+            @"full_charge_sched_duration_hours"
+        ] containsObject:key]) {
+            resetFullChargeScheduleAnchorDate(time(0));
+            refreshFullChargeScheduleTimer(0);
+            evaluateFullChargeSchedule(YES);
         } else if ([key isEqualToString:@"adv_prefer_smart"]) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC), dispatch_get_global_queue(0, 0), ^{
                 exit(0);
@@ -1066,6 +1386,8 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
         };
     } else if ([api isEqualToString:@"reset_conf"]) {
         initConf(YES);
+        refreshFullChargeScheduleTimer(0);
+        evaluateFullChargeSchedule(YES);
         return @{
             @"status": @0,
         };
@@ -1084,13 +1406,7 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             @"data": bat_info,
         };
     } else if ([api isEqualToString:@"apply_now"]) {
-        NSDictionary* old_bat_info = bat_info;
-        getBatInfo(&bat_info);
-        updateStatistics();
-        if (g_enable) {
-            applyChargePolicy(old_bat_info, bat_info);
-            onBatteryEventEnd();
-        }
+        refreshBatteryStateAndApplyPolicy();
         return @{
             @"status": @0,
         };
@@ -1100,6 +1416,8 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
         uninitDB();
         initDB(nil);
         initConf(NO);
+        refreshFullChargeScheduleTimer(0);
+        evaluateFullChargeSchedule(YES);
         return @{
             @"status": @0,
         };
@@ -1402,6 +1720,12 @@ void detectUPSBattery() {
     UNNotificationRequest* request = [UNNotificationRequest requestWithIdentifier:title content:content trigger:trigger];
     [center addNotificationRequest:request withCompletionHandler:nil];
 }
+- (void)systemTimeContextDidChange:(NSNotification*)note {
+    @synchronized (Service.inst) {
+        NSFileLog(@"system time context changed %@", note.name ?: @"");
+        evaluateFullChargeSchedule(NO);
+    }
+}
 - (void)serve {
     initConf(NO);
     initDB(nil);
@@ -1469,9 +1793,15 @@ void detectUPSBattery() {
             detectUPSBattery();
         }
         [LSApplicationWorkspace.defaultWorkspace addObserver:self];
+        NSNotificationCenter* center = NSNotificationCenter.defaultCenter;
+        [center addObserver:self selector:@selector(systemTimeContextDidChange:) name:NSSystemClockDidChangeNotification object:nil];
+        [center addObserver:self selector:@selector(systemTimeContextDidChange:) name:NSSystemTimeZoneDidChangeNotification object:nil];
+        [center addObserver:self selector:@selector(systemTimeContextDidChange:) name:NSCalendarDayChangedNotification object:nil];
         isBlueEnable(); // init
         isLPMEnable();
         isSmartChargeEnable();
+        refreshFullChargeScheduleTimer(0);
+        evaluateFullChargeSchedule(YES);
     }
 }
 @end
@@ -1502,6 +1832,10 @@ int main(int argc, char** argv) { // daemon_main
             }
             [Service.inst serve];
             atexit_b(^{
+                if (g_fullChargeScheduleTimer != nil) {
+                    [g_fullChargeScheduleTimer invalidate];
+                    g_fullChargeScheduleTimer = nil;
+                }
                 resetBatteryStatus();
                 if (iopmpsNoti != IO_OBJECT_NULL) {
                     IOObjectRelease(iopmpsNoti);
@@ -1514,6 +1848,7 @@ int main(int argc, char** argv) { // daemon_main
                 }
                 showFloatwnd(NO);
                 uninitDB();
+                [NSNotificationCenter.defaultCenter removeObserver:Service.inst];
                 [LSApplicationWorkspace.defaultWorkspace removeObserver:Service.inst];
             });
             [NSRunLoop.mainRunLoop run];

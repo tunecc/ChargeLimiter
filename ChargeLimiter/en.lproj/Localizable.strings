@@ -145,3 +145,15 @@
 "容量 %ld mAh\n循环 %ld 次" = "Capacity %ld mAh\nCycles %ld";
 "最近 %lu 条" = "Latest %lu";
 "%ld 次" = "%ld cycles";
+"满充计划" = "Full Charge Schedule";
+"启用满充计划" = "Enable Full Charge Schedule";
+"每隔天数" = "Every N Days";
+"开始时间" = "Start Time";
+"持续时长" = "Duration";
+"每 %ld 天" = "Every %ld days";
+"%ld 小时" = "%ld hours";
+"让设备每隔几天在指定时间暂时解除电量上限；温度控制仍会保留。" = "Temporarily remove the charge limit every few days at a chosen time; temperature control stays active.";
+"请输入 1 ~ 90 之间的天数" = "Enter a value between 1 and 90 days";
+"请分别输入小时和分钟" = "Enter hour and minute";
+"分钟" = "Minute";
+"请输入 1 ~ 12 之间的小时数" = "Enter a value between 1 and 12 hours";
