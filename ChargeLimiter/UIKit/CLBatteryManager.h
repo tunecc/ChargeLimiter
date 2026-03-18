@@ -88,6 +88,10 @@ extern NSNotificationName const CLDaemonStatusDidChangeNotification;
 @property(nonatomic, assign) CLThermalMode limitInflowThermalMode;
 @property(nonatomic, assign) BOOL thermalModeLock;
 @property(nonatomic, assign) CLThermalMode thermalSimulateMode; // 实际系统温度等级
+@property(nonatomic, assign) BOOL fullChargeScheduleEnabled;    // 满充计划
+@property(nonatomic, assign) NSInteger fullChargeScheduleIntervalDays;
+@property(nonatomic, assign) NSInteger fullChargeScheduleStartMinute;
+@property(nonatomic, assign) NSInteger fullChargeScheduleDurationHours;
 
 #pragma mark - 系统信息
 @property(nonatomic, copy, readonly, nullable) NSString *systemVersion;

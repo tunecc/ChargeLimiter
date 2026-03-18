@@ -340,6 +340,19 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
     [stopChargeCard addSeparator];
     [stopChargeCard addSwitchRowWithIcon:@"xmark.circle.fill" title:CLL(@"停充时启用禁流") subtitle:CLL(@"禁止电流流入设备，电池放电供电") isOn:manager.disableInflow color:[UIColor systemRedColor] tag:301 target:self action:@selector(disableInflowChanged:)];
     [self.mainStack addArrangedSubview:stopChargeCard];
+
+    // 满充计划
+    CLAdvSettingsCard *scheduleCard = [[CLAdvSettingsCard alloc] init];
+    [scheduleCard addSectionHeader:CLL(@"满充计划")];
+    [scheduleCard addSwitchRowWithIcon:@"calendar" title:CLL(@"启用满充计划") subtitle:nil isOn:manager.fullChargeScheduleEnabled color:[UIColor systemTealColor] tag:307 target:self action:@selector(fullChargeScheduleEnabledChanged:)];
+    [scheduleCard addSeparator];
+    [scheduleCard addPickerRowWithIcon:@"repeat" title:CLL(@"每隔天数") value:[self fullChargeScheduleIntervalText] color:[UIColor systemTealColor] tag:308 target:self action:@selector(fullChargeScheduleIntervalTapped:)];
+    [scheduleCard addSeparator];
+    [scheduleCard addPickerRowWithIcon:@"clock" title:CLL(@"开始时间") value:[self fullChargeScheduleStartTimeText] color:[UIColor systemTealColor] tag:309 target:self action:@selector(fullChargeScheduleStartTimeTapped:)];
+    [scheduleCard addSeparator];
+    [scheduleCard addPickerRowWithIcon:@"timer" title:CLL(@"持续时长") value:[self fullChargeScheduleDurationText] color:[UIColor systemTealColor] tag:310 target:self action:@selector(fullChargeScheduleDurationTapped:)];
+    [self addTipRowToCard:scheduleCard text:CLL(@"让设备每隔几天在指定时间暂时解除电量上限；温度控制仍会保留。")];
+    [self.mainStack addArrangedSubview:scheduleCard];
     
     // 限流控制
     CLAdvSettingsCard *limitCard = [[CLAdvSettingsCard alloc] init];
@@ -415,6 +428,58 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
     return [self thermalModeString:manager.limitInflowThermalMode];
 }
 
+- (NSString *)fullChargeScheduleIntervalText {
+    NSInteger intervalDays = MAX([CLBatteryManager shared].fullChargeScheduleIntervalDays, 1);
+    return [NSString stringWithFormat:CLL(@"每 %ld 天"), (long)intervalDays];
+}
+
+- (NSString *)fullChargeScheduleStartTimeText {
+    NSInteger startMinute = [CLBatteryManager shared].fullChargeScheduleStartMinute;
+    startMinute = MAX(0, MIN(startMinute, 23 * 60 + 59));
+    NSInteger hour = startMinute / 60;
+    NSInteger minute = startMinute % 60;
+    return [NSString stringWithFormat:@"%02ld:%02ld", (long)hour, (long)minute];
+}
+
+- (NSString *)fullChargeScheduleDurationText {
+    NSInteger durationHours = MAX([CLBatteryManager shared].fullChargeScheduleDurationHours, 1);
+    return [NSString stringWithFormat:CLL(@"%ld 小时"), (long)durationHours];
+}
+
+- (void)reloadContentRows {
+    [self.mainStack.arrangedSubviews makeObjectsPerformSelector:@selector(removeFromSuperview)];
+    [self setupContent];
+}
+
+- (void)presentIntegerInputAlertWithTitle:(NSString *)title
+                                  message:(NSString *)message
+                             currentValue:(NSInteger)currentValue
+                                 minValue:(NSInteger)minValue
+                                 maxValue:(NSInteger)maxValue
+                               completion:(void (^)(NSInteger value))completion {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
+                                                                   message:message
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
+        textField.text = [NSString stringWithFormat:@"%ld", (long)currentValue];
+        textField.keyboardType = UIKeyboardTypeNumberPad;
+        textField.textAlignment = NSTextAlignmentCenter;
+        textField.font = [UIFont monospacedDigitSystemFontOfSize:18 weight:UIFontWeightMedium];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [textField selectAll:nil];
+        });
+    }];
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"取消") style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"确定") style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        NSInteger value = [alert.textFields.firstObject.text integerValue];
+        value = MAX(minValue, MIN(maxValue, value));
+        if (completion) {
+            completion(value);
+        }
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
 #pragma mark - Actions
 
 - (void)accChargeTapped {
@@ -435,6 +500,77 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
     [[CLAPIClient shared] setConfigWithKey:@"adv_disable_inflow" value:@(sender.on) completion:nil];
 }
 
+- (void)fullChargeScheduleEnabledChanged:(UISwitch *)sender {
+    [CLBatteryManager shared].fullChargeScheduleEnabled = sender.on;
+    [[CLAPIClient shared] setConfigWithKey:@"full_charge_sched_enabled" value:@(sender.on) completion:nil];
+}
+
+- (void)fullChargeScheduleIntervalTapped:(UITapGestureRecognizer *)tap {
+    NSInteger currentValue = MAX([CLBatteryManager shared].fullChargeScheduleIntervalDays, 1);
+    __weak typeof(self) weakSelf = self;
+    [self presentIntegerInputAlertWithTitle:CLL(@"每隔天数")
+                                    message:CLL(@"请输入 1 ~ 90 之间的天数")
+                               currentValue:currentValue
+                                   minValue:1
+                                   maxValue:90
+                                 completion:^(NSInteger value) {
+        [CLBatteryManager shared].fullChargeScheduleIntervalDays = value;
+        [[CLAPIClient shared] setConfigWithKey:@"full_charge_sched_interval_days" value:@(value) completion:nil];
+        [weakSelf reloadContentRows];
+    }];
+}
+
+- (void)fullChargeScheduleStartTimeTapped:(UITapGestureRecognizer *)tap {
+    NSInteger startMinute = MAX(0, MIN([CLBatteryManager shared].fullChargeScheduleStartMinute, 23 * 60 + 59));
+    NSInteger hour = startMinute / 60;
+    NSInteger minute = startMinute % 60;
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"开始时间")
+                                                                   message:CLL(@"请分别输入小时和分钟")
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
+        textField.placeholder = CLL(@"小时");
+        textField.text = [NSString stringWithFormat:@"%ld", (long)hour];
+        textField.keyboardType = UIKeyboardTypeNumberPad;
+        textField.textAlignment = NSTextAlignmentCenter;
+        textField.font = [UIFont monospacedDigitSystemFontOfSize:18 weight:UIFontWeightMedium];
+    }];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
+        textField.placeholder = CLL(@"分钟");
+        textField.text = [NSString stringWithFormat:@"%02ld", (long)minute];
+        textField.keyboardType = UIKeyboardTypeNumberPad;
+        textField.textAlignment = NSTextAlignmentCenter;
+        textField.font = [UIFont monospacedDigitSystemFontOfSize:18 weight:UIFontWeightMedium];
+    }];
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"取消") style:UIAlertActionStyleCancel handler:nil]];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"确定") style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        NSInteger inputHour = [alert.textFields.firstObject.text integerValue];
+        NSInteger inputMinute = [alert.textFields.lastObject.text integerValue];
+        inputHour = MAX(0, MIN(23, inputHour));
+        inputMinute = MAX(0, MIN(59, inputMinute));
+        NSInteger value = inputHour * 60 + inputMinute;
+        [CLBatteryManager shared].fullChargeScheduleStartMinute = value;
+        [[CLAPIClient shared] setConfigWithKey:@"full_charge_sched_start_minute" value:@(value) completion:nil];
+        [weakSelf reloadContentRows];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)fullChargeScheduleDurationTapped:(UITapGestureRecognizer *)tap {
+    NSInteger currentValue = MAX([CLBatteryManager shared].fullChargeScheduleDurationHours, 1);
+    __weak typeof(self) weakSelf = self;
+    [self presentIntegerInputAlertWithTitle:CLL(@"持续时长")
+                                    message:CLL(@"请输入 1 ~ 12 之间的小时数")
+                               currentValue:currentValue
+                                   minValue:1
+                                   maxValue:12
+                                 completion:^(NSInteger value) {
+        [CLBatteryManager shared].fullChargeScheduleDurationHours = value;
+        [[CLAPIClient shared] setConfigWithKey:@"full_charge_sched_duration_hours" value:@(value) completion:nil];
+        [weakSelf reloadContentRows];
+    }];
+}
+
 - (void)limitInflowModeTapped:(UITapGestureRecognizer *)tap {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"限流等级") message:CLL(@"选择“关闭”可禁用自动限流\n等级越高，充电电流越小") preferredStyle:UIAlertControllerStyleAlert];
     
@@ -448,9 +584,7 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
             [CLBatteryManager shared].limitInflow = enableLimit;
             [[CLAPIClient shared] setConfigWithKey:@"adv_limit_inflow" value:@(enableLimit) completion:nil];
             [[CLAPIClient shared] setConfigWithKey:@"adv_limit_inflow_mode" value:modeValues[i] completion:nil];
-            // 刷新页面
-            [weakSelf.mainStack.arrangedSubviews makeObjectsPerformSelector:@selector(removeFromSuperview)];
-            [weakSelf setupContent];
+            [weakSelf reloadContentRows];
         }];
         [alert addAction:action];
     }
@@ -469,9 +603,7 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
         UIAlertAction *action = [UIAlertAction actionWithTitle:modes[i] style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
             [CLBatteryManager shared].thermalMode = (CLThermalMode)i;
             [[CLAPIClient shared] setConfigWithKey:@"adv_def_thermal_mode" value:modeValues[i] completion:nil];
-            // 刷新页面
-            [weakSelf.mainStack.arrangedSubviews makeObjectsPerformSelector:@selector(removeFromSuperview)];
-            [weakSelf setupContent];
+            [weakSelf reloadContentRows];
         }];
         [alert addAction:action];
     }
