@@ -1391,6 +1391,181 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
 
 @end
 
+static NSString *CLHistoryPolicyStateLabel(NSString *policyState) {
+    if ([policyState isEqualToString:@"hold_recharge"]) {
+        return CLL(@"插电保持中 · 补电");
+    }
+    if ([policyState isEqualToString:@"hold"]) {
+        return CLL(@"插电保持中");
+    }
+    if ([policyState isEqualToString:@"stopped"]) {
+        return CLL(@"已连接电源 · 停止充电");
+    }
+    if ([policyState isEqualToString:@"temp_paused"]) {
+        return CLL(@"温控暂停充电");
+    }
+    if ([policyState isEqualToString:@"no_inflow"]) {
+        return CLL(@"停充时已禁流");
+    }
+    if ([policyState isEqualToString:@"charging"]) {
+        return CLL(@"正在充电");
+    }
+    if ([policyState isEqualToString:@"external_idle"]) {
+        return CLL(@"已连接电源 · 未充电");
+    }
+    if ([policyState isEqualToString:@"battery"]) {
+        return CLL(@"使用电池");
+    }
+    return CLL(@"未知");
+}
+
+static NSString *CLHistoryPolicyReasonLabel(NSString *reason) {
+    if ([reason isEqualToString:@"daemon_boot"]) {
+        return CLL(@"守护启动后的初始状态");
+    }
+    if ([reason isEqualToString:@"battery_idle"]) {
+        return CLL(@"当前未连接外部电源");
+    }
+    if ([reason isEqualToString:@"external_idle"]) {
+        return CLL(@"已连接电源，等待系统电流变化");
+    }
+    if ([reason isEqualToString:@"charging_active"]) {
+        return CLL(@"系统当前正在充电");
+    }
+    if ([reason isEqualToString:@"critical_low_battery"]) {
+        return CLL(@"低电量保护，强制恢复充电");
+    }
+    if ([reason isEqualToString:@"temperature_high"]) {
+        return CLL(@"温度达到上限，暂停充电");
+    }
+    if ([reason isEqualToString:@"full_charge_window"]) {
+        return CLL(@"满充计划窗口内，暂时解除上限");
+    }
+    if ([reason isEqualToString:@"hold_target_reached"]) {
+        return CLL(@"达到保持目标，停止充电");
+    }
+    if ([reason isEqualToString:@"hold_band_lower_reached"]) {
+        return CLL(@"低于保持下边界，开始补电");
+    }
+    if ([reason isEqualToString:@"hold_discharge_trend"]) {
+        return CLL(@"检测到持续放电趋势，提前补电");
+    }
+    if ([reason isEqualToString:@"hold_monitoring"]) {
+        return CLL(@"保持区间内观察中");
+    }
+    if ([reason isEqualToString:@"hold_recharge_active"]) {
+        return CLL(@"保持补电进行中");
+    }
+    if ([reason isEqualToString:@"capacity_high"]) {
+        return CLL(@"达到电量上限，停止充电");
+    }
+    if ([reason isEqualToString:@"temperature_recovered"]) {
+        return CLL(@"温度恢复到安全范围，恢复充电");
+    }
+    if ([reason isEqualToString:@"capacity_low"]) {
+        return CLL(@"低于电量下限，恢复充电");
+    }
+    if ([reason isEqualToString:@"plug_mode_start"]) {
+        return CLL(@"插电即充模式下检测到接入电源");
+    }
+    if ([reason isEqualToString:@"edge_mode_stop"]) {
+        return CLL(@"边缘触发模式下插电后保持停充");
+    }
+    if ([reason isEqualToString:@"adaptor_disconnected"]) {
+        return CLL(@"检测到拔掉电源");
+    }
+    if ([reason isEqualToString:@"stopped_command_or_inhibit"]) {
+        return CLL(@"由于停充命令或系统抑制，保持停止");
+    }
+    if ([reason isEqualToString:@"no_inflow_active"]) {
+        return CLL(@"禁流已生效");
+    }
+    if ([reason isEqualToString:@"smart_charge_temporarily_disabled"]) {
+        return CLL(@"当前策略进入接管范围，已临时停用系统优化充电");
+    }
+    if ([reason isEqualToString:@"smart_charge_restored"]) {
+        return CLL(@"当前策略退出接管范围，已尝试恢复系统优化充电");
+    }
+    if ([reason isEqualToString:@"smart_charge_permanently_disabled"]) {
+        return CLL(@"根据当前配置，已关闭系统优化充电");
+    }
+    if ([reason isEqualToString:@"smart_charge_session_released"]) {
+        return CLL(@"系统优化充电状态已变化，本工具结束当前接管会话");
+    }
+    if ([reason isEqualToString:@"hold_behavior_changed"]) {
+        return CLL(@"自适应判断负载变化，已切换当前生效保持策略");
+    }
+    return CLL(@"未知");
+}
+
+static NSString *CLHistoryAdaptiveLoadLevelLabel(NSString *loadLevel) {
+    if ([loadLevel isEqualToString:@"high"]) {
+        return CLL(@"高负载");
+    }
+    if ([loadLevel isEqualToString:@"medium"]) {
+        return CLL(@"中负载");
+    }
+    if ([loadLevel isEqualToString:@"low"]) {
+        return CLL(@"低负载");
+    }
+    if ([loadLevel isEqualToString:@"thermal_guard"]) {
+        return CLL(@"温控保护");
+    }
+    if ([loadLevel isEqualToString:@"wireless_guard"]) {
+        return CLL(@"无线充保护");
+    }
+    if ([loadLevel isEqualToString:@"fixed"]) {
+        return CLL(@"固定策略");
+    }
+    return CLL(@"未知");
+}
+
+static NSString *CLHistoryHoldBehaviorLabel(NSString *behavior) {
+    if ([behavior isEqualToString:@"power_first"]) {
+        return CLL(@"偏向外接供电");
+    }
+    if ([behavior isEqualToString:@"battery_first"]) {
+        return CLL(@"偏向减少循环");
+    }
+    if ([behavior isEqualToString:@"adaptive"]) {
+        return CLL(@"智能自适应");
+    }
+    if ([behavior isEqualToString:@"balanced"]) {
+        return CLL(@"平衡");
+    }
+    return CLL(@"未知");
+}
+
+static NSString *CLHistorySmartChargeStatusLabel(NSInteger status, BOOL managedByDaemon) {
+    switch (status) {
+        case 0:
+            return CLL(@"已关闭");
+        case 1:
+            return CLL(@"已启用");
+        case 2:
+            return CLL(@"满充窗口");
+        case 3:
+            return managedByDaemon ? CLL(@"已临时停用 · 由本工具控制") : CLL(@"已临时停用");
+        default:
+            return CLL(@"未知");
+    }
+}
+
+static NSString *CLHistoryEventTimestampLabel(NSTimeInterval timestamp) {
+    if (timestamp <= 0) {
+        return @"--";
+    }
+    static NSDateFormatter *formatter = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        formatter = [[NSDateFormatter alloc] init];
+        formatter.dateFormat = @"MM-dd HH:mm";
+    });
+    formatter.locale = NSLocale.autoupdatingCurrentLocale;
+    formatter.timeZone = NSTimeZone.localTimeZone;
+    return [formatter stringFromDate:[NSDate dateWithTimeIntervalSince1970:timestamp]];
+}
+
 @interface CLHistoryViewController : UIViewController
 @end
 
@@ -1403,6 +1578,7 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
 @property (nonatomic, strong) UIButton *ampButton;
 @property (nonatomic, strong) UIButton *voltButton;
 @property (nonatomic, strong) CLGlassCard *tableCard;
+@property (nonatomic, strong) CLGlassCard *eventCard;
 @property (nonatomic, strong) CLHistoryChartView *chartView;
 @property (nonatomic, strong) UILabel *pageLabel;
 @property (nonatomic, strong) UIButton *prevButton;
@@ -1412,6 +1588,9 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
 @property (nonatomic, strong) NSArray<NSDictionary *> *historyHour;
 @property (nonatomic, strong) NSArray<NSDictionary *> *historyDay;
 @property (nonatomic, strong) NSArray<NSDictionary *> *historyMonth;
+@property (nonatomic, strong) NSArray<NSDictionary *> *policyEventHistory;
+@property (nonatomic, assign) NSInteger policyEventLastID;
+@property (nonatomic, assign) NSInteger policyEventFilterIndex;
 @property (nonatomic, assign) BOOL showAmperage;
 @property (nonatomic, assign) BOOL showVoltage;
 @property (nonatomic, strong) NSTimer *refreshTimer;
@@ -1521,6 +1700,10 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     self.tableCard = [[CLGlassCard alloc] init];
     [self setupChartCard];
     [self.mainStack addArrangedSubview:self.tableCard];
+    [self.mainStack setCustomSpacing:12 afterView:self.tableCard];
+
+    self.eventCard = [[CLGlassCard alloc] init];
+    [self.mainStack addArrangedSubview:self.eventCard];
     
     [self updateHintForSegment];
     [self updateHistoryTable];
@@ -1695,7 +1878,26 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     }
 }
 
+- (NSArray<NSDictionary *> *)currentVisibleHistoryData {
+    NSInteger idx = self.segmentControl.selectedSegmentIndex;
+    return [self visibleDataForSegment:idx
+                                  data:[self dataForSegment:idx]
+                                offset:[self offsetForSegment:idx]
+                                window:[self windowSizeForSegment:idx]];
+}
+
+- (void)rebuildPolicyEventCardForCurrentSelection {
+    [self rebuildPolicyEventCardForVisibleData:[self currentVisibleHistoryData]
+                                      segment:self.segmentControl.selectedSegmentIndex];
+}
+
+- (void)policyEventFilterChanged:(UISegmentedControl *)sender {
+    self.policyEventFilterIndex = sender.selectedSegmentIndex;
+    [self rebuildPolicyEventCardForCurrentSelection];
+}
+
 - (void)refreshHistoryData {
+    [self refreshPolicyEventHistory];
     BOOL isInitial = (self.historyMin5.count == 0 && self.historyHour.count == 0 && self.historyDay.count == 0 && self.historyMonth.count == 0);
     NSDictionary *conf = nil;
     if (isInitial) {
@@ -1737,6 +1939,440 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
         }
         [weakSelf updateHistoryTable];
     }];
+}
+
+- (void)refreshPolicyEventHistory {
+    BOOL isInitial = (self.policyEventHistory.count == 0);
+    NSInteger limit = isInitial ? 5000 : 500;
+    NSInteger lastID = isInitial ? 0 : self.policyEventLastID;
+    __weak typeof(self) weakSelf = self;
+    [[CLAPIClient shared] getPolicyEventsWithLimit:limit lastID:lastID completion:^(NSDictionary * _Nullable response, NSError * _Nullable error) {
+        if (error || response == nil || [response[@"status"] intValue] != 0) {
+            [weakSelf rebuildPolicyEventCardForCurrentSelection];
+            return;
+        }
+        NSArray *eventHistory = [response[@"data"] isKindOfClass:[NSArray class]] ? response[@"data"] : @[];
+        if (isInitial) {
+            weakSelf.policyEventHistory = eventHistory;
+        } else {
+            weakSelf.policyEventHistory = [weakSelf appendPolicyEvents:weakSelf.policyEventHistory withNew:eventHistory];
+        }
+        weakSelf.policyEventLastID = [weakSelf lastPolicyEventID];
+        [weakSelf rebuildPolicyEventCardForCurrentSelection];
+    }];
+}
+
+- (NSInteger)lastPolicyEventID {
+    id value = self.policyEventHistory.lastObject[@"id"];
+    return [value respondsToSelector:@selector(integerValue)] ? [value integerValue] : 0;
+}
+
+- (NSArray<NSDictionary *> *)appendPolicyEvents:(NSArray<NSDictionary *> *)base withNew:(NSArray<NSDictionary *> *)incoming {
+    if (incoming.count == 0) {
+        return base ?: @[];
+    }
+    if (base.count == 0) {
+        return incoming;
+    }
+    NSMutableArray<NSDictionary *> *merged = [base mutableCopy];
+    NSInteger lastID = [self lastPolicyEventID];
+    for (NSDictionary *item in incoming) {
+        NSInteger eventID = [item[@"id"] integerValue];
+        if (eventID <= lastID) {
+            continue;
+        }
+        [merged addObject:item];
+    }
+    return merged;
+}
+
+- (NSString *)policyEventRangeTextForVisibleData:(NSArray<NSDictionary *> *)visible segment:(NSInteger)segment {
+    if (visible.count == 0) {
+        return CLL(@"暂无数据");
+    }
+    NSTimeInterval startTs = [visible.firstObject[@"UpdateTime"] doubleValue];
+    NSTimeInterval endTs = [visible.lastObject[@"UpdateTime"] doubleValue];
+    NSString *startText = [self formatHistoryTime:@(startTs) style:(segment >= 2 ? @"day" : @"time")];
+    NSString *endText = [self formatHistoryTime:@(endTs) style:(segment >= 2 ? @"day" : @"time")];
+    if (segment == 1) {
+        startText = CLHistoryEventTimestampLabel(startTs);
+        endText = CLHistoryEventTimestampLabel(endTs);
+    } else if (segment == 2) {
+        startText = [self formatHistoryTime:@(startTs) style:@"day"];
+        endText = [self formatHistoryTime:@(endTs) style:@"day"];
+    } else if (segment == 3) {
+        startText = [self formatHistoryTime:@(startTs) style:@"month"];
+        endText = [self formatHistoryTime:@(endTs) style:@"month"];
+    }
+    if (startText.length == 0 || endText.length == 0) {
+        return CLL(@"暂无数据");
+    }
+    return [NSString stringWithFormat:@"%@ - %@", startText, endText];
+}
+
+- (NSInteger)policyEventCategoryForItem:(NSDictionary *)item {
+    NSString *type = [item[@"type"] isKindOfClass:[NSString class]] ? item[@"type"] : @"policy_transition";
+    if ([type isEqualToString:@"smart_charge_event"]) {
+        return 3;
+    }
+    if ([type isEqualToString:@"thermal_event"]) {
+        return 4;
+    }
+    if ([type isEqualToString:@"hold_event"] || [type isEqualToString:@"hold_behavior_event"]) {
+        return 2;
+    }
+    return 1;
+}
+
+- (BOOL)policyEventMatchesCurrentFilter:(NSDictionary *)item {
+    NSInteger filterIndex = self.policyEventFilterIndex;
+    if (filterIndex <= 0) {
+        return YES;
+    }
+    return [self policyEventCategoryForItem:item] == filterIndex;
+}
+
+- (NSArray<NSDictionary *> *)policyEventSourceForCurrentFilter {
+    NSArray<NSDictionary *> *source = self.policyEventHistory ?: @[];
+    if (source.count == 0 || self.policyEventFilterIndex <= 0) {
+        return source;
+    }
+    NSMutableArray<NSDictionary *> *filtered = [NSMutableArray array];
+    for (NSDictionary *item in source) {
+        if ([self policyEventMatchesCurrentFilter:item]) {
+            [filtered addObject:item];
+        }
+    }
+    return filtered;
+}
+
+- (NSArray<NSDictionary *> *)policyEventsForVisibleData:(NSArray<NSDictionary *> *)visible fallbackUsed:(BOOL *)fallbackUsed {
+    if (fallbackUsed) {
+        *fallbackUsed = NO;
+    }
+    NSArray<NSDictionary *> *source = [self policyEventSourceForCurrentFilter];
+    if (source.count == 0) {
+        return @[];
+    }
+
+    NSMutableArray<NSDictionary *> *filtered = [NSMutableArray array];
+    if (visible.count > 0) {
+        NSTimeInterval startTs = [visible.firstObject[@"UpdateTime"] doubleValue];
+        NSTimeInterval endTs = [visible.lastObject[@"UpdateTime"] doubleValue];
+        if (startTs > 0 && endTs > 0) {
+            for (NSDictionary *item in source) {
+                NSTimeInterval ts = [item[@"ts"] doubleValue];
+                if (ts >= startTs && ts <= endTs) {
+                    [filtered addObject:item];
+                }
+            }
+        }
+    }
+
+    NSArray<NSDictionary *> *display = filtered;
+    if (display.count == 0) {
+        if (fallbackUsed) {
+            *fallbackUsed = YES;
+        }
+        NSInteger limit = MIN((NSInteger)source.count, 8);
+        if (limit <= 0) {
+            return @[];
+        }
+        NSRange range = NSMakeRange(source.count - limit, limit);
+        display = [source subarrayWithRange:range];
+    }
+
+    return [[display reverseObjectEnumerator] allObjects];
+}
+
+- (NSString *)policyEventTypeLabelForItem:(NSDictionary *)item {
+    NSString *type = [item[@"type"] isKindOfClass:[NSString class]] ? item[@"type"] : @"policy_transition";
+    if ([type isEqualToString:@"smart_charge_event"]) {
+        return CLL(@"接管");
+    }
+    if ([type isEqualToString:@"thermal_event"]) {
+        return CLL(@"温控");
+    }
+    if ([type isEqualToString:@"hold_behavior_event"]) {
+        return CLL(@"策略");
+    }
+    if ([type isEqualToString:@"hold_event"]) {
+        return CLL(@"保持");
+    }
+    return CLL(@"状态");
+}
+
+- (NSString *)policyEventIconNameForItem:(NSDictionary *)item {
+    NSString *type = [item[@"type"] isKindOfClass:[NSString class]] ? item[@"type"] : @"policy_transition";
+    if ([type isEqualToString:@"smart_charge_event"]) {
+        return @"battery.100.circle";
+    }
+    if ([type isEqualToString:@"thermal_event"]) {
+        return @"thermometer.medium";
+    }
+    if ([type isEqualToString:@"hold_behavior_event"]) {
+        return @"slider.horizontal.3";
+    }
+    if ([type isEqualToString:@"hold_event"]) {
+        return @"arrow.triangle.2.circlepath";
+    }
+    return @"list.bullet.rectangle";
+}
+
+- (UIColor *)policyEventTintColorForItem:(NSDictionary *)item {
+    NSString *type = [item[@"type"] isKindOfClass:[NSString class]] ? item[@"type"] : @"policy_transition";
+    if ([type isEqualToString:@"smart_charge_event"]) {
+        return [UIColor systemBlueColor];
+    }
+    if ([type isEqualToString:@"thermal_event"]) {
+        return [UIColor systemOrangeColor];
+    }
+    if ([type isEqualToString:@"hold_behavior_event"]) {
+        return [UIColor systemIndigoColor];
+    }
+    if ([type isEqualToString:@"hold_event"]) {
+        return [UIColor systemGreenColor];
+    }
+    return [UIColor systemPurpleColor];
+}
+
+- (NSString *)policyEventDisplayTextForItem:(NSDictionary *)item {
+    NSString *type = [item[@"type"] isKindOfClass:[NSString class]] ? item[@"type"] : @"policy_transition";
+    if ([type isEqualToString:@"smart_charge_event"]) {
+        NSInteger fromStatus = [item[@"smart_charge_from"] integerValue];
+        NSInteger toStatus = [item[@"smart_charge_to"] integerValue];
+        NSString *fromLabel = CLHistorySmartChargeStatusLabel(fromStatus, fromStatus == 3);
+        NSString *toLabel = CLHistorySmartChargeStatusLabel(toStatus, toStatus == 3);
+        NSString *resolvedLabel = toLabel.length > 0 ? toLabel : fromLabel;
+        if (fromLabel.length > 0 && toLabel.length > 0 && fromStatus != toStatus) {
+            return [NSString stringWithFormat:@"%@  %@ -> %@", CLL(@"系统优化充电"), fromLabel, toLabel];
+        }
+        return [NSString stringWithFormat:@"%@  %@", CLL(@"系统优化充电"), resolvedLabel.length > 0 ? resolvedLabel : CLL(@"未知")];
+    }
+    if ([type isEqualToString:@"hold_behavior_event"]) {
+        NSString *fromBehavior = CLHistoryHoldBehaviorLabel([item[@"from"] isKindOfClass:[NSString class]] ? item[@"from"] : @"");
+        NSString *toBehavior = CLHistoryHoldBehaviorLabel([item[@"to"] isKindOfClass:[NSString class]] ? item[@"to"] : @"");
+        if (fromBehavior.length > 0 && toBehavior.length > 0 && ![fromBehavior isEqualToString:toBehavior]) {
+            return [NSString stringWithFormat:@"%@  %@ -> %@", CLL(@"保持策略"), fromBehavior, toBehavior];
+        }
+        return [NSString stringWithFormat:@"%@  %@", CLL(@"保持策略"), toBehavior.length > 0 ? toBehavior : CLL(@"未知")];
+    }
+    NSString *fromState = [item[@"from"] isKindOfClass:[NSString class]] ? item[@"from"] : @"";
+    NSString *toState = [item[@"to"] isKindOfClass:[NSString class]] ? item[@"to"] : @"";
+    NSString *toLabel = CLHistoryPolicyStateLabel(toState);
+    if (fromState.length > 0 && ![fromState isEqualToString:toState]) {
+        return [NSString stringWithFormat:@"%@ -> %@", CLHistoryPolicyStateLabel(fromState), toLabel];
+    }
+    return toLabel;
+}
+
+- (NSString *)policyEventTitleForItem:(NSDictionary *)item {
+    return [NSString stringWithFormat:@"%@  [%@] %@",
+            CLHistoryEventTimestampLabel([item[@"ts"] doubleValue]),
+            [self policyEventTypeLabelForItem:item],
+            [self policyEventDisplayTextForItem:item]];
+}
+
+- (NSString *)policyEventDetailForItem:(NSDictionary *)item {
+    NSMutableArray<NSString *> *segments = [NSMutableArray array];
+    NSString *type = [item[@"type"] isKindOfClass:[NSString class]] ? item[@"type"] : @"policy_transition";
+    NSString *reason = [item[@"reason"] isKindOfClass:[NSString class]] ? item[@"reason"] : @"unknown";
+    [segments addObject:CLHistoryPolicyReasonLabel(reason)];
+
+    NSInteger capacity = [item[@"capacity"] integerValue];
+    if (capacity > 0) {
+        [segments addObject:[NSString stringWithFormat:@"%ld%%", (long)capacity]];
+    }
+
+    NSInteger current = [item[@"current"] integerValue];
+    if (current != 0) {
+        [segments addObject:[NSString stringWithFormat:@"%ld mA", (long)current]];
+    }
+
+    NSInteger temperature = [item[@"temperature"] integerValue];
+    if (temperature > 0) {
+        [segments addObject:[NSString stringWithFormat:@"%.1f°C", temperature / 100.0]];
+    }
+
+    NSString *loadLevel = [item[@"hold_load_level"] isKindOfClass:[NSString class]] ? item[@"hold_load_level"] : @"";
+    if (loadLevel.length > 0 && ![loadLevel isEqualToString:@"fixed"]) {
+        [segments addObject:CLHistoryAdaptiveLoadLevelLabel(loadLevel)];
+    }
+
+    NSInteger smartChargeStatus = [item[@"smart_charge_status"] integerValue];
+    BOOL smartChargeManaged = [item[@"smart_charge_managed"] boolValue];
+    if (![type isEqualToString:@"smart_charge_event"] && (smartChargeManaged || smartChargeStatus == 3)) {
+        [segments addObject:CLHistorySmartChargeStatusLabel(smartChargeStatus, smartChargeManaged)];
+    }
+
+    return [segments componentsJoinedByString:@" · "];
+}
+
+- (UIView *)policyEventFilterRow {
+    UIView *row = [[UIView alloc] init];
+    row.translatesAutoresizingMaskIntoConstraints = NO;
+
+    UISegmentedControl *control = [[UISegmentedControl alloc] initWithItems:@[
+        CLL(@"全部"),
+        CLL(@"状态"),
+        CLL(@"保持"),
+        CLL(@"接管"),
+        CLL(@"温控")
+    ]];
+    control.translatesAutoresizingMaskIntoConstraints = NO;
+    control.selectedSegmentIndex = MAX(0, MIN(self.policyEventFilterIndex, (NSInteger)control.numberOfSegments - 1));
+    control.selectedSegmentTintColor = [UIColor systemBlueColor];
+    [control setTitleTextAttributes:@{
+        NSFontAttributeName: [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold],
+        NSForegroundColorAttributeName: [UIColor labelColor]
+    } forState:UIControlStateNormal];
+    [control setTitleTextAttributes:@{
+        NSFontAttributeName: [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold],
+        NSForegroundColorAttributeName: [UIColor whiteColor]
+    } forState:UIControlStateSelected];
+    [control addTarget:self action:@selector(policyEventFilterChanged:) forControlEvents:UIControlEventValueChanged];
+    [row addSubview:control];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [row.heightAnchor constraintEqualToConstant:44],
+        [control.topAnchor constraintEqualToAnchor:row.topAnchor constant:6],
+        [control.bottomAnchor constraintEqualToAnchor:row.bottomAnchor constant:-6],
+        [control.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:16],
+        [control.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-16]
+    ]];
+    return row;
+}
+
+- (UIView *)policyEventInfoRowWithText:(NSString *)text {
+    UIView *row = [[UIView alloc] init];
+    row.translatesAutoresizingMaskIntoConstraints = NO;
+
+    UIImageView *iconView = [[UIImageView alloc] init];
+    iconView.translatesAutoresizingMaskIntoConstraints = NO;
+    iconView.contentMode = UIViewContentModeScaleAspectFit;
+    iconView.tintColor = [UIColor secondaryLabelColor];
+    iconView.image = CLSymbolImage(@"clock", [UIImageSymbolConfiguration configurationWithPointSize:14 weight:UIImageSymbolWeightMedium]);
+    [row addSubview:iconView];
+
+    UILabel *label = [[UILabel alloc] init];
+    label.translatesAutoresizingMaskIntoConstraints = NO;
+    label.text = text ?: @"";
+    label.font = [UIFont systemFontOfSize:12];
+    label.textColor = [UIColor secondaryLabelColor];
+    label.numberOfLines = 2;
+    [row addSubview:label];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [row.heightAnchor constraintGreaterThanOrEqualToConstant:38],
+        [iconView.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:16],
+        [iconView.topAnchor constraintEqualToAnchor:row.topAnchor constant:12],
+        [iconView.widthAnchor constraintEqualToConstant:18],
+        [iconView.heightAnchor constraintEqualToConstant:18],
+        [label.topAnchor constraintEqualToAnchor:row.topAnchor constant:10],
+        [label.bottomAnchor constraintEqualToAnchor:row.bottomAnchor constant:-10],
+        [label.leadingAnchor constraintEqualToAnchor:iconView.trailingAnchor constant:10],
+        [label.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-16]
+    ]];
+
+    return row;
+}
+
+- (UIView *)policyEventRowWithItem:(NSDictionary *)item {
+    UIView *row = [[UIView alloc] init];
+    row.translatesAutoresizingMaskIntoConstraints = NO;
+
+    UIImageView *iconView = [[UIImageView alloc] init];
+    iconView.translatesAutoresizingMaskIntoConstraints = NO;
+    iconView.contentMode = UIViewContentModeScaleAspectFit;
+    iconView.tintColor = [self policyEventTintColorForItem:item];
+    iconView.image = CLSymbolImage([self policyEventIconNameForItem:item], [UIImageSymbolConfiguration configurationWithPointSize:15 weight:UIImageSymbolWeightMedium]);
+    [row addSubview:iconView];
+
+    UILabel *titleLabel = [[UILabel alloc] init];
+    titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    titleLabel.text = [self policyEventTitleForItem:item];
+    titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+    titleLabel.textColor = [UIColor labelColor];
+    titleLabel.numberOfLines = 2;
+    [row addSubview:titleLabel];
+
+    UILabel *detailLabel = [[UILabel alloc] init];
+    detailLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    detailLabel.text = [self policyEventDetailForItem:item];
+    detailLabel.font = [UIFont systemFontOfSize:12];
+    detailLabel.textColor = [UIColor secondaryLabelColor];
+    detailLabel.numberOfLines = 0;
+    [row addSubview:detailLabel];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [row.heightAnchor constraintGreaterThanOrEqualToConstant:56],
+        [iconView.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:16],
+        [iconView.topAnchor constraintEqualToAnchor:row.topAnchor constant:14],
+        [iconView.widthAnchor constraintEqualToConstant:20],
+        [iconView.heightAnchor constraintEqualToConstant:20],
+        [titleLabel.topAnchor constraintEqualToAnchor:row.topAnchor constant:10],
+        [titleLabel.leadingAnchor constraintEqualToAnchor:iconView.trailingAnchor constant:12],
+        [titleLabel.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-16],
+        [detailLabel.topAnchor constraintEqualToAnchor:titleLabel.bottomAnchor constant:4],
+        [detailLabel.leadingAnchor constraintEqualToAnchor:titleLabel.leadingAnchor],
+        [detailLabel.trailingAnchor constraintEqualToAnchor:titleLabel.trailingAnchor],
+        [detailLabel.bottomAnchor constraintEqualToAnchor:row.bottomAnchor constant:-10]
+    ]];
+
+    return row;
+}
+
+- (void)rebuildPolicyEventCardForVisibleData:(NSArray<NSDictionary *> *)visible segment:(NSInteger)segment {
+    if (self.eventCard == nil) {
+        return;
+    }
+    for (UIView *view in self.eventCard.contentStack.arrangedSubviews) {
+        [self.eventCard.contentStack removeArrangedSubview:view];
+        [view removeFromSuperview];
+    }
+
+    BOOL fallbackUsed = NO;
+    NSArray<NSDictionary *> *events = [self policyEventsForVisibleData:visible fallbackUsed:&fallbackUsed];
+    UIView *header = [self historyCardHeaderWithTitle:CLL(@"策略事件时间线") count:events.count];
+    [self.eventCard.contentStack addArrangedSubview:header];
+    [self.eventCard addSeparator];
+    [self.eventCard.contentStack addArrangedSubview:[self policyEventFilterRow]];
+    [self.eventCard addSeparator];
+
+    NSString *rangeText = [self policyEventRangeTextForVisibleData:visible segment:segment];
+    NSString *infoText = nil;
+    if (visible.count == 0 && events.count > 0) {
+        infoText = [NSString stringWithFormat:CLL(@"当前暂无历史曲线数据，已显示最近 %ld 条持久化事件"), (long)events.count];
+    } else if (events.count == 0) {
+        infoText = [NSString stringWithFormat:CLL(@"当前页时间范围 %@ · 暂无策略事件"), rangeText];
+    } else if (fallbackUsed) {
+        infoText = [NSString stringWithFormat:CLL(@"当前页时间范围 %@ · 当前页无匹配事件，已显示最近 %ld 条持久化事件"),
+                    rangeText,
+                    (long)events.count];
+    } else {
+        infoText = [NSString stringWithFormat:CLL(@"当前页时间范围 %@ · 共 %ld 条策略事件"),
+                    rangeText,
+                    (long)events.count];
+    }
+    [self.eventCard.contentStack addArrangedSubview:[self policyEventInfoRowWithText:infoText]];
+
+    if (events.count == 0) {
+        [self.eventCard addSeparator];
+        [self.eventCard.contentStack addArrangedSubview:[self historyRowWithValues:@[CLL(@"暂无数据")] header:NO]];
+        return;
+    }
+
+    [self.eventCard addSeparator];
+    for (NSUInteger i = 0; i < events.count; i++) {
+        UIView *row = [self policyEventRowWithItem:events[i]];
+        if (i % 2 == 1) {
+            row.backgroundColor = [[UIColor secondarySystemGroupedBackgroundColor] colorWithAlphaComponent:0.5];
+        }
+        [self.eventCard.contentStack addArrangedSubview:row];
+        if (i < events.count - 1) {
+            [self.eventCard addSeparator];
+        }
+    }
 }
 
 - (void)updateHistoryTable {
@@ -1784,6 +2420,7 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     [self.chartView updateWithData:chartData mode:mode showAmperage:showAmp showVoltage:showVolt];
     [self updateLegend];
     [self updatePageLabelWithTotal:data.count window:windowSize offset:offset maxOffset:maxOffset];
+    [self rebuildPolicyEventCardForVisibleData:visible segment:idx];
 }
 
 - (void)prevPage {
@@ -3083,6 +3720,7 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
 @property (nonatomic, strong) CLGlassCard *limitCard;
 @property (nonatomic, strong) CLGlassCard *tempCard;       // 温度控制卡片
 @property (nonatomic, strong) CLGlassCard *adapterCard;    // 适配器信息卡片
+@property (nonatomic, strong) CLGlassCard *powerPathCard;  // 电源路径卡片
 @property (nonatomic, strong) CLGlassCard *infoCard;
 @property (nonatomic, strong) CLGlassCard *softwareSettingsEntryCard;
 @property (nonatomic, strong) CLGlassCard *historyEntryCard;
@@ -3431,6 +4069,9 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     
     // 适配器信息卡片
     [self setupAdapterCard];
+
+    // 电源路径卡片
+    [self setupPowerPathCard];
     
     // 电池信息卡片
     [self setupInfoCard];
@@ -3737,6 +4378,24 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     self.chargeBelowSeparator.hidden = YES;
     self.chargeBelowSeparator.alpha = 0;
     self.batteryStatus.showLowMarker = NO;
+}
+
+- (void)setupPowerPathCard {
+    self.powerPathCard = [[CLGlassCard alloc] init];
+
+    [self.powerPathCard addRowWithIcon:@"point.topleft.down.curvedto.point.bottomright.up" title:CLL(@"守护策略") value:CLL(@"使用电池") color:[UIColor systemBlueColor]];
+    [self.powerPathCard addSeparator];
+    [self.powerPathCard addRowWithIcon:@"bolt.shield" title:CLL(@"充电命令") value:CLL(@"允许充电") color:[UIColor systemGreenColor]];
+    [self.powerPathCard addSeparator];
+    [self.powerPathCard addRowWithIcon:@"bolt.slash" title:CLL(@"系统停充抑制") value:CLL(@"未启用") color:[UIColor systemRedColor]];
+    [self.powerPathCard addSeparator];
+    [self.powerPathCard addRowWithIcon:@"battery.100.circle" title:CLL(@"系统优化充电") value:CLL(@"未知") color:[UIColor systemBlueColor]];
+    [self.powerPathCard addSeparator];
+    [self.powerPathCard addRowWithIcon:@"slider.horizontal.3" title:CLL(@"保持策略") value:CLL(@"平衡") color:[UIColor systemIndigoColor]];
+    [self.powerPathCard addSeparator];
+    [self.powerPathCard addRowWithIcon:@"scope" title:CLL(@"保持范围") value:@"--" color:[UIColor systemIndigoColor]];
+
+    [self.mainStack addArrangedSubview:self.powerPathCard];
 }
 
 - (void)setupInfoCard {
@@ -4192,16 +4851,11 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     
     // 更新电池状态
     self.batteryStatus.percentage = manager.currentCapacity;
-    self.batteryStatus.isCharging = manager.isCharging;
+    BOOL showChargingIcon = manager.holdCharging || (manager.isCharging && !manager.predictiveChargingInhibitActive);
+    self.batteryStatus.isCharging = showChargingIcon;
     
     // 更新状态文字
-    if (manager.isCharging) {
-        self.batteryStatus.statusLabel.text = CLL(@"正在充电");
-    } else if (manager.externalConnected) {
-        self.batteryStatus.statusLabel.text = CLL(@"已连接电源 · 未充电");
-    } else {
-        self.batteryStatus.statusLabel.text = CLL(@"使用电池");
-    }
+    self.batteryStatus.statusLabel.text = [self policyStateLabelForManager:manager];
     
     // 更新信息卡片
     CGFloat health = manager.designCapacity > 0 ? (manager.nominalCapacity * 100.0 / manager.designCapacity) : 100;
@@ -4212,6 +4866,13 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     [self updateCardValue:self.infoCard title:CLL(@"电压") value:[NSString stringWithFormat:@"%.2f V", manager.voltage]];
     [self updateCardValue:self.infoCard title:CLL(@"循环") value:[NSString stringWithFormat:@"%ld 次", (long)manager.cycleCount]];
     
+    [self updateCardValue:self.powerPathCard title:CLL(@"守护策略") value:[self policyStateLabelForManager:manager]];
+    [self updateCardValue:self.powerPathCard title:CLL(@"充电命令") value:[self chargeCommandLabelForManager:manager]];
+    [self updateCardValue:self.powerPathCard title:CLL(@"系统停充抑制") value:(manager.predictiveChargingInhibitActive ? CLL(@"已启用") : CLL(@"未启用"))];
+    [self updateCardValue:self.powerPathCard title:CLL(@"系统优化充电") value:[self smartChargeStatusLabelForManager:manager]];
+    [self updateCardValue:self.powerPathCard title:CLL(@"保持策略") value:[self holdBehaviorLabelForManager:manager]];
+    [self updateCardValue:self.powerPathCard title:CLL(@"保持范围") value:[self holdRangeLabelForManager:manager]];
+
     // 更新适配器卡片
     if (manager.externalConnected && manager.adapterName.length > 0) {
         [self updateCardValue:self.adapterCard title:CLL(@"适配器") value:manager.adapterName];
@@ -4289,6 +4950,82 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     }
 }
 
+- (NSString *)policyStateLabelForManager:(CLBatteryManager *)manager {
+    if ([manager.policyState isEqualToString:@"hold_recharge"]) {
+        return CLL(@"插电保持中 · 补电");
+    }
+    if ([manager.policyState isEqualToString:@"hold"]) {
+        return CLL(@"插电保持中");
+    }
+    if ([manager.policyState isEqualToString:@"stopped"]) {
+        return CLL(@"已连接电源 · 停止充电");
+    }
+    if ([manager.policyState isEqualToString:@"temp_paused"]) {
+        return CLL(@"温控暂停充电");
+    }
+    if ([manager.policyState isEqualToString:@"no_inflow"]) {
+        return CLL(@"停充时已禁流");
+    }
+    if ([manager.policyState isEqualToString:@"charging"]) {
+        return CLL(@"正在充电");
+    }
+    if ([manager.policyState isEqualToString:@"external_idle"]) {
+        return CLL(@"已连接电源 · 未充电");
+    }
+    return CLL(@"使用电池");
+}
+
+- (NSString *)chargeCommandLabelForManager:(CLBatteryManager *)manager {
+    return manager.chargeCommandEnabled ? CLL(@"允许充电") : CLL(@"保持停止");
+}
+
+- (NSString *)smartChargeStatusLabelForManager:(CLBatteryManager *)manager {
+    switch (manager.smartChargeStatus) {
+        case 0:
+            return CLL(@"已关闭");
+        case 1:
+            return CLL(@"已启用");
+        case 2:
+            return CLL(@"满充窗口");
+        case 3:
+            return manager.smartChargeManagedByDaemon ? CLL(@"已临时停用 · 由本工具控制") : CLL(@"已临时停用");
+        default:
+            return CLL(@"未知");
+    }
+}
+
+- (NSString *)holdRangeLabelForManager:(CLBatteryManager *)manager {
+    if (!manager.holdModeEnabled || manager.holdTarget <= 0) {
+        return CLL(@"关闭");
+    }
+    NSInteger lower = MAX(manager.holdRangeLower, 0);
+    return [NSString stringWithFormat:@"%ld%% - %ld%%", (long)lower, (long)manager.holdTarget];
+}
+
+- (NSString *)fixedHoldBehaviorLabel:(CLHoldModeBehavior)behavior {
+    switch (behavior) {
+        case CLHoldModeBehaviorAdaptive:
+            return CLL(@"智能自适应");
+        case CLHoldModeBehaviorPowerFirst:
+            return CLL(@"偏向外接供电");
+        case CLHoldModeBehaviorBatteryFirst:
+            return CLL(@"偏向减少循环");
+        default:
+            return CLL(@"平衡");
+    }
+}
+
+- (NSString *)holdBehaviorLabelForManager:(CLBatteryManager *)manager {
+    if (manager.holdModeBehavior == CLHoldModeBehaviorAdaptive) {
+        if (!manager.holdModeEnabled) {
+            return [NSString stringWithFormat:@"%@ · %@", CLL(@"智能自适应"), CLL(@"未启用")];
+        }
+        return [NSString stringWithFormat:CLL(@"智能自适应 · 当前%@"),
+                [self fixedHoldBehaviorLabel:manager.holdRuntimeBehavior]];
+    }
+    return [self fixedHoldBehaviorLabel:manager.holdModeBehavior];
+}
+
 - (void)configDidUpdate {
     CLBatteryManager *manager = [CLBatteryManager shared];
     
@@ -4323,6 +5060,8 @@ static CGFloat clamp(CGFloat v, CGFloat minv, CGFloat maxv) {
     [self updateSliderLabel:self.chargeAboveRow value:chargeAbove suffix:@"%"];
     self.batteryStatus.chargeBelow = chargeBelow;
     self.batteryStatus.chargeAbove = chargeAbove;
+    [self updateCardValue:self.powerPathCard title:CLL(@"保持策略") value:[self holdBehaviorLabelForManager:manager]];
+    [self updateCardValue:self.powerPathCard title:CLL(@"保持范围") value:[self holdRangeLabelForManager:manager]];
     
     // 更新温度控制卡片
     [self updateSwitchInCard:self.tempCard tag:250 value:manager.tempControlEnabled];

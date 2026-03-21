@@ -78,6 +78,8 @@ void setThermalSimulationMode(NSString* mode);
 NSString* getPPMSimulationMode();
 void setPPMSimulationMode(NSString* mode);
 BOOL isSmartChargeEnable(); // 系统自带电池优化
+int getSmartChargeStatus(); // 0:disable 1:enable 2:fullcharge 3:temporarily_disable
+BOOL temporarilyDisableSmartCharge();
 void setSmartChargeEnable(BOOL flag);
 
 /* ---------------- App ---------------- */

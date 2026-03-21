@@ -101,6 +101,49 @@ static int g_serv_boot = 0;
 static BOOL g_fullChargeWindowActive = NO;
 static NSTimer* g_fullChargeScheduleTimer = nil;
 static time_t g_fullChargeScheduleBoundaryTs = 0;
+static NSTimer* g_holdMonitorTimer = nil;
+static int g_holdMonitorTimerIntervalSeconds = 0;
+static BOOL g_chargeCommandEnabled = YES;
+static NSString* g_policyState = @"battery";
+static NSString* g_policyReason = @"daemon_boot";
+static NSString* g_lastPolicyChangeReason = @"daemon_boot";
+static time_t g_lastPolicyChangeTs = 0;
+static time_t g_lastChargeCommandTs = 0;
+static time_t g_lastInflowCommandTs = 0;
+static int g_smartChargeStatus = -1;
+static BOOL g_tempSmartChargeDisabledByCL = NO;
+static int g_smartChargeCoordinationOriginalStatus = -1;
+static NSString* g_smartChargeCoordinationSessionID = nil;
+static time_t g_smartChargeCoordinationStartedTs = 0;
+static int g_holdDischargeStreak = 0;
+static NSArray* g_recentPolicyTransitions = nil;
+static NSArray* g_policyEventHistory = nil;
+static NSString* g_holdRuntimeBehavior = @"balanced";
+static NSString* g_holdAdaptiveLoadLevel = @"fixed";
+static int g_holdAdaptiveAverageCurrentmA = 0;
+static time_t g_lastHoldRuntimeBehaviorChangeTs = 0;
+static NSMutableArray<NSNumber*>* g_holdCurrentSamples = nil;
+
+static const int kHoldMonitorIntervalPowerFirstSeconds = 10;
+static const int kHoldMonitorIntervalBalancedSeconds = 15;
+static const int kHoldMonitorIntervalBatteryFirstSeconds = 20;
+static const int kHoldActionMinGapSeconds = 20;
+static const int kHoldCurrentChargeThresholdmA = 120;
+static const int kHoldCurrentDischargeThresholdmA = -120;
+static const NSUInteger kPolicyTransitionHistoryLimit = 8;
+static const NSUInteger kPolicyEventHistoryLimit = 48;
+static const NSUInteger kPolicyEventDBLimit = 5000;
+static const NSUInteger kHoldAdaptiveSampleWindow = 5;
+static const int kHoldAdaptiveBehaviorMinStaySeconds = 60;
+static const int kHoldAdaptiveHighLoadEnterCurrentmA = -450;
+static const int kHoldAdaptiveHighLoadExitCurrentmA = -260;
+static const int kHoldAdaptiveMediumLoadEnterCurrentmA = -180;
+static const int kHoldAdaptiveMediumLoadExitCurrentmA = -100;
+static const int kHoldAdaptiveMinPowerFirstWatts = 12;
+static const float kHoldAdaptiveTempMarginC = 1.5f;
+static NSString* const kSmartChargeCoordinationStateKey = @"_runtime_smart_charge_coordination_state";
+static NSString* const kPolicyEventHistoryKey = @"_runtime_policy_event_history";
+static NSString* const kPolicyEventDBTableName = @"policy_events";
 
 static IONotificationPortRef gNotifyPort = NULL;
 static io_object_t iopmpsNoti = IO_OBJECT_NULL;
@@ -110,6 +153,14 @@ NSDictionary* handleReq(NSDictionary* nsreq);
 static void onBatteryEventEnd(void);
 static void updateStatistics(void);
 static void evaluateFullChargeSchedule(BOOL forceApply);
+static void refreshBatteryStateAndApplyPolicy(void);
+static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info);
+static void syncSmartChargeCoordination(NSDictionary* info, BOOL isAdaptorConnected);
+static int getEffectiveBatteryCurrent(NSDictionary* info);
+static void insertPolicyEventDBData(NSDictionary* event);
+static void migrateStoredPolicyEventsToDBIfNeeded(NSArray* history);
+static NSString* policyEventTypeForTransition(NSString* nextPolicyState, NSString* reason);
+static void appendSmartChargeCoordinationEvent(NSString* reason, int fromStatus, int toStatus, NSDictionary* info, NSDictionary* extras, time_t now);
 
 @interface Service: NSObject<UNUserNotificationCenterDelegate>
 + (instancetype)inst;
@@ -144,6 +195,436 @@ static int getFullChargeScheduleStartMinute() {
 
 static int getFullChargeScheduleDurationHours() {
     return clampIntValue(getLocalInt(@"full_charge_sched_duration_hours", 4), 1, 12);
+}
+
+static BOOL isHoldModeEnabled() {
+    return getLocalBool(@"adv_hold_enabled", NO);
+}
+
+static int getHoldModeBand() {
+    return clampIntValue(getLocalInt(@"adv_hold_band", 2), 1, 10);
+}
+
+static NSString* normalizeHoldModeBehavior(NSString* behavior) {
+    if ([@[@"balanced", @"power_first", @"battery_first", @"adaptive"] containsObject:behavior]) {
+        return behavior;
+    }
+    return @"balanced";
+}
+
+static NSString* getHoldModeBehavior() {
+    return normalizeHoldModeBehavior(getLocalString(@"adv_hold_behavior", @"balanced"));
+}
+
+static BOOL isHoldAdaptiveBehavior(NSString* behavior) {
+    return [normalizeHoldModeBehavior(behavior) isEqualToString:@"adaptive"];
+}
+
+static NSString* currentHoldRuntimeBehavior(void) {
+    NSString* configured = getHoldModeBehavior();
+    if (!isHoldAdaptiveBehavior(configured)) {
+        return configured;
+    }
+    return normalizeHoldModeBehavior(g_holdRuntimeBehavior ?: @"balanced");
+}
+
+static int getHoldStrategyMonitorIntervalSecondsForBehavior(NSString* behavior) {
+    NSString* safeBehavior = normalizeHoldModeBehavior(behavior);
+    if ([safeBehavior isEqualToString:@"power_first"]) {
+        return kHoldMonitorIntervalPowerFirstSeconds;
+    }
+    if ([safeBehavior isEqualToString:@"battery_first"]) {
+        return kHoldMonitorIntervalBatteryFirstSeconds;
+    }
+    return kHoldMonitorIntervalBalancedSeconds;
+}
+
+static BOOL isHoldSmartChargeCoordinationEnabled() {
+    return getLocalBool(@"adv_hold_temp_disable_smart_charge", YES);
+}
+
+static int getHoldStrategyMonitorIntervalSeconds() {
+    return getHoldStrategyMonitorIntervalSecondsForBehavior(currentHoldRuntimeBehavior());
+}
+
+static BOOL shouldUseHoldEarlyRechargeAssistForBehavior(NSString* behavior) {
+    return ![normalizeHoldModeBehavior(behavior) isEqualToString:@"battery_first"];
+}
+
+static int getHoldEarlyRechargeDischargeStreakRequiredForBehavior(NSString* behavior) {
+    NSString* safeBehavior = normalizeHoldModeBehavior(behavior);
+    if ([safeBehavior isEqualToString:@"power_first"]) {
+        return 1;
+    }
+    return 2;
+}
+
+static BOOL shouldUseHoldEarlyRechargeAssist() {
+    return shouldUseHoldEarlyRechargeAssistForBehavior(currentHoldRuntimeBehavior());
+}
+
+static int getHoldEarlyRechargeDischargeStreakRequired() {
+    NSString* behavior = currentHoldRuntimeBehavior();
+    if ([behavior isEqualToString:@"power_first"]) {
+        return 1;
+    }
+    return 2;
+}
+
+static void resetHoldAdaptiveRuntimeState() {
+    g_holdRuntimeBehavior = @"balanced";
+    g_holdAdaptiveLoadLevel = @"fixed";
+    g_holdAdaptiveAverageCurrentmA = 0;
+    g_lastHoldRuntimeBehaviorChangeTs = 0;
+    g_holdCurrentSamples = nil;
+}
+
+static void resetHoldRuntimeState() {
+    g_holdDischargeStreak = 0;
+}
+
+static void appendHoldCurrentSample(int current) {
+    if (g_holdCurrentSamples == nil) {
+        g_holdCurrentSamples = [NSMutableArray array];
+    }
+    [g_holdCurrentSamples addObject:@(current)];
+    if (g_holdCurrentSamples.count > kHoldAdaptiveSampleWindow) {
+        [g_holdCurrentSamples removeObjectsInRange:NSMakeRange(0, g_holdCurrentSamples.count - kHoldAdaptiveSampleWindow)];
+    }
+}
+
+static int averageHoldCurrentSamples(void) {
+    if (g_holdCurrentSamples.count == 0) {
+        return 0;
+    }
+    long total = 0;
+    for (NSNumber* sample in g_holdCurrentSamples) {
+        total += sample.intValue;
+    }
+    return (int)llround((double)total / (double)g_holdCurrentSamples.count);
+}
+
+static NSString* desiredAdaptiveHoldBehavior(NSString* currentBehavior,
+                                             int averageCurrent,
+                                             NSInteger adapterWatts,
+                                             BOOL isWireless,
+                                             BOOL tempNearUpperLimit,
+                                             NSString** loadLevelOut) {
+    NSString* safeCurrentBehavior = normalizeHoldModeBehavior(currentBehavior);
+    if (tempNearUpperLimit) {
+        if (loadLevelOut) {
+            *loadLevelOut = @"thermal_guard";
+        }
+        return @"battery_first";
+    }
+
+    if (isWireless) {
+        if (loadLevelOut) {
+            *loadLevelOut = @"wireless_guard";
+        }
+        return averageCurrent <= kHoldAdaptiveMediumLoadEnterCurrentmA ? @"balanced" : @"battery_first";
+    }
+
+    BOOL canUsePowerFirst = (adapterWatts <= 0 || adapterWatts >= kHoldAdaptiveMinPowerFirstWatts);
+    if ([safeCurrentBehavior isEqualToString:@"power_first"]) {
+        if (canUsePowerFirst && averageCurrent <= kHoldAdaptiveHighLoadExitCurrentmA) {
+            if (loadLevelOut) {
+                *loadLevelOut = @"high";
+            }
+            return @"power_first";
+        }
+        if (averageCurrent <= kHoldAdaptiveMediumLoadEnterCurrentmA) {
+            if (loadLevelOut) {
+                *loadLevelOut = @"medium";
+            }
+            return @"balanced";
+        }
+        if (loadLevelOut) {
+            *loadLevelOut = @"low";
+        }
+        return @"battery_first";
+    }
+
+    if ([safeCurrentBehavior isEqualToString:@"balanced"]) {
+        if (canUsePowerFirst && averageCurrent <= kHoldAdaptiveHighLoadEnterCurrentmA) {
+            if (loadLevelOut) {
+                *loadLevelOut = @"high";
+            }
+            return @"power_first";
+        }
+        if (averageCurrent > kHoldAdaptiveMediumLoadExitCurrentmA) {
+            if (loadLevelOut) {
+                *loadLevelOut = @"low";
+            }
+            return @"battery_first";
+        }
+        if (loadLevelOut) {
+            *loadLevelOut = @"medium";
+        }
+        return @"balanced";
+    }
+
+    if (canUsePowerFirst && averageCurrent <= kHoldAdaptiveHighLoadEnterCurrentmA) {
+        if (loadLevelOut) {
+            *loadLevelOut = @"high";
+        }
+        return @"power_first";
+    }
+    if (averageCurrent <= kHoldAdaptiveMediumLoadEnterCurrentmA) {
+        if (loadLevelOut) {
+            *loadLevelOut = @"medium";
+        }
+        return @"balanced";
+    }
+    if (loadLevelOut) {
+        *loadLevelOut = @"low";
+    }
+    return @"battery_first";
+}
+
+static NSString* updateHoldRuntimeBehavior(NSDictionary* info,
+                                           BOOL holdEnabled,
+                                           BOOL isAdaptorConnected,
+                                           float temperature,
+                                           float chargeTempAbove,
+                                           time_t now,
+                                           BOOL* changedOut) {
+    NSString* configuredBehavior = getHoldModeBehavior();
+    NSString* previousRuntimeBehavior = currentHoldRuntimeBehavior();
+    BOOL changed = NO;
+
+    if (!holdEnabled || !isAdaptorConnected) {
+        resetHoldAdaptiveRuntimeState();
+        if (!isHoldAdaptiveBehavior(configuredBehavior)) {
+            g_holdRuntimeBehavior = configuredBehavior;
+        }
+        if (changedOut) {
+            *changedOut = NO;
+        }
+        return currentHoldRuntimeBehavior();
+    }
+
+    if (!isHoldAdaptiveBehavior(configuredBehavior)) {
+        g_holdRuntimeBehavior = configuredBehavior;
+        g_holdAdaptiveLoadLevel = @"fixed";
+        g_holdAdaptiveAverageCurrentmA = getEffectiveBatteryCurrent(info);
+        g_holdCurrentSamples = nil;
+        if (changedOut) {
+            *changedOut = ![previousRuntimeBehavior isEqualToString:g_holdRuntimeBehavior];
+        }
+        return configuredBehavior;
+    }
+
+    appendHoldCurrentSample(getEffectiveBatteryCurrent(info));
+    g_holdAdaptiveAverageCurrentmA = averageHoldCurrentSamples();
+
+    NSDictionary* adapterDetails = info[@"AdapterDetails"];
+    NSInteger adapterWatts = [adapterDetails[@"Watts"] respondsToSelector:@selector(integerValue)] ? [adapterDetails[@"Watts"] integerValue] : 0;
+    BOOL isWireless = [adapterDetails[@"IsWireless"] boolValue];
+    BOOL tempNearUpperLimit = (getLocalBool(@"enable_temp", NO) &&
+                               chargeTempAbove > 0 &&
+                               temperature >= MAX(0.0f, chargeTempAbove - kHoldAdaptiveTempMarginC));
+
+    NSString* loadLevel = @"low";
+    NSString* desiredBehavior = desiredAdaptiveHoldBehavior(previousRuntimeBehavior,
+                                                            g_holdAdaptiveAverageCurrentmA,
+                                                            adapterWatts,
+                                                            isWireless,
+                                                            tempNearUpperLimit,
+                                                            &loadLevel);
+    g_holdAdaptiveLoadLevel = loadLevel ?: @"low";
+
+    BOOL forceSwitch = tempNearUpperLimit || isWireless;
+    if (g_holdRuntimeBehavior.length == 0) {
+        g_holdRuntimeBehavior = desiredBehavior;
+        g_lastHoldRuntimeBehaviorChangeTs = now;
+        changed = YES;
+    } else if (![g_holdRuntimeBehavior isEqualToString:desiredBehavior]) {
+        if (forceSwitch || g_lastHoldRuntimeBehaviorChangeTs == 0 || now - g_lastHoldRuntimeBehaviorChangeTs >= kHoldAdaptiveBehaviorMinStaySeconds) {
+            g_holdRuntimeBehavior = desiredBehavior;
+            g_lastHoldRuntimeBehaviorChangeTs = now;
+            changed = YES;
+        }
+    } else if (g_lastHoldRuntimeBehaviorChangeTs == 0) {
+        g_lastHoldRuntimeBehaviorChangeTs = now;
+    }
+
+    if (changedOut) {
+        *changedOut = changed;
+    }
+    return currentHoldRuntimeBehavior();
+}
+
+static NSArray* recentPolicyTransitionHistory(void) {
+    return g_recentPolicyTransitions ?: @[];
+}
+
+static NSArray* storedPolicyEventHistory(void) {
+    NSArray* history = getLocalArray(kPolicyEventHistoryKey, @[]);
+    if (![history isKindOfClass:[NSArray class]]) {
+        return @[];
+    }
+    NSMutableArray* sanitized = [NSMutableArray array];
+    for (id item in history) {
+        if ([item isKindOfClass:[NSDictionary class]]) {
+            [sanitized addObject:item];
+        }
+    }
+    return [sanitized copy];
+}
+
+static void persistPolicyEventHistory(void) {
+    setLocalArray(kPolicyEventHistoryKey, g_policyEventHistory ?: @[]);
+}
+
+static void loadPolicyEventHistoryRuntimeState(void) {
+    g_policyEventHistory = storedPolicyEventHistory();
+    migrateStoredPolicyEventsToDBIfNeeded(g_policyEventHistory);
+}
+
+static NSArray* recentPolicyEventHistory(void) {
+    return g_policyEventHistory ?: @[];
+}
+
+static NSDictionary* policyEventSnapshot(NSDictionary* info) {
+    NSDictionary* safeInfo = info ?: bat_info ?: @{};
+    NSMutableDictionary* snapshot = [NSMutableDictionary dictionary];
+    snapshot[@"capacity"] = @([safeInfo[@"CurrentCapacity"] respondsToSelector:@selector(integerValue)] ? [safeInfo[@"CurrentCapacity"] integerValue] : 0);
+    snapshot[@"temperature"] = @([safeInfo[@"Temperature"] respondsToSelector:@selector(integerValue)] ? [safeInfo[@"Temperature"] integerValue] : 0);
+    snapshot[@"current"] = @(getEffectiveBatteryCurrent(safeInfo));
+    snapshot[@"is_charging"] = @([safeInfo[@"IsCharging"] boolValue]);
+    snapshot[@"external_connected"] = @([safeInfo[@"ExternalConnected"] boolValue]);
+    snapshot[@"predictive_inhibit_active"] = @([safeInfo[@"PredictiveChargingInhibit"] boolValue]);
+    snapshot[@"charge_command_enabled"] = @(g_chargeCommandEnabled);
+    snapshot[@"smart_charge_status"] = @(g_smartChargeStatus);
+    snapshot[@"smart_charge_managed"] = @(g_tempSmartChargeDisabledByCL);
+    snapshot[@"hold_behavior"] = currentHoldRuntimeBehavior() ?: @"balanced";
+    snapshot[@"hold_load_level"] = g_holdAdaptiveLoadLevel ?: @"fixed";
+    return snapshot;
+}
+
+static NSDictionary* buildPolicyEventRecord(NSString* eventType,
+                                            NSString* fromState,
+                                            NSString* toState,
+                                            NSString* reason,
+                                            NSDictionary* info,
+                                            NSDictionary* extras,
+                                            time_t now) {
+    NSMutableDictionary* item = [policyEventSnapshot(info) mutableCopy];
+    if (item == nil) {
+        item = [NSMutableDictionary dictionary];
+    }
+    item[@"type"] = eventType ?: @"policy_transition";
+    item[@"from"] = fromState ?: @"";
+    item[@"to"] = toState ?: @"";
+    item[@"reason"] = reason ?: @"unknown";
+    item[@"ts"] = @(now);
+    if ([extras isKindOfClass:[NSDictionary class]]) {
+        for (NSString* key in extras) {
+            if (key.length == 0 || extras[key] == nil) {
+                continue;
+            }
+            item[key] = extras[key];
+        }
+    }
+    return item;
+}
+
+static void appendPolicyEventHistory(NSString* eventType,
+                                     NSString* fromState,
+                                     NSString* toState,
+                                     NSString* reason,
+                                     NSDictionary* info,
+                                     NSDictionary* extras,
+                                     time_t now) {
+    NSMutableArray* history = [recentPolicyEventHistory() mutableCopy];
+    NSDictionary* item = buildPolicyEventRecord(eventType, fromState, toState, reason, info, extras, now);
+    [history addObject:item];
+    if (history.count > kPolicyEventHistoryLimit) {
+        [history removeObjectsInRange:NSMakeRange(0, history.count - kPolicyEventHistoryLimit)];
+    }
+    g_policyEventHistory = [history copy];
+    persistPolicyEventHistory();
+    insertPolicyEventDBData(item);
+}
+
+static NSString* policyEventTypeForTransition(NSString* nextPolicyState, NSString* reason) {
+    NSString* safeState = nextPolicyState ?: @"";
+    NSString* safeReason = reason ?: @"";
+    if ([safeReason isEqualToString:@"temperature_high"] || [safeReason isEqualToString:@"temperature_recovered"] || [safeState isEqualToString:@"temp_paused"]) {
+        return @"thermal_event";
+    }
+    if ([safeReason hasPrefix:@"hold_"] || [safeState hasPrefix:@"hold"]) {
+        return @"hold_event";
+    }
+    return @"policy_transition";
+}
+
+static void appendSmartChargeCoordinationEvent(NSString* reason,
+                                               int fromStatus,
+                                               int toStatus,
+                                               NSDictionary* info,
+                                               NSDictionary* extras,
+                                               time_t now) {
+    if (fromStatus == toStatus) {
+        return;
+    }
+    NSMutableDictionary* eventExtras = [NSMutableDictionary dictionary];
+    if ([extras isKindOfClass:[NSDictionary class]]) {
+        [eventExtras addEntriesFromDictionary:extras];
+    }
+    eventExtras[@"smart_charge_from"] = @(fromStatus);
+    eventExtras[@"smart_charge_to"] = @(toStatus);
+    if (g_smartChargeCoordinationSessionID.length > 0) {
+        eventExtras[@"session_id"] = g_smartChargeCoordinationSessionID;
+    }
+    if (g_smartChargeCoordinationOriginalStatus >= 0) {
+        eventExtras[@"original_status"] = @(g_smartChargeCoordinationOriginalStatus);
+    }
+    appendPolicyEventHistory(@"smart_charge_event",
+                             @"",
+                             @"",
+                             reason,
+                             info,
+                             eventExtras,
+                             now);
+}
+
+static void appendPolicyTransitionHistory(NSString* fromState, NSString* toState, NSString* reason, time_t now) {
+    NSMutableArray* history = [recentPolicyTransitionHistory() mutableCopy];
+    [history addObject:@{
+        @"from": fromState ?: @"",
+        @"to": toState ?: @"",
+        @"reason": reason ?: @"unknown",
+        @"ts": @(now),
+    }];
+    if (history.count > kPolicyTransitionHistoryLimit) {
+        [history removeObjectsInRange:NSMakeRange(0, history.count - kPolicyTransitionHistoryLimit)];
+    }
+    g_recentPolicyTransitions = [history copy];
+}
+
+static void updatePolicyRuntimeState(NSString* nextPolicyState, NSString* reason, NSDictionary* info, time_t now) {
+    NSString* safeState = nextPolicyState ?: @"battery";
+    NSString* safeReason = reason ?: @"unknown";
+    NSString* previousState = g_policyState ?: @"battery";
+    NSString* eventType = policyEventTypeForTransition(safeState, safeReason);
+    if (now <= 0) {
+        now = time(0);
+    }
+    if (![previousState isEqualToString:safeState]) {
+        g_lastPolicyChangeTs = now;
+        g_lastPolicyChangeReason = safeReason;
+        appendPolicyTransitionHistory(previousState, safeState, safeReason, now);
+        appendPolicyEventHistory(eventType, previousState, safeState, safeReason, info, nil, now);
+    } else if (g_lastPolicyChangeTs == 0) {
+        g_lastPolicyChangeTs = now;
+        g_lastPolicyChangeReason = safeReason;
+        appendPolicyTransitionHistory(previousState, safeState, safeReason, now);
+        appendPolicyEventHistory(eventType, previousState, safeState, safeReason, info, nil, now);
+    }
+    g_policyState = safeState;
+    g_policyReason = safeReason;
 }
 
 static NSCalendar* fullChargeScheduleCalendar() {
@@ -357,6 +838,33 @@ static void refreshFullChargeScheduleTimer(time_t nextBoundaryTs) {
     [[NSRunLoop mainRunLoop] addTimer:g_fullChargeScheduleTimer forMode:NSRunLoopCommonModes];
 }
 
+static void refreshHoldMonitorTimer(void) {
+    BOOL shouldRun = (g_enable && isHoldModeEnabled());
+    if (!shouldRun) {
+        if (g_holdMonitorTimer != nil) {
+            [g_holdMonitorTimer invalidate];
+            g_holdMonitorTimer = nil;
+        }
+        g_holdMonitorTimerIntervalSeconds = 0;
+        return;
+    }
+    int intervalSeconds = getHoldStrategyMonitorIntervalSeconds();
+    if (g_holdMonitorTimer != nil && g_holdMonitorTimerIntervalSeconds == intervalSeconds) {
+        return;
+    }
+    if (g_holdMonitorTimer != nil) {
+        [g_holdMonitorTimer invalidate];
+        g_holdMonitorTimer = nil;
+    }
+    g_holdMonitorTimerIntervalSeconds = intervalSeconds;
+    g_holdMonitorTimer = [NSTimer scheduledTimerWithTimeInterval:intervalSeconds repeats:YES block:^(NSTimer* timer) {
+        @synchronized (Service.inst) {
+            refreshBatteryStateAndApplyPolicy();
+        }
+    }];
+    [[NSRunLoop mainRunLoop] addTimer:g_holdMonitorTimer forMode:NSRunLoopCommonModes];
+}
+
 
 static io_service_t getIOPMPSServ() {
     static io_service_t serv = IO_OBJECT_NULL;
@@ -381,7 +889,7 @@ static NSDictionary* getBatSlimInfo(NSDictionary* info) {
     NSMutableDictionary* filtered_info = [NSMutableDictionary dictionary];
     NSArray* keep = @[
         @"Amperage", @"AppleRawCurrentCapacity", @"BatteryInstalled", @"BootVoltage", @"CurrentCapacity", @"CycleCount", @"DesignCapacity", @"ExternalChargeCapable", @"ExternalConnected",
-        @"InstantAmperage", @"IsCharging", @"NominalChargeCapacity", @"PostChargeWaitSeconds", @"PostDischargeWaitSeconds", @"Serial", @"Temperature",
+        @"InstantAmperage", @"IsCharging", @"NominalChargeCapacity", @"PostChargeWaitSeconds", @"PostDischargeWaitSeconds", @"PredictiveChargingInhibit", @"Serial", @"Temperature",
         @"UpdateTime", @"VirtualTemperature", @"Voltage"];
     for (NSString* key in info) {
         if ([keep containsObject:key]) {
@@ -454,6 +962,7 @@ static int setInflowStatus(BOOL flag) {
     if (ret != 0) {
         return -2;
     }
+    g_lastInflowCommandTs = time(0);
     return 0;
 }
 
@@ -505,6 +1014,8 @@ static int setChargeStatus(BOOL flag) {
     if (ret != 0) {
         return -2;
     }
+    g_chargeCommandEnabled = flag;
+    g_lastChargeCommandTs = time(0);
     return 0;
 }
 
@@ -529,11 +1040,16 @@ static void resetBatteryStatus() {
     if (serv == IO_OBJECT_NULL) {
         return;
     }
+    time_t now = time(0);
     NSMutableDictionary* props = [NSMutableDictionary new];
     props[@"IsCharging"] = @YES;
     props[@"PredictiveChargingInhibit"] = @NO;
     props[@"ExternalConnected"] = @YES;
     IORegistryEntrySetCFProperties(serv, (__bridge CFTypeRef)props);
+    g_chargeCommandEnabled = YES;
+    g_lastChargeCommandTs = now;
+    g_lastInflowCommandTs = now;
+    resetHoldRuntimeState();
 }
 
 static void performAcccharge(BOOL flag) {
@@ -692,6 +1208,10 @@ static NSString* tableNameForSuffix(NSString* suffix, NSString* batId) {
     return [NSString stringWithFormat:@"%@.%@", prefix, suffix];
 }
 
+static NSString* policyEventDBTableNameQuoted(void) {
+    return quoteSQLiteIdent(kPolicyEventDBTableName);
+}
+
 static void updateDBData(NSString* tbl, int tid, NSDictionary* info) {
     @autoreleasepool {
         if (!db) {
@@ -721,6 +1241,59 @@ static void updateDBData(NSString* tbl, int tid, NSDictionary* info) {
     }
 }
 
+static void prunePolicyEventDBIfNeeded(void) {
+    if (!db) {
+        return;
+    }
+    NSString* quotedTbl = policyEventDBTableNameQuoted();
+    if (quotedTbl.length == 0) {
+        return;
+    }
+    NSString* sql = [NSString stringWithFormat:
+                     @"delete from %@ where id not in (select id from %@ order by id desc limit %lu)",
+                     quotedTbl,
+                     quotedTbl,
+                     (unsigned long)kPolicyEventDBLimit];
+    char* err = NULL;
+    sqlite3_exec(db, sql.UTF8String, NULL, NULL, &err);
+    if (err != NULL) {
+        sqlite3_free(err);
+    }
+}
+
+static void insertPolicyEventDBData(NSDictionary* event) {
+    @autoreleasepool {
+        if (!db || ![event isKindOfClass:[NSDictionary class]] || event.count == 0) {
+            return;
+        }
+        NSData* jdata = [NSJSONSerialization dataWithJSONObject:event options:0 error:nil];
+        if (jdata == nil) {
+            return;
+        }
+        NSString* jstr = [[NSString alloc] initWithData:jdata encoding:NSUTF8StringEncoding];
+        if (jstr.length == 0) {
+            return;
+        }
+        NSString* quotedTbl = policyEventDBTableNameQuoted();
+        if (quotedTbl.length == 0) {
+            return;
+        }
+        NSString* eventType = [event[@"type"] isKindOfClass:[NSString class]] ? event[@"type"] : @"policy_transition";
+        sqlite3_int64 ts = [event[@"ts"] respondsToSelector:@selector(longLongValue)] ? [event[@"ts"] longLongValue] : (sqlite3_int64)time(0);
+        NSString* sql = [NSString stringWithFormat:@"insert into %@ (ts, type, data) values(?1, ?2, ?3)", quotedTbl];
+        sqlite3_stmt* stmt = NULL;
+        if (sqlite3_prepare_v2(db, sql.UTF8String, -1, &stmt, NULL) != SQLITE_OK || stmt == NULL) {
+            return;
+        }
+        sqlite3_bind_int64(stmt, 1, ts);
+        sqlite3_bind_text(stmt, 2, eventType.UTF8String, -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt, 3, jstr.UTF8String, -1, SQLITE_STATIC);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+        prunePolicyEventDBIfNeeded();
+    }
+}
+
 static void initDB(NSString* batId) {
     @autoreleasepool {
         if (!db) {
@@ -735,6 +1308,21 @@ static void initDB(NSString* batId) {
             db = cdb;
         }
         if (db) {
+            NSString* eventTbl = policyEventDBTableNameQuoted();
+            if (eventTbl.length > 0) {
+                NSString* createEventTableSQL = [NSString stringWithFormat:@"create table if not exists %@ (id integer primary key autoincrement, ts integer not null, type text not null, data text not null)", eventTbl];
+                NSString* createEventIndexSQL = [NSString stringWithFormat:@"create index if not exists %@ on %@ (ts)", quoteSQLiteIdent(@"policy_events_ts_idx"), eventTbl];
+                char* err = NULL;
+                sqlite3_exec(db, createEventTableSQL.UTF8String, NULL, NULL, &err);
+                if (err != NULL) {
+                    sqlite3_free(err);
+                }
+                err = NULL;
+                sqlite3_exec(db, createEventIndexSQL.UTF8String, NULL, NULL, &err);
+                if (err != NULL) {
+                    sqlite3_free(err);
+                }
+            }
             for (NSString* rawTbl in @[@"min5", @"hour", @"day", @"month"]) {
                 NSString* tblName = tableNameForSuffix(rawTbl, batId);
                 if (tblName.length == 0 || !isAllowedStatsTableName(tblName)) {
@@ -758,6 +1346,88 @@ static void uninitDB() {
             sqlite3_close_v2(db);
         }
         db = NULL;
+    }
+}
+
+static NSArray* getPolicyEventDBData(int n, int last_id) {
+    @autoreleasepool {
+        if (!db) {
+            return @[];
+        }
+        if (n < 1) {
+            n = 1;
+        }
+        if (n > (int)kPolicyEventDBLimit) {
+            n = (int)kPolicyEventDBLimit;
+        }
+        NSMutableArray* result = [NSMutableArray array];
+        NSString* quotedTbl = policyEventDBTableNameQuoted();
+        if (quotedTbl.length == 0) {
+            return @[];
+        }
+        NSString* sql = [NSString stringWithFormat:@"select id, ts, type, data from %@ where id > ?1 order by id desc limit ?2", quotedTbl];
+        sqlite3_stmt* stmt = NULL;
+        if (sqlite3_prepare_v2(db, sql.UTF8String, -1, &stmt, NULL) != SQLITE_OK || stmt == NULL) {
+            return @[];
+        }
+        sqlite3_bind_int(stmt, 1, MAX(last_id, 0));
+        sqlite3_bind_int(stmt, 2, n);
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            int rowID = sqlite3_column_int(stmt, 0);
+            sqlite3_int64 ts = sqlite3_column_int64(stmt, 1);
+            const char* typeText = (const char*)sqlite3_column_text(stmt, 2);
+            const char* jstr = (const char*)sqlite3_column_text(stmt, 3);
+            NSMutableDictionary* jobj = nil;
+            if (jstr != NULL) {
+                NSData* jdata = [NSData dataWithBytes:(void*)jstr length:strlen(jstr)];
+                NSDictionary* parsed = [NSJSONSerialization JSONObjectWithData:jdata options:0 error:nil];
+                if ([parsed isKindOfClass:[NSDictionary class]]) {
+                    jobj = [parsed mutableCopy];
+                }
+            }
+            if (jobj == nil) {
+                jobj = [NSMutableDictionary dictionary];
+            }
+            jobj[@"id"] = @(rowID);
+            if (jobj[@"ts"] == nil) {
+                jobj[@"ts"] = @(ts);
+            }
+            if (typeText != NULL && jobj[@"type"] == nil) {
+                jobj[@"type"] = @(typeText);
+            }
+            [result addObject:jobj];
+        }
+        sqlite3_finalize(stmt);
+        return [[result reverseObjectEnumerator] allObjects];
+    }
+}
+
+static void migrateStoredPolicyEventsToDBIfNeeded(NSArray* history) {
+    if (!db || ![history isKindOfClass:[NSArray class]] || history.count == 0) {
+        return;
+    }
+    NSString* quotedTbl = policyEventDBTableNameQuoted();
+    if (quotedTbl.length == 0) {
+        return;
+    }
+    NSString* sql = [NSString stringWithFormat:@"select count(1) from %@", quotedTbl];
+    sqlite3_stmt* stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql.UTF8String, -1, &stmt, NULL) != SQLITE_OK || stmt == NULL) {
+        return;
+    }
+    int rowCount = 0;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        rowCount = sqlite3_column_int(stmt, 0);
+    }
+    sqlite3_finalize(stmt);
+    if (rowCount > 0) {
+        return;
+    }
+    for (id item in history) {
+        if (![item isKindOfClass:[NSDictionary class]]) {
+            continue;
+        }
+        insertPolicyEventDBData(item);
     }
 }
 
@@ -877,6 +1547,8 @@ static void initConfKeySets() {
             @"adv_prefer_smart",
             @"adv_predictive_inhibit_charge",
             @"adv_disable_inflow",
+            @"adv_hold_enabled",
+            @"adv_hold_temp_disable_smart_charge",
             @"adv_limit_inflow",
             @"adv_thermal_mode_lock",
             @"full_charge_sched_enabled"
@@ -886,6 +1558,7 @@ static void initConfKeySets() {
             @"charge_above",
             @"temp_mode",
             @"update_freq",
+            @"adv_hold_band",
             @"full_charge_sched_interval_days",
             @"full_charge_sched_start_minute",
             @"full_charge_sched_duration_hours",
@@ -899,6 +1572,7 @@ static void initConfKeySets() {
             @"mode",
             @"lang",
             @"action",
+            @"adv_hold_behavior",
             @"adv_limit_inflow_mode",
             @"adv_def_thermal_mode",
             @"full_charge_sched_anchor_date"
@@ -962,9 +1636,264 @@ static float getTempAsC(NSString* key) {
     return 0;
 }
 
+static int getEffectiveBatteryCurrent(NSDictionary* info) {
+    id instant = info[@"InstantAmperage"];
+    if ([instant respondsToSelector:@selector(intValue)]) {
+        return [instant intValue];
+    }
+    id amp = info[@"Amperage"];
+    if ([amp respondsToSelector:@selector(intValue)]) {
+        return [amp intValue];
+    }
+    return 0;
+}
+
+static BOOL currentLooksCharging(int current) {
+    return current > kHoldCurrentChargeThresholdmA;
+}
+
+static BOOL currentLooksDischarging(int current) {
+    return current < kHoldCurrentDischargeThresholdmA;
+}
+
+static int getHoldModeLowerBound(int target) {
+    return MAX(5, target - getHoldModeBand());
+}
+
+static BOOL canToggleChargeCommand(time_t now) {
+    return (g_lastChargeCommandTs == 0 || now - g_lastChargeCommandTs >= kHoldActionMinGapSeconds);
+}
+
+static NSDictionary* storedSmartChargeCoordinationState(void) {
+    NSDictionary* state = getLocalDict(kSmartChargeCoordinationStateKey, @{});
+    if (![state isKindOfClass:[NSDictionary class]]) {
+        return @{};
+    }
+    return state;
+}
+
+static void clearLoadedSmartChargeCoordinationRuntimeState(void) {
+    g_tempSmartChargeDisabledByCL = NO;
+    g_smartChargeCoordinationOriginalStatus = -1;
+    g_smartChargeCoordinationSessionID = nil;
+    g_smartChargeCoordinationStartedTs = 0;
+}
+
+static void persistSmartChargeCoordinationRuntimeState(void) {
+    if (!g_tempSmartChargeDisabledByCL || g_smartChargeCoordinationSessionID.length == 0) {
+        setLocalDict(kSmartChargeCoordinationStateKey, @{});
+        return;
+    }
+    setLocalDict(kSmartChargeCoordinationStateKey, @{
+        @"active": @YES,
+        @"original_status": @(g_smartChargeCoordinationOriginalStatus),
+        @"session_id": g_smartChargeCoordinationSessionID,
+        @"started_ts": @(g_smartChargeCoordinationStartedTs),
+    });
+}
+
+static void loadSmartChargeCoordinationRuntimeState(void) {
+    NSDictionary* state = storedSmartChargeCoordinationState();
+    if (![state[@"active"] boolValue]) {
+        clearLoadedSmartChargeCoordinationRuntimeState();
+        return;
+    }
+    NSString* sessionID = [state[@"session_id"] isKindOfClass:[NSString class]] ? state[@"session_id"] : nil;
+    if (sessionID.length == 0) {
+        clearLoadedSmartChargeCoordinationRuntimeState();
+        setLocalDict(kSmartChargeCoordinationStateKey, @{});
+        return;
+    }
+    g_tempSmartChargeDisabledByCL = YES;
+    g_smartChargeCoordinationOriginalStatus = [state[@"original_status"] respondsToSelector:@selector(intValue)] ? [state[@"original_status"] intValue] : -1;
+    g_smartChargeCoordinationSessionID = sessionID;
+    g_smartChargeCoordinationStartedTs = [state[@"started_ts"] respondsToSelector:@selector(longLongValue)] ? (time_t)[state[@"started_ts"] longLongValue] : 0;
+}
+
+static NSString* newSmartChargeCoordinationSessionID(time_t now) {
+    if (now <= 0) {
+        now = time(0);
+    }
+    return [NSString stringWithFormat:@"%d-%lld-%u", getpid(), (long long)now, arc4random_uniform(1000000)];
+}
+
+static void beginSmartChargeCoordinationSession(int originalStatus, time_t now) {
+    if (now <= 0) {
+        now = time(0);
+    }
+    g_tempSmartChargeDisabledByCL = YES;
+    g_smartChargeCoordinationOriginalStatus = originalStatus;
+    g_smartChargeCoordinationSessionID = newSmartChargeCoordinationSessionID(now);
+    g_smartChargeCoordinationStartedTs = now;
+    persistSmartChargeCoordinationRuntimeState();
+}
+
+static void endSmartChargeCoordinationSession(void) {
+    clearLoadedSmartChargeCoordinationRuntimeState();
+    persistSmartChargeCoordinationRuntimeState();
+}
+
+static void finishSmartChargeCoordinationSessionWithObservedStatus(int observedStatus,
+                                                                  NSString* reason,
+                                                                  NSDictionary* info,
+                                                                  time_t now) {
+    if (!g_tempSmartChargeDisabledByCL) {
+        return;
+    }
+    if (observedStatus >= 0 && observedStatus != 3) {
+        appendSmartChargeCoordinationEvent(@"smart_charge_session_released",
+                                           3,
+                                           observedStatus,
+                                           info,
+                                           @{
+                                               @"trigger": reason ?: @"",
+                                           },
+                                           now > 0 ? now : time(0));
+    }
+    endSmartChargeCoordinationSession();
+}
+
+static BOOL shouldRestoreSmartChargeAfterCoordination(void) {
+    return g_smartChargeCoordinationOriginalStatus > 0;
+}
+
+static void tryRestoreSmartChargeAfterCoordination(NSString* reason) {
+    if (!g_tempSmartChargeDisabledByCL) {
+        return;
+    }
+    if (g_smartChargeStatus < 0) {
+        g_smartChargeStatus = getSmartChargeStatus();
+    }
+    if (g_smartChargeStatus >= 0 && g_smartChargeStatus != 3) {
+        finishSmartChargeCoordinationSessionWithObservedStatus(g_smartChargeStatus, reason, nil, time(0));
+        return;
+    }
+    if (g_smartChargeStatus == 3 && shouldRestoreSmartChargeAfterCoordination()) {
+        int fromStatus = g_smartChargeStatus;
+        NSFileLog(@"smart charge restore session=%@ original=%d reason=%@",
+                  g_smartChargeCoordinationSessionID ?: @"",
+                  g_smartChargeCoordinationOriginalStatus,
+                  reason ?: @"");
+        setSmartChargeEnable(YES);
+        g_smartChargeStatus = getSmartChargeStatus();
+        appendSmartChargeCoordinationEvent(@"smart_charge_restored",
+                                           fromStatus,
+                                           g_smartChargeStatus,
+                                           nil,
+                                           @{
+                                               @"trigger": reason ?: @"",
+                                           },
+                                           time(0));
+    }
+    if (g_smartChargeStatus != 3) {
+        endSmartChargeCoordinationSession();
+    }
+}
+
+static void recoverSmartChargeCoordinationOnBootstrap(void) {
+    loadSmartChargeCoordinationRuntimeState();
+    if (!g_tempSmartChargeDisabledByCL) {
+        return;
+    }
+    if (g_smartChargeStatus < 0) {
+        g_smartChargeStatus = getSmartChargeStatus();
+    }
+    if (g_smartChargeStatus < 0) {
+        return;
+    }
+    BOOL permanentlyDisableSmartCharge = getLocalBool(@"disable_smart_charge", NO);
+    if (permanentlyDisableSmartCharge) {
+        if (g_smartChargeStatus != 0) {
+            NSFileLog(@"smart charge bootstrap cleanup session=%@ -> permanent disable",
+                      g_smartChargeCoordinationSessionID ?: @"");
+            setSmartChargeEnable(NO);
+            g_smartChargeStatus = getSmartChargeStatus();
+        }
+        if (g_smartChargeStatus != 3) {
+            endSmartChargeCoordinationSession();
+        }
+        return;
+    }
+    if (g_smartChargeStatus == 3) {
+        NSDictionary* snapshot = nil;
+        if (0 == getBatInfo(&snapshot)) {
+            NSFileLog(@"smart charge bootstrap re-evaluate session=%@ original=%d",
+                      g_smartChargeCoordinationSessionID ?: @"",
+                      g_smartChargeCoordinationOriginalStatus);
+            applyChargePolicy(nil, snapshot);
+            return;
+        }
+        NSFileLog(@"smart charge bootstrap restore fallback session=%@ original=%d",
+                  g_smartChargeCoordinationSessionID ?: @"",
+                  g_smartChargeCoordinationOriginalStatus);
+        tryRestoreSmartChargeAfterCoordination(@"daemon_bootstrap_recovery");
+    } else {
+        finishSmartChargeCoordinationSessionWithObservedStatus(g_smartChargeStatus,
+                                                              @"daemon_bootstrap_cleanup",
+                                                              nil,
+                                                              time(0));
+    }
+}
+
+static BOOL policyNeedsSmartChargeCoordination(NSString* policyState) {
+    return [@[@"hold", @"hold_recharge", @"stopped", @"temp_paused", @"no_inflow"] containsObject:policyState ?: @""];
+}
+
+static void syncSmartChargeCoordination(NSDictionary* info, BOOL isAdaptorConnected) {
+    g_smartChargeStatus = getSmartChargeStatus();
+    if (g_smartChargeStatus < 0) {
+        return;
+    }
+
+    BOOL permanentlyDisableSmartCharge = getLocalBool(@"disable_smart_charge", NO);
+    if (permanentlyDisableSmartCharge) {
+        if (g_smartChargeStatus != 0) {
+            int fromStatus = g_smartChargeStatus;
+            setSmartChargeEnable(NO);
+            g_smartChargeStatus = getSmartChargeStatus();
+            appendSmartChargeCoordinationEvent(@"smart_charge_permanently_disabled",
+                                               fromStatus,
+                                               g_smartChargeStatus,
+                                               info,
+                                               nil,
+                                               time(0));
+        }
+        if (g_smartChargeStatus != 3) {
+            endSmartChargeCoordinationSession();
+        }
+        return;
+    }
+
+    BOOL shouldCoordinate = isAdaptorConnected && isHoldSmartChargeCoordinationEnabled() && policyNeedsSmartChargeCoordination(g_policyState);
+    if (shouldCoordinate) {
+        if (g_tempSmartChargeDisabledByCL && g_smartChargeStatus != 3) {
+            finishSmartChargeCoordinationSessionWithObservedStatus(g_smartChargeStatus,
+                                                                  @"coordination_state_changed",
+                                                                  info,
+                                                                  time(0));
+        }
+        if (g_smartChargeStatus > 0 && g_smartChargeStatus != 3) {
+            int originalStatus = g_smartChargeStatus;
+            if (temporarilyDisableSmartCharge()) {
+                beginSmartChargeCoordinationSession(originalStatus, time(0));
+                g_smartChargeStatus = getSmartChargeStatus();
+                appendSmartChargeCoordinationEvent(@"smart_charge_temporarily_disabled",
+                                                   originalStatus,
+                                                   g_smartChargeStatus,
+                                                   info,
+                                                   nil,
+                                                   time(0));
+            }
+        }
+    } else if (g_tempSmartChargeDisabledByCL) {
+        tryRestoreSmartChargeAfterCoordination(@"coordination_exit");
+    }
+}
+
 static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
     NSDictionary* safeInfo = info ?: @{};
     NSDictionary* safeOld = oldInfo ?: safeInfo;
+    time_t now = time(0);
     NSString* raw_mode = getLocalString(@"mode", @"charge_on_plug");
     int mode = 0;
     if ([raw_mode isEqualToString:@"charge_on_plug"]) {
@@ -974,7 +1903,7 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
     }
     int charge_below = getLocalInt(@"charge_below", 0);
     int charge_above = getLocalInt(@"charge_above", 100);
-    BOOL full_charge_window_active = isFullChargeWindowActive(time(0), nil, nil);
+    BOOL full_charge_window_active = isFullChargeWindowActive(now, nil, nil);
     if (full_charge_window_active) {
         // 满充计划窗口内只解除电量上限，温控逻辑仍然保留。
         charge_above = 100;
@@ -987,6 +1916,7 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
     BOOL is_charging = [safeInfo[@"IsCharging"] boolValue];
     NSNumber* is_inflow_enabled = safeInfo[@"ExternalConnected"];
     BOOL adv_disable_inflow = getLocalBool(@"adv_disable_inflow", NO);
+    BOOL adv_hold_enabled = (isHoldModeEnabled() && !adv_disable_inflow);
     BOOL is_adaptor_connected = isAdaptorConnect(safeInfo, @(adv_disable_inflow));
     BOOL is_adaptor_new_connected = isAdaptorNewConnect(safeOld, safeInfo, @(adv_disable_inflow));
     BOOL is_adaptor_new_disconnected = isAdaptorNewDisconnect(safeOld, safeInfo, @(adv_disable_inflow));
@@ -994,6 +1924,57 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
     float charge_temp_above = getTempAsC(@"charge_temp_above");
     float charge_temp_below = getTempAsC(@"charge_temp_below");
     float temperature = temperature_.intValue / 100.0;
+    int effective_current = getEffectiveBatteryCurrent(safeInfo);
+    BOOL current_looks_charging = currentLooksCharging(effective_current);
+    BOOL current_looks_discharging = currentLooksDischarging(effective_current);
+    BOOL predictive_inhibit_active = [safeInfo[@"PredictiveChargingInhibit"] boolValue];
+    NSString* previousRuntimeHoldBehavior = currentHoldRuntimeBehavior();
+    BOOL holdRuntimeBehaviorChanged = NO;
+    NSString* runtimeHoldBehavior = updateHoldRuntimeBehavior(safeInfo,
+                                                              adv_hold_enabled,
+                                                              is_adaptor_connected,
+                                                              temperature,
+                                                              charge_temp_above,
+                                                              now,
+                                                              &holdRuntimeBehaviorChanged);
+    if (holdRuntimeBehaviorChanged) {
+        refreshHoldMonitorTimer();
+        appendPolicyEventHistory(@"hold_behavior_event",
+                                 previousRuntimeHoldBehavior ?: @"",
+                                 runtimeHoldBehavior ?: @"",
+                                 @"hold_behavior_changed",
+                                 safeInfo,
+                                 nil,
+                                 now);
+    }
+    int hold_lower = getHoldModeLowerBound(charge_above);
+    BOOL within_hold_band = (!disable_capacity_control && adv_hold_enabled && is_adaptor_connected && capacity.intValue > hold_lower && capacity.intValue < charge_above);
+    if (within_hold_band) {
+        if (current_looks_discharging) {
+            g_holdDischargeStreak = MIN(g_holdDischargeStreak + 1, 99);
+        } else {
+            g_holdDischargeStreak = 0;
+        }
+    } else {
+        g_holdDischargeStreak = 0;
+    }
+    NSString* nextPolicyState = @"battery";
+    NSString* nextPolicyReason = @"battery_idle";
+    if (is_adaptor_connected) {
+        if (adv_disable_inflow && !is_inflow_enabled.boolValue) {
+            nextPolicyState = @"no_inflow";
+            nextPolicyReason = @"no_inflow_active";
+        } else if (!g_chargeCommandEnabled || predictive_inhibit_active) {
+            nextPolicyState = @"stopped";
+            nextPolicyReason = @"stopped_command_or_inhibit";
+        } else if (is_charging || current_looks_charging) {
+            nextPolicyState = @"charging";
+            nextPolicyReason = @"charging_active";
+        } else {
+            nextPolicyState = @"external_idle";
+            nextPolicyReason = @"external_idle";
+        }
+    }
     if (is_adaptor_new_connected) {
         NSFileLog(@"detect plug in");
     } else if (is_adaptor_new_disconnected) {
@@ -1003,29 +1984,18 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
     do {
         if (capacity.intValue <= 5) { // 电量极低,优先级=1
             // 防止误用或意外造成无法充电
-            if (is_adaptor_connected && !is_charging) {
+            if (is_adaptor_connected && (!g_chargeCommandEnabled || !is_charging || predictive_inhibit_active)) {
                 NSFileLog(@"start charging for extremely low capacity %@", capacity);
                 setInflowStatus(YES);
                 setBatteryStatus(YES);
                 performAcccharge(YES);
             }
-            break;
-        }
-        if (!disable_capacity_control && capacity.intValue >= charge_above) { // 停充-电量高,优先级=2
-            if (is_charging) {
-                NSFileLog(@"stop charging for high capacity %@ >= %d", capacity, charge_above);
-                setBatteryStatus(NO);
-                performAction(@"stop_charge");
-                performAcccharge(NO);
-            }
-            if (adv_disable_inflow && is_inflow_enabled.boolValue) {
-                NSFileLog(@"disable inflow for high capacity %@ >= %d", capacity, charge_above);
-                setInflowStatus(NO);
-            }
+            nextPolicyState = @"charging";
+            nextPolicyReason = @"critical_low_battery";
             break;
         }
         if (enable_temp && temperature >= charge_temp_above) { // 停充-温度高,优先级=3
-            if (is_charging) {
+            if (g_chargeCommandEnabled || current_looks_charging) {
                 NSFileLog(@"stop charging for high temperature %lf >= %lf", temperature, charge_temp_above);
                 setBatteryStatus(NO);
                 performAction(@"stop_charge");
@@ -1035,10 +2005,12 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
                 NSFileLog(@"disable inflow for high temperature %lf >= %lf", temperature, charge_temp_above);
                 setInflowStatus(NO);
             }
+            nextPolicyState = adv_disable_inflow ? @"no_inflow" : @"temp_paused";
+            nextPolicyReason = @"temperature_high";
             break;
         }
         if (full_charge_window_active) { // 满充计划窗口内，只跳过电量上限控制
-            if (is_adaptor_connected && !is_charging && capacity.intValue < 100) {
+            if (is_adaptor_connected && (!g_chargeCommandEnabled || !is_charging || predictive_inhibit_active) && capacity.intValue < 100) {
                 if (adv_disable_inflow && !is_inflow_enabled.boolValue) {
                     NSFileLog(@"enable inflow for scheduled full-charge window");
                     setInflowStatus(YES);
@@ -1048,11 +2020,69 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
                 performAction(@"start_charge");
                 performAcccharge(YES);
             }
+            nextPolicyState = @"charging";
+            nextPolicyReason = @"full_charge_window";
+            break;
+        }
+        if (!disable_capacity_control && adv_hold_enabled && is_adaptor_connected) {
+            if (capacity.intValue >= charge_above) {
+                if (g_chargeCommandEnabled || current_looks_charging) {
+                    NSFileLog(@"hold stop at target %@ >= %d current=%d", capacity, charge_above, effective_current);
+                    setBatteryStatus(NO);
+                    performAction(@"stop_charge");
+                    performAcccharge(NO);
+                }
+                resetHoldRuntimeState();
+                nextPolicyState = @"hold";
+                nextPolicyReason = @"hold_target_reached";
+                break;
+            }
+            BOOL should_recharge_for_hold = (capacity.intValue <= hold_lower);
+            NSString* holdRechargeReason = @"hold_band_lower_reached";
+            if (!should_recharge_for_hold &&
+                within_hold_band &&
+                shouldUseHoldEarlyRechargeAssistForBehavior(runtimeHoldBehavior) &&
+                g_holdDischargeStreak >= getHoldEarlyRechargeDischargeStreakRequiredForBehavior(runtimeHoldBehavior) &&
+                canToggleChargeCommand(now)) {
+                NSFileLog(@"hold early recharge for discharge trend %@ target=%d lower=%d streak=%d current=%d behavior=%@",
+                          capacity, charge_above, hold_lower, g_holdDischargeStreak, effective_current, runtimeHoldBehavior);
+                should_recharge_for_hold = YES;
+                holdRechargeReason = @"hold_discharge_trend";
+            }
+            if (should_recharge_for_hold) {
+                if (!g_chargeCommandEnabled || predictive_inhibit_active || !current_looks_charging) {
+                    NSFileLog(@"hold recharge within band %@ <= %d current=%d", capacity, hold_lower, effective_current);
+                    setBatteryStatus(YES);
+                    performAction(@"start_charge");
+                    performAcccharge(YES);
+                }
+                resetHoldRuntimeState();
+                nextPolicyState = @"hold_recharge";
+                nextPolicyReason = holdRechargeReason;
+                break;
+            }
+            nextPolicyState = (g_chargeCommandEnabled && (is_charging || current_looks_charging)) ? @"hold_recharge" : @"hold";
+            nextPolicyReason = [nextPolicyState isEqualToString:@"hold_recharge"] ? @"hold_recharge_active" : @"hold_monitoring";
+            break;
+        }
+        if (!disable_capacity_control && capacity.intValue >= charge_above) { // 停充-电量高,优先级=2
+            if (g_chargeCommandEnabled || current_looks_charging) {
+                NSFileLog(@"stop charging for high capacity %@ >= %d", capacity, charge_above);
+                setBatteryStatus(NO);
+                performAction(@"stop_charge");
+                performAcccharge(NO);
+            }
+            if (adv_disable_inflow && is_inflow_enabled.boolValue) {
+                NSFileLog(@"disable inflow for high capacity %@ >= %d", capacity, charge_above);
+                setInflowStatus(NO);
+            }
+            nextPolicyState = adv_disable_inflow ? @"no_inflow" : @"stopped";
+            nextPolicyReason = @"capacity_high";
             break;
         }
         // 温度恢复充电 - 在所有模式下都生效，优先级=4
         // 只有当温度控制开启且当前温度在安全范围内时才考虑恢复
-        if (enable_temp && temperature <= charge_temp_below && !is_charging) {
+        if (enable_temp && temperature <= charge_temp_below && (!g_chargeCommandEnabled || !is_charging || predictive_inhibit_active)) {
             // 温度已降到安全范围，可以恢复充电
             // 但需要确保电量也在合理范围内（低于上限）
             if (is_adaptor_connected && capacity.intValue < charge_above) {
@@ -1064,6 +2094,8 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
                 setBatteryStatus(YES);
                 performAction(@"start_charge");
                 performAcccharge(YES);
+                nextPolicyState = @"charging";
+                nextPolicyReason = @"temperature_recovered";
                 break;
             }
         }
@@ -1079,6 +2111,8 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
                 performAction(@"start_charge");
                 performAcccharge(YES);
             }
+            nextPolicyState = @"charging";
+            nextPolicyReason = @"capacity_low";
             break;
         }
         if (!disable_capacity_control) {
@@ -1092,6 +2126,8 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
                     setBatteryStatus(YES);
                     performAction(@"start_charge");
                     performAcccharge(YES);
+                    nextPolicyState = @"charging";
+                    nextPolicyReason = @"plug_mode_start";
                     break;
                 }
             } else if (mode == CL_MODE_EDGE) {
@@ -1103,13 +2139,20 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
                         setInflowStatus(NO);
                     }
                 }
+                nextPolicyState = adv_disable_inflow ? @"no_inflow" : @"stopped";
+                nextPolicyReason = @"edge_mode_stop";
                 break;
             }
         }
     } while(false);
     if (is_adaptor_new_disconnected) {
         performAcccharge(NO);
+        resetHoldRuntimeState();
+        nextPolicyState = @"battery";
+        nextPolicyReason = @"adaptor_disconnected";
     }
+    updatePolicyRuntimeState(nextPolicyState, nextPolicyReason, safeInfo, now);
+    syncSmartChargeCoordination(safeInfo, is_adaptor_connected);
 }
 
 static void refreshBatteryStateAndApplyPolicy(void) {
@@ -1182,6 +2225,10 @@ static void initConf(BOOL reset) {
         @"adv_prefer_smart": @NO, // iPhone8+ iOS13+
         @"adv_predictive_inhibit_charge": @(predictive_inhibit_charge_avail), // iPhone8+ iOS13+
         @"adv_disable_inflow": @NO, // all (iPhone8+ iOS13+会改变系统充电图标)
+        @"adv_hold_enabled": @NO,
+        @"adv_hold_band": @2,
+        @"adv_hold_behavior": @"balanced",
+        @"adv_hold_temp_disable_smart_charge": @YES,
         @"adv_thermal_avail": @(adv_thermal_avail),
         @"adv_limit_inflow": @NO,
         @"adv_limit_inflow_mode": @"moderate",
@@ -1223,7 +2270,7 @@ static void initConf(BOOL reset) {
         NSMutableDictionary* def_mdic = def_dic.mutableCopy;
         [def_mdic addEntriesFromDictionary:@{
             @"enable": @YES,
-            @"disable_smart_charge": @YES, // Disable "Optimized Battery Charging" within Settings app
+            @"disable_smart_charge": @NO, // Prefer temporary coordination for new installs
             @"mode": @"charge_on_plug",
             @"update_freq": @1,
             @"lang": @"en",
@@ -1237,6 +2284,9 @@ static void initConf(BOOL reset) {
         }
     }
     g_enable = getLocalBool(@"enable", YES);
+    refreshHoldMonitorTimer();
+    loadPolicyEventHistoryRuntimeState();
+    loadSmartChargeCoordinationRuntimeState();
 }
 
 static void showFloatwnd(BOOL flag) {
@@ -1283,6 +2333,7 @@ static void syncDaemonDocumentsForRequest(NSDictionary* nsreq) {
     initConf(NO);
     refreshFullChargeScheduleTimer(0);
     evaluateFullChargeSchedule(NO);
+    recoverSmartChargeCoordinationOnBootstrap();
 
     NSString* newDocs = getAppDocumentsPath();
     NSString* newConf = getConfPath();
@@ -1312,6 +2363,8 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             kv[@"thermal_simulate_mode"] = getThermalSimulationMode();
             kv[@"ppm_simulate_mode"] = getPPMSimulationMode();
             kv[@"use_smart"] = @(g_use_smart);
+            kv[@"smart_charge_status"] = @(g_smartChargeStatus);
+            kv[@"smart_charge_managed_by_daemon"] = @(g_tempSmartChargeDisabledByCL);
             return @{
                 @"status": @0,
                 @"data": kv,
@@ -1336,8 +2389,11 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
         if ([key isEqualToString:@"enable"]) {
             g_enable = [val boolValue];
             refreshFullChargeScheduleTimer(0);
+            refreshHoldMonitorTimer();
             if (!g_enable) {
                 resetBatteryStatus();
+                resetHoldAdaptiveRuntimeState();
+                tryRestoreSmartChargeAfterCoordination(@"daemon_disabled");
             } else { // 启用时检查
                 BOOL disableSmartCharge = getLocalBool(@"disable_smart_charge", NO);
                 if (disableSmartCharge) {
@@ -1351,6 +2407,18 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             if ([val isEqualToString:@"noti"]) {
                 [Service.inst initLocalPush];
             }
+        } else if ([key isEqualToString:@"adv_hold_enabled"]) {
+            refreshHoldMonitorTimer();
+            refreshBatteryStateAndApplyPolicy();
+        } else if ([key isEqualToString:@"adv_hold_band"]) {
+            refreshBatteryStateAndApplyPolicy();
+        } else if ([key isEqualToString:@"adv_hold_behavior"]) {
+            refreshHoldMonitorTimer();
+            refreshBatteryStateAndApplyPolicy();
+        } else if ([key isEqualToString:@"adv_hold_temp_disable_smart_charge"]) {
+            refreshBatteryStateAndApplyPolicy();
+        } else if ([key isEqualToString:@"disable_smart_charge"]) {
+            refreshBatteryStateAndApplyPolicy();
         } else if ([key isEqualToString:@"adv_predictive_inhibit_charge"]) {
             resetBatteryStatus();
         } else if ([key isEqualToString:@"adv_disable_inflow"]) {
@@ -1386,6 +2454,7 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
         };
     } else if ([api isEqualToString:@"reset_conf"]) {
         initConf(YES);
+        tryRestoreSmartChargeAfterCoordination(@"reset_conf");
         refreshFullChargeScheduleTimer(0);
         evaluateFullChargeSchedule(YES);
         return @{
@@ -1393,17 +2462,51 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
         };
     } else if ([api isEqualToString:@"get_bat_info"]) {
         getBatInfo(&bat_info);
+        NSMutableDictionary* data = [bat_info mutableCopy];
+        if (data == nil) {
+            data = [NSMutableDictionary dictionary];
+        }
+        int target = getLocalInt(@"charge_above", 100);
+        data[@"PredictiveChargingInhibitActive"] = @([data[@"PredictiveChargingInhibit"] boolValue]);
+        data[@"ChargeCommandEnabled"] = @(g_chargeCommandEnabled);
+        data[@"PolicyState"] = g_policyState ?: @"battery";
+        data[@"HoldActive"] = @([g_policyState hasPrefix:@"hold"]);
+        data[@"HoldCharging"] = @([g_policyState isEqualToString:@"hold_recharge"]);
+        data[@"HoldTarget"] = @(target);
+        data[@"HoldRangeLower"] = @(getHoldModeLowerBound(target));
+        data[@"HoldBand"] = @(getHoldModeBand());
+        data[@"HoldBehavior"] = getHoldModeBehavior() ?: @"balanced";
+        data[@"HoldRuntimeBehavior"] = currentHoldRuntimeBehavior() ?: @"balanced";
+        data[@"HoldAdaptiveLoadLevel"] = g_holdAdaptiveLoadLevel ?: @"fixed";
+        data[@"HoldAdaptiveAverageCurrent"] = @(g_holdAdaptiveAverageCurrentmA);
+        data[@"HoldDischargeStreak"] = @(g_holdDischargeStreak);
+        data[@"HoldMonitorIntervalSeconds"] = @((g_holdMonitorTimerIntervalSeconds > 0) ? g_holdMonitorTimerIntervalSeconds : getHoldStrategyMonitorIntervalSeconds());
+        data[@"HoldEarlyRechargeAssistEnabled"] = @(shouldUseHoldEarlyRechargeAssist());
+        data[@"HoldEarlyRechargeStreakRequired"] = @(getHoldEarlyRechargeDischargeStreakRequired());
+        data[@"SmartChargeStatus"] = @(g_smartChargeStatus);
+        data[@"SmartChargeManagedByDaemon"] = @(g_tempSmartChargeDisabledByCL);
+        data[@"SmartChargeOriginalStatus"] = @(g_smartChargeCoordinationOriginalStatus);
+        data[@"SmartChargeCoordinationSessionID"] = g_smartChargeCoordinationSessionID ?: @"";
+        data[@"SmartChargeCoordinationStartTime"] = @(g_smartChargeCoordinationStartedTs);
+        data[@"PolicyReason"] = g_policyReason ?: @"unknown";
+        data[@"LastPolicyChangeReason"] = g_lastPolicyChangeReason ?: @"unknown";
+        data[@"LastPolicyChangeTime"] = @(g_lastPolicyChangeTs);
+        data[@"LastChargeCommandTime"] = @(g_lastChargeCommandTs);
+        data[@"LastInflowCommandTime"] = @(g_lastInflowCommandTs);
+        data[@"PolicyTransitionHistory"] = recentPolicyTransitionHistory();
+        NSArray* dbPolicyEvents = getPolicyEventDBData((int)kPolicyEventHistoryLimit, 0);
+        data[@"PolicyEventHistory"] = dbPolicyEvents.count > 0 ? dbPolicyEvents : recentPolicyEventHistory();
         if (gUPSPS.props != nil) {
             return @{
                 @"status": @0,
-                @"data": bat_info,
+                @"data": data,
                 @"data_ups": gUPSPS.props,
             };
         }
         return @{
             @"status": @0,
             @"enable": @(g_enable), // for floatwnd
-            @"data": bat_info,
+            @"data": data,
         };
     } else if ([api isEqualToString:@"apply_now"]) {
         refreshBatteryStateAndApplyPolicy();
@@ -1416,6 +2519,7 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
         uninitDB();
         initDB(nil);
         initConf(NO);
+        recoverSmartChargeCoordinationOnBootstrap();
         refreshFullChargeScheduleTimer(0);
         evaluateFullChargeSchedule(YES);
         return @{
@@ -1437,6 +2541,13 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
         return @{
             @"status": @0,
             @"data": data,
+        };
+    } else if ([api isEqualToString:@"get_policy_events"]) {
+        int n = [nsreq[@"n"] respondsToSelector:@selector(intValue)] ? [nsreq[@"n"] intValue] : 200;
+        int lastID = [nsreq[@"last_id"] respondsToSelector:@selector(intValue)] ? [nsreq[@"last_id"] intValue] : 0;
+        return @{
+            @"status": @0,
+            @"data": getPolicyEventDBData(n, lastID),
         };
     } else if ([api isEqualToString:@"set_charge_status"]) {
         NSNumber* flag = nsreq[@"flag"];
@@ -1799,7 +2910,8 @@ void detectUPSBattery() {
         [center addObserver:self selector:@selector(systemTimeContextDidChange:) name:NSCalendarDayChangedNotification object:nil];
         isBlueEnable(); // init
         isLPMEnable();
-        isSmartChargeEnable();
+        g_smartChargeStatus = getSmartChargeStatus();
+        recoverSmartChargeCoordinationOnBootstrap();
         refreshFullChargeScheduleTimer(0);
         evaluateFullChargeSchedule(YES);
     }

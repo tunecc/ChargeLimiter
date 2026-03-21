@@ -24,6 +24,13 @@ typedef NS_ENUM(NSInteger, CLThermalMode) {
     CLThermalModeHeavy
 };
 
+typedef NS_ENUM(NSInteger, CLHoldModeBehavior) {
+    CLHoldModeBehaviorBalanced = 0,
+    CLHoldModeBehaviorPowerFirst,
+    CLHoldModeBehaviorBatteryFirst,
+    CLHoldModeBehaviorAdaptive
+};
+
 // 数据更新通知
 extern NSNotificationName const CLBatteryInfoDidUpdateNotification;
 extern NSNotificationName const CLConfigDidUpdateNotification;
@@ -54,6 +61,32 @@ extern NSNotificationName const CLDaemonStatusDidChangeNotification;
 @property(nonatomic, assign, readonly) BOOL batteryInstalled;      // 电池已安装
 @property(nonatomic, copy, readonly, nullable) NSString *serial;   // 序列号
 @property(nonatomic, assign, readonly) NSTimeInterval updateTime;  // 更新时间
+@property(nonatomic, assign, readonly) BOOL predictiveChargingInhibitActive; // 处于系统停充抑制
+@property(nonatomic, assign, readonly) BOOL chargeCommandEnabled;            // daemon 允许继续充电
+@property(nonatomic, assign, readonly) BOOL holdActive;                      // 插电保持模式生效中
+@property(nonatomic, assign, readonly) BOOL holdCharging;                    // 插电保持模式正在补电
+@property(nonatomic, assign, readonly) NSInteger holdTarget;                 // 插电保持目标
+@property(nonatomic, assign, readonly) NSInteger holdRangeLower;             // 插电保持下边界
+@property(nonatomic, assign, readonly) CLHoldModeBehavior holdRuntimeBehavior; // 插电保持当前生效策略
+@property(nonatomic, copy, readonly, nullable) NSString *holdAdaptiveLoadLevel; // 自适应负载等级
+@property(nonatomic, assign, readonly) NSInteger holdAdaptiveAverageCurrent; // 自适应近几次平均电流 mA
+@property(nonatomic, copy, readonly, nullable) NSString *policyState;        // daemon 当前策略状态
+@property(nonatomic, copy, readonly, nullable) NSString *policyReason;       // 当前策略原因
+@property(nonatomic, copy, readonly, nullable) NSString *lastPolicyChangeReason; // 最近一次策略切换原因
+@property(nonatomic, assign, readonly) NSTimeInterval lastPolicyChangeTime;  // 最近一次策略切换时间
+@property(nonatomic, assign, readonly) NSTimeInterval lastChargeCommandTime; // 最近一次充电命令时间
+@property(nonatomic, assign, readonly) NSTimeInterval lastInflowCommandTime; // 最近一次禁流/恢复时间
+@property(nonatomic, assign, readonly) NSInteger smartChargeStatus;          // 系统优化充电状态
+@property(nonatomic, assign, readonly) BOOL smartChargeManagedByDaemon;      // 由 daemon 临时停用
+@property(nonatomic, assign, readonly) NSInteger smartChargeOriginalStatus;  // 接管前系统优化充电状态
+@property(nonatomic, copy, readonly, nullable) NSString *smartChargeCoordinationSessionID; // 协调会话 ID
+@property(nonatomic, assign, readonly) NSTimeInterval smartChargeCoordinationStartTime; // 本次协调开始时间
+@property(nonatomic, assign, readonly) NSInteger holdDischargeStreak;        // 当前持续放电计数
+@property(nonatomic, assign, readonly) NSInteger holdMonitorIntervalSeconds; // hold 轮询间隔
+@property(nonatomic, assign, readonly) BOOL holdEarlyRechargeAssistEnabled;  // 提前补电辅助
+@property(nonatomic, assign, readonly) NSInteger holdEarlyRechargeStreakRequired; // 提前补电所需计数
+@property(nonatomic, copy, readonly) NSArray<NSDictionary *> *policyTransitionHistory; // 最近若干次策略切换
+@property(nonatomic, copy, readonly) NSArray<NSDictionary *> *policyEventHistory; // 持久化策略事件时间线
 
 #pragma mark - 适配器信息
 @property(nonatomic, copy, readonly, nullable) NSString *adapterName;
@@ -82,7 +115,12 @@ extern NSNotificationName const CLDaemonStatusDidChangeNotification;
 
 #pragma mark - 高级选项
 @property(nonatomic, assign) BOOL predictiveInhibitCharge; // 智能停充
+@property(nonatomic, assign) BOOL disableSmartCharge;      // 永久停用系统优化充电
 @property(nonatomic, assign) BOOL disableInflow;           // 禁流
+@property(nonatomic, assign) BOOL holdModeEnabled;         // 插电保持
+@property(nonatomic, assign) NSInteger holdModeBand;       // 插电保持带宽
+@property(nonatomic, assign) CLHoldModeBehavior holdModeBehavior; // 插电保持策略
+@property(nonatomic, assign) BOOL holdTempDisableSmartCharge; // 插电保持时临时停用系统优化充电
 @property(nonatomic, assign) BOOL limitInflow;             // 限流
 @property(nonatomic, assign) CLThermalMode thermalMode;    // 高温模拟
 @property(nonatomic, assign) CLThermalMode limitInflowThermalMode;
