@@ -84,6 +84,12 @@ static int CLStartDaemonBestEffort(void) {
     // 模拟电池数据，用于 UI 测试
     static NSInteger mockCapacity = 75;
     static BOOL mockCharging = YES;
+    NSInteger now = (NSInteger)[[NSDate date] timeIntervalSince1970];
+    NSDictionary *config = [self mockConfig][@"data"];
+    NSInteger chargeAbove = [config[@"charge_above"] integerValue];
+    NSInteger holdBand = MAX([config[@"adv_hold_band"] integerValue], 1);
+    BOOL holdEnabled = [config[@"adv_hold_enabled"] boolValue];
+    NSString *configuredHoldBehavior = [config[@"adv_hold_behavior"] isKindOfClass:[NSString class]] ? config[@"adv_hold_behavior"] : @"balanced";
     
     // 模拟电量变化
     if (mockCharging) {
@@ -93,7 +99,99 @@ static int CLStartDaemonBestEffort(void) {
         mockCapacity = MAX(mockCapacity - 1, 20);
         if (mockCapacity <= 20) mockCharging = YES;
     }
-    
+
+    NSInteger simulatedAmperage = mockCharging ? (800 + arc4random_uniform(200)) : (-300 - arc4random_uniform(100));
+    NSInteger simulatedInstantAmperage = mockCharging ? (850 + arc4random_uniform(150)) : (-280 - arc4random_uniform(80));
+    BOOL holdActive = holdEnabled && mockCapacity >= (chargeAbove - holdBand) && mockCapacity <= chargeAbove;
+    BOOL holdCharging = holdActive && mockCharging && mockCapacity < chargeAbove;
+    BOOL predictiveInhibit = holdActive && !holdCharging;
+    BOOL smartChargeManaged = holdActive;
+    NSString *policyState = holdCharging ? @"hold_recharge" : (predictiveInhibit ? @"hold" : (mockCharging ? @"charging" : @"battery"));
+    NSString *policyReason = holdCharging ? @"hold_band_lower_reached" : (predictiveInhibit ? @"hold_target_reached" : (mockCharging ? @"charging_active" : @"battery_idle"));
+    NSString *runtimeHoldBehavior = configuredHoldBehavior;
+    NSString *adaptiveLoadLevel = @"fixed";
+    NSInteger adaptiveAverageCurrent = simulatedInstantAmperage;
+    if ([configuredHoldBehavior isEqualToString:@"adaptive"]) {
+        if (simulatedInstantAmperage <= -320) {
+            runtimeHoldBehavior = @"power_first";
+            adaptiveLoadLevel = @"high";
+        } else if (simulatedInstantAmperage <= -160) {
+            runtimeHoldBehavior = @"balanced";
+            adaptiveLoadLevel = @"medium";
+        } else {
+            runtimeHoldBehavior = @"battery_first";
+            adaptiveLoadLevel = @"low";
+        }
+    }
+    NSInteger holdMonitorIntervalSeconds = 15;
+    BOOL holdEarlyRechargeAssistEnabled = YES;
+    NSInteger holdEarlyRechargeStreakRequired = 2;
+    if ([runtimeHoldBehavior isEqualToString:@"power_first"]) {
+        holdMonitorIntervalSeconds = 10;
+        holdEarlyRechargeStreakRequired = 1;
+    } else if ([runtimeHoldBehavior isEqualToString:@"battery_first"]) {
+        holdMonitorIntervalSeconds = 20;
+        holdEarlyRechargeAssistEnabled = NO;
+    }
+    NSArray *policyHistory = @[
+        @{@"from": @"charging", @"to": @"hold", @"reason": @"hold_target_reached", @"ts": @(now - 180)},
+        @{@"from": @"hold", @"to": @"hold_recharge", @"reason": @"hold_band_lower_reached", @"ts": @(now - 60)},
+        @{@"from": holdCharging ? @"hold" : @"charging", @"to": policyState, @"reason": policyReason, @"ts": @(now - 10)}
+    ];
+    NSArray *policyEventHistory = @[
+        @{
+            @"from": @"charging",
+            @"to": @"hold",
+            @"reason": @"hold_target_reached",
+            @"ts": @(now - 180),
+            @"capacity": @(chargeAbove),
+            @"temperature": @(2720),
+            @"current": @(-110),
+            @"is_charging": @NO,
+            @"external_connected": @YES,
+            @"predictive_inhibit_active": @YES,
+            @"charge_command_enabled": @NO,
+            @"smart_charge_status": @(3),
+            @"smart_charge_managed": @YES,
+            @"hold_behavior": runtimeHoldBehavior,
+            @"hold_load_level": adaptiveLoadLevel
+        },
+        @{
+            @"from": @"hold",
+            @"to": @"hold_recharge",
+            @"reason": @"hold_band_lower_reached",
+            @"ts": @(now - 60),
+            @"capacity": @(MAX(chargeAbove - holdBand, 5)),
+            @"temperature": @(2810),
+            @"current": @(-320),
+            @"is_charging": @YES,
+            @"external_connected": @YES,
+            @"predictive_inhibit_active": @NO,
+            @"charge_command_enabled": @YES,
+            @"smart_charge_status": @(3),
+            @"smart_charge_managed": @YES,
+            @"hold_behavior": runtimeHoldBehavior,
+            @"hold_load_level": adaptiveLoadLevel
+        },
+        @{
+            @"from": holdCharging ? @"hold" : @"charging",
+            @"to": policyState,
+            @"reason": policyReason,
+            @"ts": @(now - 10),
+            @"capacity": @(mockCapacity),
+            @"temperature": @(2500 + arc4random_uniform(500)),
+            @"current": @(simulatedInstantAmperage),
+            @"is_charging": @(mockCharging || predictiveInhibit),
+            @"external_connected": @YES,
+            @"predictive_inhibit_active": @(predictiveInhibit),
+            @"charge_command_enabled": @(!predictiveInhibit),
+            @"smart_charge_status": @(smartChargeManaged ? 3 : 1),
+            @"smart_charge_managed": @(smartChargeManaged),
+            @"hold_behavior": runtimeHoldBehavior,
+            @"hold_load_level": adaptiveLoadLevel
+        }
+    ];
+
     return @{
         @"status": @0,
         @"data": @{
@@ -103,16 +201,42 @@ static int CLStartDaemonBestEffort(void) {
             @"DesignCapacity": @3687,
             @"Temperature": @(2500 + arc4random_uniform(500)),  // 25-30℃
             @"CycleCount": @156,
-            @"Amperage": mockCharging ? @(800 + arc4random_uniform(200)) : @(-300 - arc4random_uniform(100)),
-            @"InstantAmperage": mockCharging ? @(850 + arc4random_uniform(150)) : @(-280 - arc4random_uniform(80)),
+            @"Amperage": @(simulatedAmperage),
+            @"InstantAmperage": @(simulatedInstantAmperage),
             @"Voltage": @(3850 + arc4random_uniform(200)),
             @"BootVoltage": @3750,
-            @"IsCharging": @(mockCharging),
+            @"IsCharging": @(mockCharging || predictiveInhibit),
             @"ExternalConnected": @YES,
             @"ExternalChargeCapable": @YES,
             @"BatteryInstalled": @YES,
             @"Serial": @"MOCK12345",
             @"UpdateTime": @((NSInteger)[[NSDate date] timeIntervalSince1970]),
+            @"PredictiveChargingInhibitActive": @(predictiveInhibit),
+            @"ChargeCommandEnabled": @(!predictiveInhibit),
+            @"HoldActive": @(holdActive),
+            @"HoldCharging": @(holdCharging),
+            @"HoldTarget": @(chargeAbove),
+            @"HoldRangeLower": @(MAX(chargeAbove - holdBand, 5)),
+            @"HoldRuntimeBehavior": runtimeHoldBehavior,
+            @"HoldAdaptiveLoadLevel": adaptiveLoadLevel,
+            @"HoldAdaptiveAverageCurrent": @(adaptiveAverageCurrent),
+            @"PolicyState": policyState,
+            @"PolicyReason": policyReason,
+            @"LastPolicyChangeReason": policyReason,
+            @"LastPolicyChangeTime": @(now - 10),
+            @"LastChargeCommandTime": @(now - 20),
+            @"LastInflowCommandTime": @(now - 30),
+            @"PolicyTransitionHistory": policyHistory,
+            @"PolicyEventHistory": policyEventHistory,
+            @"SmartChargeStatus": @(smartChargeManaged ? 3 : 1),
+            @"SmartChargeManagedByDaemon": @(smartChargeManaged),
+            @"SmartChargeOriginalStatus": @(smartChargeManaged ? 1 : -1),
+            @"SmartChargeCoordinationSessionID": smartChargeManaged ? @"mock-smart-charge-session" : @"",
+            @"SmartChargeCoordinationStartTime": @(smartChargeManaged ? (now - 180) : 0),
+            @"HoldDischargeStreak": @(predictiveInhibit ? 2 : 0),
+            @"HoldMonitorIntervalSeconds": @(holdMonitorIntervalSeconds),
+            @"HoldEarlyRechargeAssistEnabled": @(holdEarlyRechargeAssistEnabled),
+            @"HoldEarlyRechargeStreakRequired": @(holdEarlyRechargeStreakRequired),
             @"AdapterDetails": @{
                 @"Name": @"USB-C Power Adapter",
                 @"Description": @"usb host",
@@ -148,7 +272,12 @@ static int CLStartDaemonBestEffort(void) {
             @"acc_charge_lpm": @YES,
             @"use_smart": @YES,
             @"adv_predictive_inhibit_charge": @NO,
+            @"disable_smart_charge": @NO,
             @"adv_disable_inflow": @NO,
+            @"adv_hold_enabled": @NO,
+            @"adv_hold_band": @2,
+            @"adv_hold_behavior": @"balanced",
+            @"adv_hold_temp_disable_smart_charge": @YES,
             @"adv_limit_inflow": @NO,
             @"adv_def_thermal_mode": @"off",
             @"adv_limit_inflow_mode": @"off",
@@ -157,7 +286,7 @@ static int CLStartDaemonBestEffort(void) {
             @"full_charge_sched_interval_days": @7,
             @"full_charge_sched_start_minute": @120,
             @"full_charge_sched_duration_hours": @4,
-            @"ver": @"1.9.6.3",
+            @"ver": @"1.10.1",
             @"sysver": @"iOS 16.1.2",
             @"devmodel": @"iPhone14,2",
             @"sys_boot": @((NSInteger)[[NSDate date] timeIntervalSince1970] - 86400),
@@ -230,6 +359,30 @@ static int CLStartDaemonBestEffort(void) {
             data[key] = [[rows reverseObjectEnumerator] allObjects];
         }
         return @{@"status": @0, @"data": data};
+    } else if ([api isEqualToString:@"get_policy_events"]) {
+        NSDictionary *bat = [self mockBatteryInfo][@"data"];
+        NSArray *events = [bat[@"PolicyEventHistory"] isKindOfClass:[NSArray class]] ? bat[@"PolicyEventHistory"] : @[];
+        NSInteger limit = [params[@"n"] integerValue];
+        NSInteger lastID = [params[@"last_id"] integerValue];
+        if (limit <= 0) {
+            limit = 200;
+        }
+        NSMutableArray *result = [NSMutableArray array];
+        NSInteger nextID = 1;
+        for (NSDictionary *item in events) {
+            NSMutableDictionary *row = [item mutableCopy];
+            row[@"id"] = @(nextID);
+            row[@"type"] = row[@"type"] ?: @"policy_transition";
+            if (nextID > lastID) {
+                [result addObject:row];
+            }
+            nextID += 1;
+        }
+        if (result.count > limit) {
+            NSRange range = NSMakeRange(result.count - limit, limit);
+            result = [[result subarrayWithRange:range] mutableCopy];
+        }
+        return @{@"status": @0, @"data": result};
     }
     return @{@"status": @(-1), @"error": @"Unknown API"};
 }
@@ -407,6 +560,15 @@ static int CLStartDaemonBestEffort(void) {
 
 - (void)getHistoryWithType:(NSString *)type completion:(CLAPICallback)completion {
     [self sendRequest:@{@"api": @"get_history", @"type": type} completion:completion];
+}
+
+- (void)getPolicyEventsWithLimit:(NSInteger)limit lastID:(NSInteger)lastID completion:(CLAPICallback)completion {
+    NSDictionary *params = @{
+        @"api": @"get_policy_events",
+        @"n": @(MAX(limit, 1)),
+        @"last_id": @(MAX(lastID, 0))
+    };
+    [self sendRequest:params completion:completion];
 }
 
 - (void)checkDaemonAliveWithCompletion:(void (^)(BOOL))completion {

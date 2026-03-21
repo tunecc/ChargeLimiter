@@ -686,13 +686,12 @@
 				);
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
-					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.9.6.3;
-				MonkeyDevBuildPackageOnAnyBuild = YES;
+				MARKETING_VERSION = 1.10.1;
+				MonkeyDevBuildPackageOnAnyBuild = NO;
 				MonkeyDevDeviceIP = 127.0.0.1;
-				MonkeyDevInstallOnAnyBuild = YES;
+				MonkeyDevInstallOnAnyBuild = NO;
 				MonkeyDevPath = /opt/MonkeyDev;
 				MonkeyDevTheosPath = /opt/theos_rootless;
 				OTHER_CFLAGS = "-DTHEOS_PACKAGE_INSTALL_PREFIX=\"/var/jb\"";
@@ -734,13 +733,12 @@
 				);
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
-					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.9.6.3;
-				MonkeyDevBuildPackageOnAnyBuild = YES;
+				MARKETING_VERSION = 1.10.1;
+				MonkeyDevBuildPackageOnAnyBuild = NO;
 				MonkeyDevDeviceIP = 127.0.0.1;
-				MonkeyDevInstallOnAnyBuild = YES;
+				MonkeyDevInstallOnAnyBuild = NO;
 				MonkeyDevPath = /opt/MonkeyDev;
 				MonkeyDevTheosPath = /opt/theos_rootless;
 				OTHER_CFLAGS = "-DTHEOS_PACKAGE_INSTALL_PREFIX=\"/var/jb\"";
@@ -915,13 +913,12 @@
 				);
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
-					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.9.6.3;
-				MonkeyDevBuildPackageOnAnyBuild = YES;
+				MARKETING_VERSION = 1.10.1;
+				MonkeyDevBuildPackageOnAnyBuild = NO;
 				MonkeyDevDeviceIP = 127.0.0.1;
-				MonkeyDevInstallOnAnyBuild = YES;
+				MonkeyDevInstallOnAnyBuild = NO;
 				MonkeyDevPath = /opt/MonkeyDev;
 				MonkeyDevTheosPath = /opt/theos;
 				PRODUCT_BUNDLE_IDENTIFIER = com.chargelimiter.mod;
@@ -957,13 +954,12 @@
 				);
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
-					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.9.6.3;
-				MonkeyDevBuildPackageOnAnyBuild = YES;
+				MARKETING_VERSION = 1.10.1;
+				MonkeyDevBuildPackageOnAnyBuild = NO;
 				MonkeyDevDeviceIP = 127.0.0.1;
-				MonkeyDevInstallOnAnyBuild = YES;
+				MonkeyDevInstallOnAnyBuild = NO;
 				MonkeyDevPath = /opt/MonkeyDev;
 				MonkeyDevTheosPath = /opt/theos;
 				PRODUCT_BUNDLE_IDENTIFIER = com.chargelimiter.mod;
@@ -1002,13 +998,12 @@
 				);
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
-					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.9.6.3;
-				MonkeyDevBuildPackageOnAnyBuild = YES;
+				MARKETING_VERSION = 1.10.1;
+				MonkeyDevBuildPackageOnAnyBuild = NO;
 				MonkeyDevDeviceIP = 192.168.1.12;
-				MonkeyDevInstallOnAnyBuild = YES;
+				MonkeyDevInstallOnAnyBuild = NO;
 				MonkeyDevPath = /opt/MonkeyDev;
 				MonkeyDevTheosPath = /opt/theos;
 				PRODUCT_BUNDLE_IDENTIFIER = "chaoge.${TARGET_NAME}";
@@ -1048,13 +1043,12 @@
 				);
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
-					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.9.6.3;
-				MonkeyDevBuildPackageOnAnyBuild = YES;
+				MARKETING_VERSION = 1.10.1;
+				MonkeyDevBuildPackageOnAnyBuild = NO;
 				MonkeyDevDeviceIP = 192.168.1.12;
-				MonkeyDevInstallOnAnyBuild = YES;
+				MonkeyDevInstallOnAnyBuild = NO;
 				MonkeyDevPath = /opt/MonkeyDev;
 				MonkeyDevTheosPath = /opt/theos;
 				PRODUCT_BUNDLE_IDENTIFIER = "chaoge.${TARGET_NAME}";
@@ -1094,13 +1088,12 @@
 				);
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
-					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.9.6.3;
-				MonkeyDevBuildPackageOnAnyBuild = YES;
+				MARKETING_VERSION = 1.10.1;
+				MonkeyDevBuildPackageOnAnyBuild = NO;
 				MonkeyDevDeviceIP = 127.0.0.1;
-				MonkeyDevInstallOnAnyBuild = YES;
+				MonkeyDevInstallOnAnyBuild = NO;
 				MonkeyDevPath = /opt/MonkeyDev;
 				MonkeyDevTheosPath = /opt/theos_rootless;
 				OTHER_CFLAGS = "-DTHEOS_PACKAGE_INSTALL_PREFIX=\"/var/jb\"";
@@ -1145,13 +1138,12 @@
 				);
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
-					/opt/lib,
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.9.6.3;
-				MonkeyDevBuildPackageOnAnyBuild = YES;
+				MARKETING_VERSION = 1.10.1;
+				MonkeyDevBuildPackageOnAnyBuild = NO;
 				MonkeyDevDeviceIP = 127.0.0.1;
-				MonkeyDevInstallOnAnyBuild = YES;
+				MonkeyDevInstallOnAnyBuild = NO;
 				MonkeyDevPath = /opt/MonkeyDev;
 				MonkeyDevTheosPath = /opt/theos_rootless;
 				OTHER_CFLAGS = "-DTHEOS_PACKAGE_INSTALL_PREFIX=\"/var/jb\"";

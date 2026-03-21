@@ -33,6 +33,32 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
 @property (nonatomic, assign) BOOL batteryInstalled;
 @property (nonatomic, copy, nullable) NSString *serial;
 @property (nonatomic, assign) NSTimeInterval updateTime;
+@property (nonatomic, assign) BOOL predictiveChargingInhibitActive;
+@property (nonatomic, assign) BOOL chargeCommandEnabled;
+@property (nonatomic, assign) BOOL holdActive;
+@property (nonatomic, assign) BOOL holdCharging;
+@property (nonatomic, assign) NSInteger holdTarget;
+@property (nonatomic, assign) NSInteger holdRangeLower;
+@property (nonatomic, assign) CLHoldModeBehavior holdRuntimeBehavior;
+@property (nonatomic, copy, nullable) NSString *holdAdaptiveLoadLevel;
+@property (nonatomic, assign) NSInteger holdAdaptiveAverageCurrent;
+@property (nonatomic, copy, nullable) NSString *policyState;
+@property (nonatomic, copy, nullable) NSString *policyReason;
+@property (nonatomic, copy, nullable) NSString *lastPolicyChangeReason;
+@property (nonatomic, assign) NSTimeInterval lastPolicyChangeTime;
+@property (nonatomic, assign) NSTimeInterval lastChargeCommandTime;
+@property (nonatomic, assign) NSTimeInterval lastInflowCommandTime;
+@property (nonatomic, assign) NSInteger smartChargeStatus;
+@property (nonatomic, assign) BOOL smartChargeManagedByDaemon;
+@property (nonatomic, assign) NSInteger smartChargeOriginalStatus;
+@property (nonatomic, copy, nullable) NSString *smartChargeCoordinationSessionID;
+@property (nonatomic, assign) NSTimeInterval smartChargeCoordinationStartTime;
+@property (nonatomic, assign) NSInteger holdDischargeStreak;
+@property (nonatomic, assign) NSInteger holdMonitorIntervalSeconds;
+@property (nonatomic, assign) BOOL holdEarlyRechargeAssistEnabled;
+@property (nonatomic, assign) NSInteger holdEarlyRechargeStreakRequired;
+@property (nonatomic, copy) NSArray<NSDictionary *> *policyTransitionHistory;
+@property (nonatomic, copy) NSArray<NSDictionary *> *policyEventHistory;
 
 // 适配器信息
 @property (nonatomic, copy, nullable) NSString *adapterName;
@@ -52,6 +78,19 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
 @end
 
 @implementation CLBatteryManager
+
+- (CLHoldModeBehavior)holdModeBehaviorFromString:(NSString *)value {
+    if ([value isEqualToString:@"power_first"]) {
+        return CLHoldModeBehaviorPowerFirst;
+    }
+    if ([value isEqualToString:@"battery_first"]) {
+        return CLHoldModeBehaviorBatteryFirst;
+    }
+    if ([value isEqualToString:@"adaptive"]) {
+        return CLHoldModeBehaviorAdaptive;
+    }
+    return CLHoldModeBehaviorBalanced;
+}
 
 - (void)applyConfigData:(NSDictionary *)data {
     if (![data isKindOfClass:[NSDictionary class]]) return;
@@ -80,7 +119,12 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
     _accChargeLPM = [data[@"acc_charge_lpm"] boolValue];
 
     _predictiveInhibitCharge = [data[@"adv_predictive_inhibit_charge"] boolValue];
+    _disableSmartCharge = [data[@"disable_smart_charge"] boolValue];
     _disableInflow = [data[@"adv_disable_inflow"] boolValue];
+    _holdModeEnabled = [data[@"adv_hold_enabled"] boolValue];
+    _holdModeBand = MAX([data[@"adv_hold_band"] integerValue], 1);
+    _holdModeBehavior = [self holdModeBehaviorFromString:data[@"adv_hold_behavior"]];
+    _holdTempDisableSmartCharge = [data[@"adv_hold_temp_disable_smart_charge"] boolValue];
     _limitInflow = [data[@"adv_limit_inflow"] boolValue];
     _thermalModeLock = [data[@"adv_thermal_mode_lock"] boolValue];
 
@@ -113,6 +157,11 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
     if (!m[@"enable_temp"]) m[@"enable_temp"] = @NO;
     if (!m[@"charge_temp_below"]) m[@"charge_temp_below"] = @35;
     if (!m[@"charge_temp_above"]) m[@"charge_temp_above"] = @40;
+    if (!m[@"disable_smart_charge"]) m[@"disable_smart_charge"] = @NO;
+    if (!m[@"adv_hold_enabled"]) m[@"adv_hold_enabled"] = @NO;
+    if (!m[@"adv_hold_band"]) m[@"adv_hold_band"] = @2;
+    if (!m[@"adv_hold_behavior"]) m[@"adv_hold_behavior"] = @"balanced";
+    if (!m[@"adv_hold_temp_disable_smart_charge"]) m[@"adv_hold_temp_disable_smart_charge"] = @YES;
     if (!m[@"full_charge_sched_enabled"]) m[@"full_charge_sched_enabled"] = @NO;
     if (!m[@"full_charge_sched_interval_days"]) m[@"full_charge_sched_interval_days"] = @7;
     if (!m[@"full_charge_sched_start_minute"]) m[@"full_charge_sched_start_minute"] = @120;
@@ -138,9 +187,15 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
         _chargeTempBelow = 35;  // 降温恢复温度
         _chargeTempAbove = 40;  // 高温停充温度
         _chargeMode = CLChargeModePlugAndCharge;
+        _holdModeBand = 2;
+        _holdModeBehavior = CLHoldModeBehaviorBalanced;
+        _holdRuntimeBehavior = CLHoldModeBehaviorBalanced;
+        _holdAdaptiveLoadLevel = @"fixed";
         _fullChargeScheduleIntervalDays = 7;
         _fullChargeScheduleStartMinute = 120;
         _fullChargeScheduleDurationHours = 4;
+        _policyTransitionHistory = @[];
+        _policyEventHistory = @[];
     }
     return self;
 }
@@ -176,6 +231,39 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
         self.batteryInstalled = [data[@"BatteryInstalled"] boolValue];
         self.serial = data[@"Serial"];
         self.updateTime = [data[@"UpdateTime"] doubleValue];
+        self.predictiveChargingInhibitActive = [data[@"PredictiveChargingInhibitActive"] boolValue];
+        self.chargeCommandEnabled = [data[@"ChargeCommandEnabled"] boolValue];
+        self.holdActive = [data[@"HoldActive"] boolValue];
+        self.holdCharging = [data[@"HoldCharging"] boolValue];
+        self.holdTarget = [data[@"HoldTarget"] integerValue];
+        self.holdRangeLower = [data[@"HoldRangeLower"] integerValue];
+        NSString *runtimeBehaviorValue = [data[@"HoldRuntimeBehavior"] isKindOfClass:[NSString class]] ? data[@"HoldRuntimeBehavior"] : nil;
+        if (runtimeBehaviorValue.length == 0) {
+            NSString *configuredBehaviorValue = [data[@"HoldBehavior"] isKindOfClass:[NSString class]] ? data[@"HoldBehavior"] : nil;
+            runtimeBehaviorValue = [configuredBehaviorValue isEqualToString:@"adaptive"] ? @"balanced" : configuredBehaviorValue;
+        }
+        self.holdRuntimeBehavior = [self holdModeBehaviorFromString:runtimeBehaviorValue];
+        self.holdAdaptiveLoadLevel = [data[@"HoldAdaptiveLoadLevel"] isKindOfClass:[NSString class]] ? data[@"HoldAdaptiveLoadLevel"] : @"fixed";
+        self.holdAdaptiveAverageCurrent = [data[@"HoldAdaptiveAverageCurrent"] integerValue];
+        self.policyState = data[@"PolicyState"];
+        self.policyReason = data[@"PolicyReason"];
+        self.lastPolicyChangeReason = data[@"LastPolicyChangeReason"];
+        self.lastPolicyChangeTime = [data[@"LastPolicyChangeTime"] doubleValue];
+        self.lastChargeCommandTime = [data[@"LastChargeCommandTime"] doubleValue];
+        self.lastInflowCommandTime = [data[@"LastInflowCommandTime"] doubleValue];
+        self.smartChargeStatus = [data[@"SmartChargeStatus"] integerValue];
+        self.smartChargeManagedByDaemon = [data[@"SmartChargeManagedByDaemon"] boolValue];
+        self.smartChargeOriginalStatus = [data[@"SmartChargeOriginalStatus"] integerValue];
+        self.smartChargeCoordinationSessionID = [data[@"SmartChargeCoordinationSessionID"] isKindOfClass:[NSString class]] ? data[@"SmartChargeCoordinationSessionID"] : nil;
+        self.smartChargeCoordinationStartTime = [data[@"SmartChargeCoordinationStartTime"] doubleValue];
+        self.holdDischargeStreak = [data[@"HoldDischargeStreak"] integerValue];
+        self.holdMonitorIntervalSeconds = [data[@"HoldMonitorIntervalSeconds"] integerValue];
+        self.holdEarlyRechargeAssistEnabled = [data[@"HoldEarlyRechargeAssistEnabled"] boolValue];
+        self.holdEarlyRechargeStreakRequired = [data[@"HoldEarlyRechargeStreakRequired"] integerValue];
+        NSArray *history = data[@"PolicyTransitionHistory"];
+        self.policyTransitionHistory = [history isKindOfClass:[NSArray class]] ? history : @[];
+        NSArray *eventHistory = data[@"PolicyEventHistory"];
+        self.policyEventHistory = [eventHistory isKindOfClass:[NSArray class]] ? eventHistory : @[];
         
         // 计算健康度
         if (self.designCapacity > 0) {
@@ -192,6 +280,14 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
             self.adapterCurrent = [adapter[@"Current"] integerValue];
             self.adapterWatts = [adapter[@"Watts"] integerValue];
             self.isWirelessCharging = [adapter[@"IsWireless"] boolValue];
+        } else {
+            self.adapterName = nil;
+            self.adapterDescription = nil;
+            self.adapterManufacturer = nil;
+            self.adapterVoltage = 0;
+            self.adapterCurrent = 0;
+            self.adapterWatts = 0;
+            self.isWirelessCharging = NO;
         }
         
         [[NSNotificationCenter defaultCenter] postNotificationName:CLBatteryInfoDidUpdateNotification object:self];

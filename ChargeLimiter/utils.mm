@@ -1752,16 +1752,31 @@ static PowerUISmartChargeClient* getSmartChargeClient() {
     return client;
 }
 
-BOOL isSmartChargeEnable() {
+int getSmartChargeStatus() {
     PowerUISmartChargeClient* client = getSmartChargeClient();
     NSError* err = nil;
     int status = [client isSmartChargingCurrentlyEnabled:&err];
     NSLog(@"status=%d %@", status, client);
     if (err != nil) {
         NSLog(@"err=%@", err);
+        return -1;
+    }
+    return status; // 0:disable 1:enable 2:fullcharge 3:temporarily_disable
+}
+
+BOOL isSmartChargeEnable() {
+    return getSmartChargeStatus() > 0;
+}
+
+BOOL temporarilyDisableSmartCharge() {
+    PowerUISmartChargeClient* client = getSmartChargeClient();
+    NSError* err = nil;
+    BOOL ok = [client temporarilyDisableSmartCharging:&err];
+    if (err != nil) {
+        NSLog(@"tempDisable err=%@", err);
         return NO;
     }
-    return status != 0; // 0:disable 1:enable 2:fullcharge 3:temporarily_disable
+    return ok;
 }
 
 void setSmartChargeEnable(BOOL flag) {

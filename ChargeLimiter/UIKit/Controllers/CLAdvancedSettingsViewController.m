@@ -105,6 +105,7 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
     titleLabel.text = title;
     titleLabel.font = [UIFont systemFontOfSize:16];
     titleLabel.textColor = [UIColor labelColor];
+    titleLabel.numberOfLines = 0;
     [row addSubview:titleLabel];
 
     
@@ -117,9 +118,11 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
     [switchView addTarget:self action:@selector(updateSwitchIconTint:) forControlEvents:UIControlEventValueChanged];
     objc_setAssociatedObject(switchView, "iconView", iconView, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(switchView, "iconColor", iconColor, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [switchView setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    [switchView setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
     [row addSubview:switchView];
     
-    CGFloat rowHeight = 50;
+    CGFloat minimumRowHeight = 50;
     
     if (subtitle) {
         UILabel *subtitleLabel = [[UILabel alloc] init];
@@ -127,24 +130,29 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
         subtitleLabel.text = subtitle;
         subtitleLabel.font = [UIFont systemFontOfSize:12];
         subtitleLabel.textColor = [UIColor secondaryLabelColor];
-        subtitleLabel.numberOfLines = 2;
+        subtitleLabel.numberOfLines = 0;
         [row addSubview:subtitleLabel];
-        rowHeight = 70;
+        minimumRowHeight = 70;
         
         [NSLayoutConstraint activateConstraints:@[
             [titleLabel.topAnchor constraintEqualToAnchor:row.topAnchor constant:12],
             [subtitleLabel.topAnchor constraintEqualToAnchor:titleLabel.bottomAnchor constant:2],
             [subtitleLabel.leadingAnchor constraintEqualToAnchor:iconView.trailingAnchor constant:14],
-            [subtitleLabel.trailingAnchor constraintEqualToAnchor:switchView.leadingAnchor constant:-8]
+            [titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:switchView.leadingAnchor constant:-12],
+            [subtitleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:switchView.leadingAnchor constant:-12],
+            [subtitleLabel.bottomAnchor constraintEqualToAnchor:row.bottomAnchor constant:-12]
         ]];
     } else {
         [NSLayoutConstraint activateConstraints:@[
-            [titleLabel.centerYAnchor constraintEqualToAnchor:row.centerYAnchor]
+            [titleLabel.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+            [titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:switchView.leadingAnchor constant:-12],
+            [titleLabel.topAnchor constraintGreaterThanOrEqualToAnchor:row.topAnchor constant:10],
+            [titleLabel.bottomAnchor constraintLessThanOrEqualToAnchor:row.bottomAnchor constant:-10]
         ]];
     }
     
     [NSLayoutConstraint activateConstraints:@[
-        [row.heightAnchor constraintEqualToConstant:rowHeight],
+        [row.heightAnchor constraintGreaterThanOrEqualToConstant:minimumRowHeight],
         [iconView.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:16],
         [iconView.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
         [iconView.widthAnchor constraintEqualToConstant:26],
@@ -174,6 +182,7 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
     titleLabel.text = title;
     titleLabel.font = [UIFont systemFontOfSize:16];
     titleLabel.textColor = [UIColor labelColor];
+    titleLabel.numberOfLines = 0;
     [row addSubview:titleLabel];
     
     UILabel *valueLabel = [[UILabel alloc] init];
@@ -181,6 +190,10 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
     valueLabel.text = value;
     valueLabel.font = [UIFont systemFontOfSize:16];
     valueLabel.textColor = [UIColor secondaryLabelColor];
+    valueLabel.numberOfLines = 0;
+    valueLabel.textAlignment = NSTextAlignmentRight;
+    [valueLabel setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    [valueLabel setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
     valueLabel.tag = tag + 10000;
     [row addSubview:valueLabel];
     
@@ -188,25 +201,90 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
     chevron.translatesAutoresizingMaskIntoConstraints = NO;
     chevron.image = CLSymbolImage(@"chevron.right", nil);
     chevron.tintColor = [UIColor tertiaryLabelColor];
+    [chevron setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    [chevron setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
     [row addSubview:chevron];
     
     UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:target action:action];
     [row addGestureRecognizer:tap];
     
     [NSLayoutConstraint activateConstraints:@[
-        [row.heightAnchor constraintEqualToConstant:50],
+        [row.heightAnchor constraintGreaterThanOrEqualToConstant:50],
         [iconView.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:16],
         [iconView.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
         [iconView.widthAnchor constraintEqualToConstant:26],
         [titleLabel.leadingAnchor constraintEqualToAnchor:iconView.trailingAnchor constant:14],
         [titleLabel.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+        [titleLabel.topAnchor constraintGreaterThanOrEqualToAnchor:row.topAnchor constant:10],
+        [titleLabel.bottomAnchor constraintLessThanOrEqualToAnchor:row.bottomAnchor constant:-10],
         [chevron.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-16],
         [chevron.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+        [valueLabel.leadingAnchor constraintGreaterThanOrEqualToAnchor:titleLabel.trailingAnchor constant:8],
         [valueLabel.trailingAnchor constraintEqualToAnchor:chevron.leadingAnchor constant:-8],
-        [valueLabel.centerYAnchor constraintEqualToAnchor:row.centerYAnchor]
+        [valueLabel.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+        [valueLabel.topAnchor constraintGreaterThanOrEqualToAnchor:row.topAnchor constant:10],
+        [valueLabel.bottomAnchor constraintLessThanOrEqualToAnchor:row.bottomAnchor constant:-10]
     ]];
     
     [self.contentStack addArrangedSubview:row];
+}
+
+- (UILabel *)addValueRowWithIcon:(NSString *)iconName title:(NSString *)title value:(NSString *)value color:(UIColor *)color {
+    UIView *row = [[UIView alloc] init];
+    row.translatesAutoresizingMaskIntoConstraints = NO;
+
+    UIImageView *iconView = [[UIImageView alloc] init];
+    iconView.translatesAutoresizingMaskIntoConstraints = NO;
+    iconView.contentMode = UIViewContentModeScaleAspectFit;
+    iconView.tintColor = color ?: [UIColor systemBlueColor];
+    UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:16 weight:UIImageSymbolWeightMedium];
+    iconView.image = CLSymbolImage(iconName, config);
+    [row addSubview:iconView];
+
+    UIStackView *textStack = [[UIStackView alloc] init];
+    textStack.translatesAutoresizingMaskIntoConstraints = NO;
+    textStack.axis = UILayoutConstraintAxisVertical;
+    textStack.alignment = UIStackViewAlignmentFill;
+    textStack.spacing = 4;
+    [row addSubview:textStack];
+
+    UILabel *titleLabel = [[UILabel alloc] init];
+    titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    titleLabel.text = title;
+    titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+    titleLabel.textColor = [UIColor secondaryLabelColor];
+    titleLabel.numberOfLines = 0;
+    [textStack addArrangedSubview:titleLabel];
+
+    UILabel *valueLabel = [[UILabel alloc] init];
+    valueLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    valueLabel.text = value;
+    valueLabel.font = [UIFont systemFontOfSize:15];
+    valueLabel.textColor = [UIColor secondaryLabelColor];
+    valueLabel.textAlignment = NSTextAlignmentLeft;
+    valueLabel.numberOfLines = 0;
+    valueLabel.lineBreakMode = NSLineBreakByWordWrapping;
+    [textStack addArrangedSubview:valueLabel];
+
+    [titleLabel setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisVertical];
+    [valueLabel setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisVertical];
+    [valueLabel setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisVertical];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [row.heightAnchor constraintGreaterThanOrEqualToConstant:58],
+        [iconView.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:16],
+        [iconView.topAnchor constraintEqualToAnchor:row.topAnchor constant:14],
+        [iconView.widthAnchor constraintEqualToConstant:26],
+        [iconView.heightAnchor constraintEqualToConstant:20],
+        [iconView.bottomAnchor constraintLessThanOrEqualToAnchor:row.bottomAnchor constant:-12],
+        [textStack.leadingAnchor constraintEqualToAnchor:iconView.trailingAnchor constant:14],
+        [textStack.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-16],
+        [textStack.topAnchor constraintEqualToAnchor:row.topAnchor constant:10],
+        [textStack.bottomAnchor constraintEqualToAnchor:row.bottomAnchor constant:-10]
+    ]];
+
+    [self.contentStack addArrangedSubview:row];
+    return valueLabel;
 }
 
 - (void)updateSwitchIconTint:(UISwitch *)sender {
@@ -241,6 +319,926 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
 
 @end
 
+static NSString *CLDebugValueWithRaw(NSString *label, NSString *raw) {
+    NSString *safeLabel = label.length > 0 ? label : CLL(@"未知");
+    if (raw.length == 0 || [safeLabel isEqualToString:raw]) {
+        return safeLabel;
+    }
+    return [NSString stringWithFormat:@"%@ (%@)", safeLabel, raw];
+}
+
+static NSString *CLPolicyStateLabel(NSString *policyState) {
+    if ([policyState isEqualToString:@"hold_recharge"]) {
+        return CLL(@"插电保持中 · 补电");
+    }
+    if ([policyState isEqualToString:@"hold"]) {
+        return CLL(@"插电保持中");
+    }
+    if ([policyState isEqualToString:@"stopped"]) {
+        return CLL(@"已连接电源 · 停止充电");
+    }
+    if ([policyState isEqualToString:@"temp_paused"]) {
+        return CLL(@"温控暂停充电");
+    }
+    if ([policyState isEqualToString:@"no_inflow"]) {
+        return CLL(@"停充时已禁流");
+    }
+    if ([policyState isEqualToString:@"charging"]) {
+        return CLL(@"正在充电");
+    }
+    if ([policyState isEqualToString:@"external_idle"]) {
+        return CLL(@"已连接电源 · 未充电");
+    }
+    if ([policyState isEqualToString:@"battery"]) {
+        return CLL(@"使用电池");
+    }
+    return CLL(@"未知");
+}
+
+static NSString *CLPolicyReasonLabel(NSString *reason) {
+    if ([reason isEqualToString:@"daemon_boot"]) {
+        return CLL(@"守护启动后的初始状态");
+    }
+    if ([reason isEqualToString:@"battery_idle"]) {
+        return CLL(@"当前未连接外部电源");
+    }
+    if ([reason isEqualToString:@"external_idle"]) {
+        return CLL(@"已连接电源，等待系统电流变化");
+    }
+    if ([reason isEqualToString:@"charging_active"]) {
+        return CLL(@"系统当前正在充电");
+    }
+    if ([reason isEqualToString:@"critical_low_battery"]) {
+        return CLL(@"低电量保护，强制恢复充电");
+    }
+    if ([reason isEqualToString:@"temperature_high"]) {
+        return CLL(@"温度达到上限，暂停充电");
+    }
+    if ([reason isEqualToString:@"full_charge_window"]) {
+        return CLL(@"满充计划窗口内，暂时解除上限");
+    }
+    if ([reason isEqualToString:@"hold_target_reached"]) {
+        return CLL(@"达到保持目标，停止充电");
+    }
+    if ([reason isEqualToString:@"hold_band_lower_reached"]) {
+        return CLL(@"低于保持下边界，开始补电");
+    }
+    if ([reason isEqualToString:@"hold_discharge_trend"]) {
+        return CLL(@"检测到持续放电趋势，提前补电");
+    }
+    if ([reason isEqualToString:@"hold_monitoring"]) {
+        return CLL(@"保持区间内观察中");
+    }
+    if ([reason isEqualToString:@"hold_recharge_active"]) {
+        return CLL(@"保持补电进行中");
+    }
+    if ([reason isEqualToString:@"capacity_high"]) {
+        return CLL(@"达到电量上限，停止充电");
+    }
+    if ([reason isEqualToString:@"temperature_recovered"]) {
+        return CLL(@"温度恢复到安全范围，恢复充电");
+    }
+    if ([reason isEqualToString:@"capacity_low"]) {
+        return CLL(@"低于电量下限，恢复充电");
+    }
+    if ([reason isEqualToString:@"plug_mode_start"]) {
+        return CLL(@"插电即充模式下检测到接入电源");
+    }
+    if ([reason isEqualToString:@"edge_mode_stop"]) {
+        return CLL(@"边缘触发模式下插电后保持停充");
+    }
+    if ([reason isEqualToString:@"adaptor_disconnected"]) {
+        return CLL(@"检测到拔掉电源");
+    }
+    if ([reason isEqualToString:@"stopped_command_or_inhibit"]) {
+        return CLL(@"由于停充命令或系统抑制，保持停止");
+    }
+    if ([reason isEqualToString:@"no_inflow_active"]) {
+        return CLL(@"禁流已生效");
+    }
+    if ([reason isEqualToString:@"smart_charge_temporarily_disabled"]) {
+        return CLL(@"当前策略进入接管范围，已临时停用系统优化充电");
+    }
+    if ([reason isEqualToString:@"smart_charge_restored"]) {
+        return CLL(@"当前策略退出接管范围，已尝试恢复系统优化充电");
+    }
+    if ([reason isEqualToString:@"smart_charge_permanently_disabled"]) {
+        return CLL(@"根据当前配置，已关闭系统优化充电");
+    }
+    if ([reason isEqualToString:@"smart_charge_session_released"]) {
+        return CLL(@"系统优化充电状态已变化，本工具结束当前接管会话");
+    }
+    if ([reason isEqualToString:@"hold_behavior_changed"]) {
+        return CLL(@"自适应判断负载变化，已切换当前生效保持策略");
+    }
+    return CLL(@"未知");
+}
+
+static NSString *CLHoldBehaviorLabel(CLHoldModeBehavior behavior) {
+    switch (behavior) {
+        case CLHoldModeBehaviorAdaptive:
+            return CLL(@"智能自适应");
+        case CLHoldModeBehaviorPowerFirst:
+            return CLL(@"偏向外接供电");
+        case CLHoldModeBehaviorBatteryFirst:
+            return CLL(@"偏向减少循环");
+        default:
+            return CLL(@"平衡");
+    }
+}
+
+static CLHoldModeBehavior CLHoldBehaviorFromString(NSString *value) {
+    if ([value isEqualToString:@"power_first"]) {
+        return CLHoldModeBehaviorPowerFirst;
+    }
+    if ([value isEqualToString:@"battery_first"]) {
+        return CLHoldModeBehaviorBatteryFirst;
+    }
+    if ([value isEqualToString:@"adaptive"]) {
+        return CLHoldModeBehaviorAdaptive;
+    }
+    return CLHoldModeBehaviorBalanced;
+}
+
+static NSString *CLAdaptiveLoadLevelLabel(NSString *loadLevel) {
+    if ([loadLevel isEqualToString:@"high"]) {
+        return CLL(@"高负载");
+    }
+    if ([loadLevel isEqualToString:@"medium"]) {
+        return CLL(@"中负载");
+    }
+    if ([loadLevel isEqualToString:@"low"]) {
+        return CLL(@"低负载");
+    }
+    if ([loadLevel isEqualToString:@"thermal_guard"]) {
+        return CLL(@"温控保护");
+    }
+    if ([loadLevel isEqualToString:@"wireless_guard"]) {
+        return CLL(@"无线充保护");
+    }
+    if ([loadLevel isEqualToString:@"fixed"]) {
+        return CLL(@"固定策略");
+    }
+    return CLL(@"未知");
+}
+
+static NSString *CLSmartChargeStatusLabel(NSInteger status, BOOL managedByDaemon) {
+    switch (status) {
+        case 0:
+            return CLL(@"已关闭");
+        case 1:
+            return CLL(@"已启用");
+        case 2:
+            return CLL(@"满充窗口");
+        case 3:
+            return managedByDaemon ? CLL(@"已临时停用 · 由本工具控制") : CLL(@"已临时停用");
+        default:
+            return CLL(@"未知");
+    }
+}
+
+static NSString *CLTimestampLabel(NSTimeInterval timestamp) {
+    if (timestamp <= 0) {
+        return CLL(@"未记录");
+    }
+    static NSDateFormatter *formatter = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        formatter = [[NSDateFormatter alloc] init];
+        formatter.dateFormat = @"yyyy-MM-dd HH:mm:ss";
+    });
+    formatter.locale = NSLocale.autoupdatingCurrentLocale;
+    formatter.timeZone = NSTimeZone.localTimeZone;
+    return [formatter stringFromDate:[NSDate dateWithTimeIntervalSince1970:timestamp]];
+}
+
+static NSString *CLCompactTimestampLabel(NSTimeInterval timestamp) {
+    if (timestamp <= 0) {
+        return @"--";
+    }
+    static NSDateFormatter *formatter = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        formatter = [[NSDateFormatter alloc] init];
+        formatter.dateFormat = @"MM-dd HH:mm:ss";
+    });
+    formatter.locale = NSLocale.autoupdatingCurrentLocale;
+    formatter.timeZone = NSTimeZone.localTimeZone;
+    return [formatter stringFromDate:[NSDate dateWithTimeIntervalSince1970:timestamp]];
+}
+
+static NSString *CLYesNoLabel(BOOL value) {
+    return value ? CLL(@"是") : CLL(@"否");
+}
+
+#pragma mark - 策略诊断控制器
+
+@interface CLPolicyDiagnosticsViewController : UIViewController
+@property (nonatomic, strong) UIScrollView *scrollView;
+@property (nonatomic, strong) UIStackView *mainStack;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, UILabel *> *valueLabels;
+@end
+
+@implementation CLPolicyDiagnosticsViewController
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+
+    CLApplyLanguageFromSettings();
+    self.title = CLL(@"策略诊断");
+    self.view.backgroundColor = [UIColor systemGroupedBackgroundColor];
+    self.valueLabels = [NSMutableDictionary dictionary];
+
+    if (@available(iOS 13.0, *)) {
+        self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
+    }
+
+    [self setupScrollView];
+    [self setupContent];
+
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(languageDidChange)
+                                                 name:CLAppLanguageDidChangeNotification
+                                               object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(batteryInfoDidUpdate)
+                                                 name:CLBatteryInfoDidUpdateNotification
+                                               object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(configDidUpdate)
+                                                 name:CLConfigDidUpdateNotification
+                                               object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(daemonStatusDidChange)
+                                                 name:CLDaemonStatusDidChangeNotification
+                                               object:nil];
+
+    [[CLBatteryManager shared] refreshAll];
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [self updateDiagnosticValues];
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (void)setupScrollView {
+    self.scrollView = [[UIScrollView alloc] init];
+    self.scrollView.translatesAutoresizingMaskIntoConstraints = NO;
+    self.scrollView.showsVerticalScrollIndicator = NO;
+    self.scrollView.alwaysBounceHorizontal = NO;
+    [self.view addSubview:self.scrollView];
+
+    self.mainStack = [[UIStackView alloc] init];
+    self.mainStack.axis = UILayoutConstraintAxisVertical;
+    self.mainStack.spacing = 20;
+    self.mainStack.translatesAutoresizingMaskIntoConstraints = NO;
+
+    UIView *containerView = [[UIView alloc] init];
+    containerView.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.scrollView addSubview:containerView];
+    [containerView addSubview:self.mainStack];
+
+    NSLayoutConstraint *widthConstraint = [self.mainStack.widthAnchor constraintEqualToAnchor:containerView.widthAnchor constant:-40];
+    widthConstraint.priority = UILayoutPriorityDefaultHigh;
+
+    [NSLayoutConstraint activateConstraints:@[
+        [self.scrollView.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
+        [self.scrollView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.scrollView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.scrollView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+
+        [containerView.topAnchor constraintEqualToAnchor:self.scrollView.topAnchor],
+        [containerView.bottomAnchor constraintEqualToAnchor:self.scrollView.bottomAnchor],
+        [containerView.leadingAnchor constraintEqualToAnchor:self.scrollView.leadingAnchor],
+        [containerView.trailingAnchor constraintEqualToAnchor:self.scrollView.trailingAnchor],
+        [containerView.widthAnchor constraintEqualToAnchor:self.scrollView.widthAnchor],
+
+        [self.mainStack.topAnchor constraintEqualToAnchor:containerView.topAnchor constant:20],
+        [self.mainStack.bottomAnchor constraintEqualToAnchor:containerView.bottomAnchor constant:-40],
+        [self.mainStack.centerXAnchor constraintEqualToAnchor:containerView.centerXAnchor],
+        [self.mainStack.leadingAnchor constraintGreaterThanOrEqualToAnchor:containerView.leadingAnchor constant:20],
+        [self.mainStack.trailingAnchor constraintLessThanOrEqualToAnchor:containerView.trailingAnchor constant:-20],
+        widthConstraint,
+        [self.mainStack.widthAnchor constraintLessThanOrEqualToConstant:600],
+    ]];
+}
+
+- (void)setupContent {
+    [self.valueLabels removeAllObjects];
+
+    CLAdvSettingsCard *runtimeCard = [[CLAdvSettingsCard alloc] init];
+    [runtimeCard addSectionHeader:CLL(@"策略运行时")];
+    [self addDiagnosticRowToCard:runtimeCard key:@"policy_state" icon:@"point.topleft.down.curvedto.point.bottomright.up" title:CLL(@"守护策略") color:[UIColor systemBlueColor]];
+    [runtimeCard addSeparator];
+    [self addDiagnosticRowToCard:runtimeCard key:@"policy_reason" icon:@"info.circle" title:CLL(@"当前状态原因") color:[UIColor systemBlueColor]];
+    [runtimeCard addSeparator];
+    [self addDiagnosticRowToCard:runtimeCard key:@"last_policy_change_time" icon:@"clock" title:CLL(@"最近策略切换时间") color:[UIColor systemBlueColor]];
+    [runtimeCard addSeparator];
+    [self addDiagnosticRowToCard:runtimeCard key:@"last_policy_change_reason" icon:@"info.circle" title:CLL(@"最近策略切换原因") color:[UIColor systemBlueColor]];
+    [runtimeCard addSeparator];
+    [self addDiagnosticRowToCard:runtimeCard key:@"charge_command" icon:@"bolt.shield" title:CLL(@"充电命令") color:[UIColor systemGreenColor]];
+    [runtimeCard addSeparator];
+    [self addDiagnosticRowToCard:runtimeCard key:@"last_charge_command_time" icon:@"clock" title:CLL(@"最近充电命令时间") color:[UIColor systemGreenColor]];
+    [runtimeCard addSeparator];
+    [self addDiagnosticRowToCard:runtimeCard key:@"predictive_inhibit" icon:@"bolt.slash" title:CLL(@"系统停充抑制") color:[UIColor systemRedColor]];
+    [runtimeCard addSeparator];
+    [self addDiagnosticRowToCard:runtimeCard key:@"smart_charge_status" icon:@"battery.100.circle" title:CLL(@"系统优化充电") color:[UIColor systemBlueColor]];
+    [runtimeCard addSeparator];
+    [self addDiagnosticRowToCard:runtimeCard key:@"smart_charge_managed" icon:@"gearshape.2" title:CLL(@"由本工具接管") color:[UIColor systemBlueColor]];
+    [runtimeCard addSeparator];
+    [self addDiagnosticRowToCard:runtimeCard key:@"smart_charge_original_status" icon:@"battery.100.circle" title:CLL(@"接管前系统状态") color:[UIColor systemBlueColor]];
+    [runtimeCard addSeparator];
+    [self addDiagnosticRowToCard:runtimeCard key:@"smart_charge_coordination_session" icon:@"number.square" title:CLL(@"协调会话") color:[UIColor systemBlueColor]];
+    [runtimeCard addSeparator];
+    [self addDiagnosticRowToCard:runtimeCard key:@"smart_charge_coordination_start_time" icon:@"clock" title:CLL(@"接管开始时间") color:[UIColor systemBlueColor]];
+    [runtimeCard addSeparator];
+    [self addDiagnosticRowToCard:runtimeCard key:@"last_inflow_command_time" icon:@"clock" title:CLL(@"最近禁流/恢复时间") color:[UIColor systemRedColor]];
+    [self addTipRowToCard:runtimeCard text:CLL(@"仅用于调试插电保持策略，不会改变正常使用逻辑。")];
+    [self.mainStack addArrangedSubview:runtimeCard];
+
+    CLAdvSettingsCard *holdCard = [[CLAdvSettingsCard alloc] init];
+    [holdCard addSectionHeader:CLL(@"保持诊断")];
+    [self addDiagnosticRowToCard:holdCard key:@"hold_behavior" icon:@"slider.horizontal.3" title:CLL(@"保持策略") color:[UIColor systemIndigoColor]];
+    [holdCard addSeparator];
+    [self addDiagnosticRowToCard:holdCard key:@"hold_runtime_behavior" icon:@"slider.horizontal.3" title:CLL(@"当前生效策略") color:[UIColor systemIndigoColor]];
+    [holdCard addSeparator];
+    [self addDiagnosticRowToCard:holdCard key:@"hold_adaptive_load_level" icon:@"chart.bar" title:CLL(@"自适应负载等级") color:[UIColor systemIndigoColor]];
+    [holdCard addSeparator];
+    [self addDiagnosticRowToCard:holdCard key:@"hold_adaptive_average_current" icon:@"bolt.circle" title:CLL(@"近几次平均电流") color:[UIColor systemIndigoColor]];
+    [holdCard addSeparator];
+    [self addDiagnosticRowToCard:holdCard key:@"hold_target" icon:@"scope" title:CLL(@"保持目标") color:[UIColor systemIndigoColor]];
+    [holdCard addSeparator];
+    [self addDiagnosticRowToCard:holdCard key:@"hold_band" icon:@"arrow.left.arrow.right" title:CLL(@"保持带宽") color:[UIColor systemIndigoColor]];
+    [holdCard addSeparator];
+    [self addDiagnosticRowToCard:holdCard key:@"hold_lower_bound" icon:@"scope" title:CLL(@"保持下边界") color:[UIColor systemIndigoColor]];
+    [holdCard addSeparator];
+    [self addDiagnosticRowToCard:holdCard key:@"hold_discharge_streak" icon:@"chart.bar" title:CLL(@"持续放电计数") color:[UIColor systemIndigoColor]];
+    [holdCard addSeparator];
+    [self addDiagnosticRowToCard:holdCard key:@"hold_interval" icon:@"timer" title:CLL(@"轮询间隔") color:[UIColor systemIndigoColor]];
+    [holdCard addSeparator];
+    [self addDiagnosticRowToCard:holdCard key:@"hold_early_recharge" icon:@"waveform.path.ecg" title:CLL(@"提前补电辅助") color:[UIColor systemIndigoColor]];
+    [self.mainStack addArrangedSubview:holdCard];
+
+    CLAdvSettingsCard *signalCard = [[CLAdvSettingsCard alloc] init];
+    [signalCard addSectionHeader:CLL(@"实时信号")];
+    [self addDiagnosticRowToCard:signalCard key:@"current_capacity" icon:@"battery.50" title:CLL(@"当前电量") color:[UIColor systemTealColor]];
+    [signalCard addSeparator];
+    [self addDiagnosticRowToCard:signalCard key:@"temperature" icon:@"thermometer" title:CLL(@"电池温度") color:[UIColor systemTealColor]];
+    [signalCard addSeparator];
+    [self addDiagnosticRowToCard:signalCard key:@"amperage" icon:@"bolt.fill" title:CLL(@"电池电流") color:[UIColor systemTealColor]];
+    [signalCard addSeparator];
+    [self addDiagnosticRowToCard:signalCard key:@"instant_amperage" icon:@"bolt.circle" title:CLL(@"瞬时电流") color:[UIColor systemTealColor]];
+    [signalCard addSeparator];
+    [self addDiagnosticRowToCard:signalCard key:@"is_charging" icon:@"bolt" title:CLL(@"是否正在充电") color:[UIColor systemTealColor]];
+    [signalCard addSeparator];
+    [self addDiagnosticRowToCard:signalCard key:@"external_connected" icon:@"power" title:CLL(@"是否连接外部电源") color:[UIColor systemTealColor]];
+    [signalCard addSeparator];
+    [self addDiagnosticRowToCard:signalCard key:@"external_charge_capable" icon:@"power" title:CLL(@"系统判定可充电") color:[UIColor systemTealColor]];
+    [self.mainStack addArrangedSubview:signalCard];
+
+    CLAdvSettingsCard *powerCard = [[CLAdvSettingsCard alloc] init];
+    [powerCard addSectionHeader:CLL(@"供电环境")];
+    [self addDiagnosticRowToCard:powerCard key:@"adapter_name" icon:@"power" title:CLL(@"适配器") color:[UIColor systemOrangeColor]];
+    [powerCard addSeparator];
+    [self addDiagnosticRowToCard:powerCard key:@"adapter_watts" icon:@"bolt.fill" title:CLL(@"适配器功率") color:[UIColor systemOrangeColor]];
+    [powerCard addSeparator];
+    [self addDiagnosticRowToCard:powerCard key:@"power_source_kind" icon:@"bolt.circle" title:CLL(@"充电方式") color:[UIColor systemOrangeColor]];
+    [self.mainStack addArrangedSubview:powerCard];
+
+    CLAdvSettingsCard *historyCard = [[CLAdvSettingsCard alloc] init];
+    [historyCard addSectionHeader:CLL(@"最近策略切换")];
+    [self addDiagnosticRowToCard:historyCard key:@"policy_transition_history" icon:@"list.bullet.rectangle" title:CLL(@"最近若干次状态变化") color:[UIColor systemPurpleColor]];
+    [self addTipRowToCard:historyCard text:CLL(@"这里展示 daemon 运行期内最近几次状态切换，便于回看 hold 与补电变化。")];
+    [self.mainStack addArrangedSubview:historyCard];
+
+    CLAdvSettingsCard *timelineCard = [[CLAdvSettingsCard alloc] init];
+    [timelineCard addSectionHeader:CLL(@"长时间事件时间线")];
+    [self addDiagnosticRowToCard:timelineCard key:@"policy_event_history" icon:@"clock" title:CLL(@"最近持久化策略事件") color:[UIColor systemPurpleColor]];
+    [self addTipRowToCard:timelineCard text:CLL(@"这里展示已持久化的最近策略事件，daemon 重启后也会尽量保留。")];
+    [self.mainStack addArrangedSubview:timelineCard];
+
+    CLAdvSettingsCard *exportCard = [[CLAdvSettingsCard alloc] init];
+    [exportCard addSectionHeader:CLL(@"导出与校准")];
+    [exportCard addPickerRowWithIcon:@"doc.on.doc" title:CLL(@"复制诊断摘要") value:CLL(@"复制") color:[UIColor systemBlueColor] tag:900 target:self action:@selector(copyDiagnosticSummaryTapped:)];
+    [exportCard addSeparator];
+    [exportCard addPickerRowWithIcon:@"square.and.arrow.up" title:CLL(@"导出事件时间线") value:CLL(@"导出") color:[UIColor systemBlueColor] tag:901 target:self action:@selector(exportPolicyEventTimelineTapped:)];
+    [exportCard addSeparator];
+    [exportCard addPickerRowWithIcon:@"list.bullet.rectangle" title:CLL(@"复制长测校准模板") value:CLL(@"复制") color:[UIColor systemBlueColor] tag:902 target:self action:@selector(copyCalibrationChecklistTapped:)];
+    [self addTipRowToCard:exportCard text:CLL(@"可导出当前关键状态、最近长时间事件，以及真机长测与阈值校准模板。")];
+    [self.mainStack addArrangedSubview:exportCard];
+
+    [self updateDiagnosticValues];
+}
+
+- (void)addDiagnosticRowToCard:(CLAdvSettingsCard *)card
+                           key:(NSString *)key
+                          icon:(NSString *)iconName
+                         title:(NSString *)title
+                         color:(UIColor *)color {
+    UILabel *valueLabel = [card addValueRowWithIcon:iconName title:title value:@"--" color:color];
+    if (key.length > 0 && valueLabel != nil) {
+        self.valueLabels[key] = valueLabel;
+    }
+}
+
+- (void)addTipRowToCard:(CLAdvSettingsCard *)card text:(NSString *)text {
+    UIView *row = [[UIView alloc] init];
+    row.translatesAutoresizingMaskIntoConstraints = NO;
+
+    UILabel *label = [[UILabel alloc] init];
+    label.translatesAutoresizingMaskIntoConstraints = NO;
+    label.text = text ?: @"";
+    label.font = [UIFont systemFontOfSize:12];
+    label.textColor = [UIColor secondaryLabelColor];
+    label.numberOfLines = 2;
+    [row addSubview:label];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [row.heightAnchor constraintGreaterThanOrEqualToConstant:36],
+        [label.topAnchor constraintEqualToAnchor:row.topAnchor constant:8],
+        [label.bottomAnchor constraintEqualToAnchor:row.bottomAnchor constant:-8],
+        [label.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:16],
+        [label.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-16]
+    ]];
+
+    [card.contentStack addArrangedSubview:row];
+}
+
+- (void)languageDidChange {
+    CLApplyLanguageFromSettings();
+    self.title = CLL(@"策略诊断");
+    for (UIView *view in self.view.subviews) {
+        [view removeFromSuperview];
+    }
+    [self setupScrollView];
+    [self setupContent];
+}
+
+- (void)batteryInfoDidUpdate {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self updateDiagnosticValues];
+    });
+}
+
+- (void)configDidUpdate {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self updateDiagnosticValues];
+    });
+}
+
+- (void)daemonStatusDidChange {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self updateDiagnosticValues];
+    });
+}
+
+- (void)updateDiagnosticValue:(NSString *)value forKey:(NSString *)key {
+    UILabel *label = self.valueLabels[key];
+    if (label != nil) {
+        label.text = value ?: @"--";
+    }
+}
+
+- (NSString *)holdBandTextForManager:(CLBatteryManager *)manager {
+    NSString *base = [NSString stringWithFormat:CLL(@"目标下方 %ld%%"), (long)MAX(manager.holdModeBand, 1)];
+    if (!manager.holdModeEnabled) {
+        return [NSString stringWithFormat:@"%@ · %@", base, CLL(@"未启用")];
+    }
+    return base;
+}
+
+- (NSString *)holdTargetTextForManager:(CLBatteryManager *)manager {
+    NSString *base = manager.holdTarget > 0 ? [NSString stringWithFormat:@"%ld%%", (long)manager.holdTarget] : CLL(@"未记录");
+    if (!manager.holdModeEnabled) {
+        return [NSString stringWithFormat:@"%@ · %@", base, CLL(@"未启用")];
+    }
+    return base;
+}
+
+- (NSString *)holdLowerBoundTextForManager:(CLBatteryManager *)manager {
+    NSString *base = [NSString stringWithFormat:@"%ld%%", (long)MAX(manager.holdRangeLower, 0)];
+    if (!manager.holdModeEnabled) {
+        return [NSString stringWithFormat:@"%@ · %@", base, CLL(@"未启用")];
+    }
+    return base;
+}
+
+- (NSString *)holdEarlyRechargeTextForManager:(CLBatteryManager *)manager {
+    if (!manager.holdEarlyRechargeAssistEnabled) {
+        return CLL(@"未启用");
+    }
+    return [NSString stringWithFormat:CLL(@"已启用 · 连续 %ld 次放电后提前补电"),
+            (long)MAX(manager.holdEarlyRechargeStreakRequired, 1)];
+}
+
+- (NSString *)holdRuntimeBehaviorTextForManager:(CLBatteryManager *)manager {
+    NSString *base = CLHoldBehaviorLabel(manager.holdRuntimeBehavior);
+    if (!manager.holdModeEnabled) {
+        return [NSString stringWithFormat:@"%@ · %@", base, CLL(@"未启用")];
+    }
+    if (manager.holdModeBehavior != CLHoldModeBehaviorAdaptive) {
+        return [NSString stringWithFormat:@"%@ · %@", base, CLL(@"固定策略")];
+    }
+    return base;
+}
+
+- (NSString *)holdAdaptiveLoadLevelTextForManager:(CLBatteryManager *)manager {
+    NSString *base = CLDebugValueWithRaw(CLAdaptiveLoadLevelLabel(manager.holdAdaptiveLoadLevel), manager.holdAdaptiveLoadLevel);
+    if (!manager.holdModeEnabled) {
+        return [NSString stringWithFormat:@"%@ · %@", base, CLL(@"未启用")];
+    }
+    return base;
+}
+
+- (NSString *)holdAdaptiveAverageCurrentTextForManager:(CLBatteryManager *)manager {
+    NSString *base = [NSString stringWithFormat:@"%ld mA", (long)manager.holdAdaptiveAverageCurrent];
+    if (!manager.holdModeEnabled) {
+        return [NSString stringWithFormat:@"%@ · %@", base, CLL(@"未启用")];
+    }
+    return base;
+}
+
+- (NSString *)smartChargeOriginalStatusTextForManager:(CLBatteryManager *)manager {
+    if (manager.smartChargeCoordinationSessionID.length == 0 && manager.smartChargeCoordinationStartTime <= 0) {
+        return CLL(@"未接管");
+    }
+    if (manager.smartChargeOriginalStatus < 0) {
+        return CLL(@"未记录");
+    }
+    NSString *raw = [NSString stringWithFormat:@"%ld", (long)manager.smartChargeOriginalStatus];
+    return CLDebugValueWithRaw(CLSmartChargeStatusLabel(manager.smartChargeOriginalStatus, NO), raw);
+}
+
+- (NSString *)smartChargeCoordinationSessionTextForManager:(CLBatteryManager *)manager {
+    if (manager.smartChargeCoordinationSessionID.length == 0) {
+        return CLL(@"未接管");
+    }
+    return manager.smartChargeCoordinationSessionID;
+}
+
+- (NSString *)smartChargeCoordinationStartTimeTextForManager:(CLBatteryManager *)manager {
+    if (manager.smartChargeCoordinationStartTime <= 0) {
+        return CLL(@"未接管");
+    }
+    return CLTimestampLabel(manager.smartChargeCoordinationStartTime);
+}
+
+- (NSString *)adapterNameTextForManager:(CLBatteryManager *)manager {
+    if (!manager.externalConnected) {
+        return CLL(@"未连接");
+    }
+    if (manager.adapterName.length > 0) {
+        return manager.adapterName;
+    }
+    if (manager.adapterDescription.length > 0) {
+        return manager.adapterDescription;
+    }
+    return CLL(@"未知");
+}
+
+- (NSString *)adapterWattsTextForManager:(CLBatteryManager *)manager {
+    if (!manager.externalConnected) {
+        return CLL(@"未连接");
+    }
+    if (manager.adapterWatts > 0) {
+        return [NSString stringWithFormat:@"%ld W", (long)manager.adapterWatts];
+    }
+    return CLL(@"未知");
+}
+
+- (NSString *)powerSourceKindTextForManager:(CLBatteryManager *)manager {
+    if (!manager.externalConnected) {
+        return CLL(@"未连接");
+    }
+    return manager.isWirelessCharging ? CLL(@"无线充电") : CLL(@"有线充电");
+}
+
+- (NSString *)recentPolicyTransitionsTextForManager:(CLBatteryManager *)manager {
+    if (manager.policyTransitionHistory.count == 0) {
+        return CLL(@"未记录");
+    }
+
+    NSMutableArray<NSString *> *lines = [NSMutableArray array];
+    NSInteger lineCount = 0;
+    for (NSDictionary *item in [manager.policyTransitionHistory reverseObjectEnumerator]) {
+        NSString *fromState = [item[@"from"] isKindOfClass:[NSString class]] ? item[@"from"] : @"";
+        NSString *toState = [item[@"to"] isKindOfClass:[NSString class]] ? item[@"to"] : @"";
+        NSString *reason = [item[@"reason"] isKindOfClass:[NSString class]] ? item[@"reason"] : @"unknown";
+        NSTimeInterval ts = [item[@"ts"] doubleValue];
+
+        NSString *resolvedToState = toState.length > 0 ? toState : CLL(@"未知");
+        NSString *transition = resolvedToState;
+        if (fromState.length > 0 && ![fromState isEqualToString:toState]) {
+            transition = [NSString stringWithFormat:@"%@ -> %@", fromState, resolvedToState];
+        }
+
+        [lines addObject:[NSString stringWithFormat:@"%@  %@ · %@",
+                          CLCompactTimestampLabel(ts),
+                          transition,
+                          reason.length > 0 ? reason : @"unknown"]];
+        lineCount += 1;
+        if (lineCount >= 6) {
+            break;
+        }
+    }
+    return [lines componentsJoinedByString:@"\n"];
+}
+
+- (NSString *)policyEventLineTextForItem:(NSDictionary *)item includeRuntimeDetails:(BOOL)includeRuntimeDetails {
+    NSString *reason = [item[@"reason"] isKindOfClass:[NSString class]] ? item[@"reason"] : @"unknown";
+    NSTimeInterval ts = [item[@"ts"] doubleValue];
+
+    NSMutableArray<NSString *> *segments = [NSMutableArray array];
+    [segments addObject:[NSString stringWithFormat:@"%@  %@", CLCompactTimestampLabel(ts), [self policyEventDisplayTextForItem:item]]];
+    [segments addObject:CLPolicyReasonLabel(reason)];
+
+    NSInteger capacity = [item[@"capacity"] integerValue];
+    if (capacity > 0) {
+        [segments addObject:[NSString stringWithFormat:@"%ld%%", (long)capacity]];
+    }
+
+    NSInteger current = [item[@"current"] integerValue];
+    if (current != 0) {
+        [segments addObject:[NSString stringWithFormat:@"%ld mA", (long)current]];
+    }
+
+    NSInteger temperature = [item[@"temperature"] integerValue];
+    if (temperature > 0) {
+        [segments addObject:[NSString stringWithFormat:@"%.1f°C", temperature / 100.0]];
+    }
+
+    if (includeRuntimeDetails) {
+        NSString *holdBehavior = [item[@"hold_behavior"] isKindOfClass:[NSString class]] ? item[@"hold_behavior"] : @"";
+        if (holdBehavior.length > 0) {
+            [segments addObject:[NSString stringWithFormat:@"%@: %@",
+                                 CLL(@"保持策略"),
+                                 CLHoldBehaviorLabel(CLHoldBehaviorFromString(holdBehavior))]];
+        }
+
+        NSString *loadLevel = [item[@"hold_load_level"] isKindOfClass:[NSString class]] ? item[@"hold_load_level"] : @"";
+        if (loadLevel.length > 0) {
+            [segments addObject:[NSString stringWithFormat:@"%@: %@",
+                                 CLL(@"自适应负载等级"),
+                                 CLAdaptiveLoadLevelLabel(loadLevel)]];
+        }
+
+        NSInteger smartChargeStatus = [item[@"smart_charge_status"] integerValue];
+        BOOL smartChargeManaged = [item[@"smart_charge_managed"] boolValue];
+        [segments addObject:[NSString stringWithFormat:@"%@: %@",
+                             CLL(@"系统优化充电"),
+                             CLSmartChargeStatusLabel(smartChargeStatus, smartChargeManaged)]];
+    }
+
+    return [segments componentsJoinedByString:@" · "];
+}
+
+- (NSString *)policyEventDisplayTextForItem:(NSDictionary *)item {
+    NSString *type = [item[@"type"] isKindOfClass:[NSString class]] ? item[@"type"] : @"policy_transition";
+    if ([type isEqualToString:@"smart_charge_event"]) {
+        NSInteger fromStatus = [item[@"smart_charge_from"] integerValue];
+        NSInteger toStatus = [item[@"smart_charge_to"] integerValue];
+        NSString *fromLabel = CLSmartChargeStatusLabel(fromStatus, fromStatus == 3);
+        NSString *toLabel = CLSmartChargeStatusLabel(toStatus, toStatus == 3);
+        NSString *resolvedLabel = toLabel.length > 0 ? toLabel : fromLabel;
+        if (fromLabel.length > 0 && toLabel.length > 0 && fromStatus != toStatus) {
+            return [NSString stringWithFormat:@"%@  %@ -> %@", CLL(@"系统优化充电"), fromLabel, toLabel];
+        }
+        return [NSString stringWithFormat:@"%@  %@", CLL(@"系统优化充电"), resolvedLabel.length > 0 ? resolvedLabel : CLL(@"未知")];
+    }
+    if ([type isEqualToString:@"hold_behavior_event"]) {
+        NSString *fromBehavior = CLHoldBehaviorLabel(CLHoldBehaviorFromString([item[@"from"] isKindOfClass:[NSString class]] ? item[@"from"] : @""));
+        NSString *toBehavior = CLHoldBehaviorLabel(CLHoldBehaviorFromString([item[@"to"] isKindOfClass:[NSString class]] ? item[@"to"] : @""));
+        if (fromBehavior.length > 0 && toBehavior.length > 0 && ![fromBehavior isEqualToString:toBehavior]) {
+            return [NSString stringWithFormat:@"%@  %@ -> %@", CLL(@"保持策略"), fromBehavior, toBehavior];
+        }
+        return [NSString stringWithFormat:@"%@  %@", CLL(@"保持策略"), toBehavior.length > 0 ? toBehavior : CLL(@"未知")];
+    }
+
+    NSString *fromState = [item[@"from"] isKindOfClass:[NSString class]] ? item[@"from"] : @"";
+    NSString *toState = [item[@"to"] isKindOfClass:[NSString class]] ? item[@"to"] : @"";
+    NSString *toLabel = toState.length > 0 ? CLPolicyStateLabel(toState) : CLL(@"未知");
+    if (fromState.length > 0 && ![fromState isEqualToString:toState]) {
+        return [NSString stringWithFormat:@"%@ -> %@", CLPolicyStateLabel(fromState), toLabel];
+    }
+    return toLabel;
+}
+
+- (NSString *)policyEventHistoryTextForManager:(CLBatteryManager *)manager {
+    if (manager.policyEventHistory.count == 0) {
+        return CLL(@"未记录");
+    }
+
+    NSMutableArray<NSString *> *lines = [NSMutableArray array];
+    NSInteger lineCount = 0;
+    for (NSDictionary *item in [manager.policyEventHistory reverseObjectEnumerator]) {
+        [lines addObject:[self policyEventLineTextForItem:item includeRuntimeDetails:NO]];
+        lineCount += 1;
+        if (lineCount >= 8) {
+            break;
+        }
+    }
+    return [lines componentsJoinedByString:@"\n"];
+}
+
+- (NSString *)policyEventHistoryExportTextForManager:(CLBatteryManager *)manager {
+    NSMutableArray<NSString *> *lines = [NSMutableArray array];
+    [lines addObject:CLL(@"策略事件时间线")];
+    if (manager.policyEventHistory.count == 0) {
+        [lines addObject:CLL(@"未记录")];
+        return [lines componentsJoinedByString:@"\n"];
+    }
+
+    NSInteger lineCount = 0;
+    for (NSDictionary *item in [manager.policyEventHistory reverseObjectEnumerator]) {
+        [lines addObject:[self policyEventLineTextForItem:item includeRuntimeDetails:YES]];
+        lineCount += 1;
+        if (lineCount >= 24) {
+            break;
+        }
+    }
+    return [lines componentsJoinedByString:@"\n"];
+}
+
+- (NSString *)diagnosticSummaryTextForManager:(CLBatteryManager *)manager {
+    NSString *smartChargeCode = [NSString stringWithFormat:@"%ld", (long)manager.smartChargeStatus];
+    NSMutableArray<NSString *> *lines = [NSMutableArray array];
+    [lines addObject:CLL(@"策略诊断")];
+    [lines addObject:[NSString stringWithFormat:@"%@: %@",
+                      CLL(@"守护策略"),
+                      CLDebugValueWithRaw(CLPolicyStateLabel(manager.policyState), manager.policyState)]];
+    [lines addObject:[NSString stringWithFormat:@"%@: %@",
+                      CLL(@"当前状态原因"),
+                      CLDebugValueWithRaw(CLPolicyReasonLabel(manager.policyReason), manager.policyReason)]];
+    [lines addObject:[NSString stringWithFormat:@"%@: %@",
+                      CLL(@"保持策略"),
+                      CLHoldBehaviorLabel(manager.holdModeBehavior)]];
+    [lines addObject:[NSString stringWithFormat:@"%@: %@",
+                      CLL(@"当前生效策略"),
+                      [self holdRuntimeBehaviorTextForManager:manager]]];
+    [lines addObject:[NSString stringWithFormat:@"%@: %@",
+                      CLL(@"自适应负载等级"),
+                      [self holdAdaptiveLoadLevelTextForManager:manager]]];
+    [lines addObject:[NSString stringWithFormat:@"%@: %@",
+                      CLL(@"保持目标"),
+                      [self holdTargetTextForManager:manager]]];
+    [lines addObject:[NSString stringWithFormat:@"%@: %@",
+                      CLL(@"保持带宽"),
+                      [self holdBandTextForManager:manager]]];
+    [lines addObject:[NSString stringWithFormat:@"%@: %@",
+                      CLL(@"系统优化充电"),
+                      CLDebugValueWithRaw(CLSmartChargeStatusLabel(manager.smartChargeStatus, manager.smartChargeManagedByDaemon), smartChargeCode)]];
+    [lines addObject:[NSString stringWithFormat:@"%@: %@",
+                      CLL(@"由本工具接管"),
+                      CLYesNoLabel(manager.smartChargeManagedByDaemon)]];
+    [lines addObject:[NSString stringWithFormat:@"%@: %@",
+                      CLL(@"接管前系统状态"),
+                      [self smartChargeOriginalStatusTextForManager:manager]]];
+    [lines addObject:[NSString stringWithFormat:@"%@: %@",
+                      CLL(@"协调会话"),
+                      [self smartChargeCoordinationSessionTextForManager:manager]]];
+    [lines addObject:@""];
+    [lines addObject:[self policyEventHistoryExportTextForManager:manager]];
+    return [lines componentsJoinedByString:@"\n"];
+}
+
+- (NSString *)calibrationChecklistTextForManager:(CLBatteryManager *)manager {
+    NSString *smartChargeCode = [NSString stringWithFormat:@"%ld", (long)manager.smartChargeStatus];
+    NSMutableArray<NSString *> *lines = [NSMutableArray array];
+    [lines addObject:CLL(@"真机长测与阈值校准模板")];
+    [lines addObject:[NSString stringWithFormat:@"%@: %@",
+                      CLL(@"记录时间"),
+                      CLTimestampLabel([[NSDate date] timeIntervalSince1970])]];
+    [lines addObject:[NSString stringWithFormat:@"%@: %@",
+                      CLL(@"设备"),
+                      manager.deviceModel.length > 0 ? manager.deviceModel : CLL(@"未知")]];
+    [lines addObject:[NSString stringWithFormat:@"%@: %@",
+                      CLL(@"系统版本"),
+                      manager.systemVersion.length > 0 ? manager.systemVersion : CLL(@"未知")]];
+    [lines addObject:[NSString stringWithFormat:@"%@: %@",
+                      CLL(@"应用版本"),
+                      manager.appVersion.length > 0 ? manager.appVersion : CLL(@"未知")]];
+    [lines addObject:[NSString stringWithFormat:@"%@: %@",
+                      CLL(@"当前策略"),
+                      CLDebugValueWithRaw(CLPolicyStateLabel(manager.policyState), manager.policyState)]];
+    [lines addObject:[NSString stringWithFormat:@"%@: %@",
+                      CLL(@"保持策略"),
+                      CLHoldBehaviorLabel(manager.holdModeBehavior)]];
+    [lines addObject:[NSString stringWithFormat:@"%@: %@",
+                      CLL(@"保持目标"),
+                      [self holdTargetTextForManager:manager]]];
+    [lines addObject:[NSString stringWithFormat:@"%@: %@",
+                      CLL(@"保持带宽"),
+                      [self holdBandTextForManager:manager]]];
+    [lines addObject:[NSString stringWithFormat:@"%@: %@",
+                      CLL(@"系统优化充电"),
+                      CLDebugValueWithRaw(CLSmartChargeStatusLabel(manager.smartChargeStatus, manager.smartChargeManagedByDaemon), smartChargeCode)]];
+    [lines addObject:[NSString stringWithFormat:@"%@: %@",
+                      CLL(@"适配器"),
+                      [self adapterNameTextForManager:manager]]];
+    [lines addObject:[NSString stringWithFormat:@"%@: %@",
+                      CLL(@"适配器功率"),
+                      [self adapterWattsTextForManager:manager]]];
+    [lines addObject:[NSString stringWithFormat:@"%@: %ld%%",
+                      CLL(@"当前电量"),
+                      (long)manager.currentCapacity]];
+    [lines addObject:[NSString stringWithFormat:@"%@: %.1f°C",
+                      CLL(@"电池温度"),
+                      manager.temperature]];
+    [lines addObject:[NSString stringWithFormat:@"%@: %ld mA",
+                      CLL(@"瞬时电流"),
+                      (long)manager.instantAmperage]];
+    [lines addObject:@""];
+    [lines addObject:CLL(@"建议验证项")];
+    [lines addObject:CLL(@"1. 长时间轻负载插电：观察电量是否稳定停留在目标附近，是否频繁补电。")];
+    [lines addObject:CLL(@"2. 中高负载插电：观察电量是否持续下滑，以及当前生效保持策略是否会自动切换。")];
+    [lines addObject:CLL(@"3. 温控往返：观察接近高温阈值后是否暂停充电，降温后是否平稳恢复。")];
+    [lines addObject:CLL(@"4. Smart Charge 接管：观察进入 hold/stop 时是否临时停用，退出后或 daemon 重启后是否恢复。")];
+    [lines addObject:CLL(@"5. 若结果不理想，优先调整保持带宽、保持策略，再考虑温控阈值。")];
+    [lines addObject:@""];
+    [lines addObject:CLL(@"观察记录")];
+    [lines addObject:CLL(@"- 期望现象：")];
+    [lines addObject:CLL(@"- 实际现象：")];
+    [lines addObject:CLL(@"- 建议调整：")];
+    return [lines componentsJoinedByString:@"\n"];
+}
+
+- (void)presentInfoAlertWithTitle:(NSString *)title message:(NSString *)message {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
+                                                                   message:message
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"确定") style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)copyDiagnosticSummaryTapped:(UITapGestureRecognizer *)tap {
+    NSString *summary = [self diagnosticSummaryTextForManager:[CLBatteryManager shared]];
+    [UIPasteboard generalPasteboard].string = summary ?: @"";
+    [self presentInfoAlertWithTitle:CLL(@"已复制") message:CLL(@"诊断摘要已复制到剪贴板。")];
+}
+
+- (void)exportPolicyEventTimelineTapped:(UITapGestureRecognizer *)tap {
+    NSString *text = [self policyEventHistoryExportTextForManager:[CLBatteryManager shared]];
+    UIActivityViewController *controller = [[UIActivityViewController alloc] initWithActivityItems:@[text ?: @""] applicationActivities:nil];
+    controller.popoverPresentationController.sourceView = tap.view ?: self.view;
+    controller.popoverPresentationController.sourceRect = tap.view ? tap.view.bounds : self.view.bounds;
+    [self presentViewController:controller animated:YES completion:nil];
+}
+
+- (void)copyCalibrationChecklistTapped:(UITapGestureRecognizer *)tap {
+    NSString *summary = [self calibrationChecklistTextForManager:[CLBatteryManager shared]];
+    [UIPasteboard generalPasteboard].string = summary ?: @"";
+    [self presentInfoAlertWithTitle:CLL(@"已复制") message:CLL(@"真机长测与校准模板已复制到剪贴板。")];
+}
+
+- (void)updateDiagnosticValues {
+    CLBatteryManager *manager = [CLBatteryManager shared];
+    NSString *smartChargeCode = [NSString stringWithFormat:@"%ld", (long)manager.smartChargeStatus];
+
+    [self updateDiagnosticValue:CLDebugValueWithRaw(CLPolicyStateLabel(manager.policyState), manager.policyState) forKey:@"policy_state"];
+    [self updateDiagnosticValue:CLDebugValueWithRaw(CLPolicyReasonLabel(manager.policyReason), manager.policyReason) forKey:@"policy_reason"];
+    [self updateDiagnosticValue:CLTimestampLabel(manager.lastPolicyChangeTime) forKey:@"last_policy_change_time"];
+    [self updateDiagnosticValue:CLDebugValueWithRaw(CLPolicyReasonLabel(manager.lastPolicyChangeReason), manager.lastPolicyChangeReason) forKey:@"last_policy_change_reason"];
+    [self updateDiagnosticValue:(manager.chargeCommandEnabled ? CLL(@"允许充电") : CLL(@"保持停止")) forKey:@"charge_command"];
+    [self updateDiagnosticValue:CLTimestampLabel(manager.lastChargeCommandTime) forKey:@"last_charge_command_time"];
+    [self updateDiagnosticValue:(manager.predictiveChargingInhibitActive ? CLL(@"已启用") : CLL(@"未启用")) forKey:@"predictive_inhibit"];
+    [self updateDiagnosticValue:CLDebugValueWithRaw(CLSmartChargeStatusLabel(manager.smartChargeStatus, manager.smartChargeManagedByDaemon), smartChargeCode) forKey:@"smart_charge_status"];
+    [self updateDiagnosticValue:CLYesNoLabel(manager.smartChargeManagedByDaemon) forKey:@"smart_charge_managed"];
+    [self updateDiagnosticValue:[self smartChargeOriginalStatusTextForManager:manager] forKey:@"smart_charge_original_status"];
+    [self updateDiagnosticValue:[self smartChargeCoordinationSessionTextForManager:manager] forKey:@"smart_charge_coordination_session"];
+    [self updateDiagnosticValue:[self smartChargeCoordinationStartTimeTextForManager:manager] forKey:@"smart_charge_coordination_start_time"];
+    [self updateDiagnosticValue:CLTimestampLabel(manager.lastInflowCommandTime) forKey:@"last_inflow_command_time"];
+
+    [self updateDiagnosticValue:CLHoldBehaviorLabel(manager.holdModeBehavior) forKey:@"hold_behavior"];
+    [self updateDiagnosticValue:[self holdRuntimeBehaviorTextForManager:manager] forKey:@"hold_runtime_behavior"];
+    [self updateDiagnosticValue:[self holdAdaptiveLoadLevelTextForManager:manager] forKey:@"hold_adaptive_load_level"];
+    [self updateDiagnosticValue:[self holdAdaptiveAverageCurrentTextForManager:manager] forKey:@"hold_adaptive_average_current"];
+    [self updateDiagnosticValue:[self holdTargetTextForManager:manager] forKey:@"hold_target"];
+    [self updateDiagnosticValue:[self holdBandTextForManager:manager] forKey:@"hold_band"];
+    [self updateDiagnosticValue:[self holdLowerBoundTextForManager:manager] forKey:@"hold_lower_bound"];
+    [self updateDiagnosticValue:[NSString stringWithFormat:@"%ld", (long)manager.holdDischargeStreak] forKey:@"hold_discharge_streak"];
+    [self updateDiagnosticValue:[NSString stringWithFormat:CLL(@"%ld 秒"), (long)MAX(manager.holdMonitorIntervalSeconds, 0)] forKey:@"hold_interval"];
+    [self updateDiagnosticValue:[self holdEarlyRechargeTextForManager:manager] forKey:@"hold_early_recharge"];
+
+    [self updateDiagnosticValue:[NSString stringWithFormat:@"%ld%%", (long)manager.currentCapacity] forKey:@"current_capacity"];
+    [self updateDiagnosticValue:[NSString stringWithFormat:@"%.1f°C", manager.temperature] forKey:@"temperature"];
+    [self updateDiagnosticValue:[NSString stringWithFormat:@"%ld mA", (long)manager.amperage] forKey:@"amperage"];
+    [self updateDiagnosticValue:[NSString stringWithFormat:@"%ld mA", (long)manager.instantAmperage] forKey:@"instant_amperage"];
+    [self updateDiagnosticValue:CLYesNoLabel(manager.isCharging) forKey:@"is_charging"];
+    [self updateDiagnosticValue:(manager.externalConnected ? CLL(@"已连接") : CLL(@"未连接")) forKey:@"external_connected"];
+    [self updateDiagnosticValue:CLYesNoLabel(manager.externalChargeCapable) forKey:@"external_charge_capable"];
+    [self updateDiagnosticValue:[self adapterNameTextForManager:manager] forKey:@"adapter_name"];
+    [self updateDiagnosticValue:[self adapterWattsTextForManager:manager] forKey:@"adapter_watts"];
+    [self updateDiagnosticValue:[self powerSourceKindTextForManager:manager] forKey:@"power_source_kind"];
+    [self updateDiagnosticValue:[self recentPolicyTransitionsTextForManager:manager] forKey:@"policy_transition_history"];
+    [self updateDiagnosticValue:[self policyEventHistoryTextForManager:manager] forKey:@"policy_event_history"];
+}
+
+@end
+
 #pragma mark - 高级设置控制器
 
 @interface CLAdvancedSettingsViewController : UIViewController
@@ -268,12 +1266,17 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
                                              selector:@selector(languageDidChange)
                                                  name:CLAppLanguageDidChangeNotification
                                                object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(configDidUpdate)
+                                                 name:CLConfigDidUpdateNotification
+                                               object:nil];
 }
 
 - (void)setupScrollView {
     self.scrollView = [[UIScrollView alloc] init];
     self.scrollView.translatesAutoresizingMaskIntoConstraints = NO;
     self.scrollView.showsVerticalScrollIndicator = NO;
+    self.scrollView.alwaysBounceHorizontal = NO;
     [self.view addSubview:self.scrollView];
     
     self.mainStack = [[UIStackView alloc] init];
@@ -304,6 +1307,8 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
         [self.mainStack.topAnchor constraintEqualToAnchor:containerView.topAnchor constant:20],
         [self.mainStack.bottomAnchor constraintEqualToAnchor:containerView.bottomAnchor constant:-40],
         [self.mainStack.centerXAnchor constraintEqualToAnchor:containerView.centerXAnchor],
+        [self.mainStack.leadingAnchor constraintGreaterThanOrEqualToAnchor:containerView.leadingAnchor constant:20],
+        [self.mainStack.trailingAnchor constraintLessThanOrEqualToAnchor:containerView.trailingAnchor constant:-20],
         widthConstraint,
         [self.mainStack.widthAnchor constraintLessThanOrEqualToConstant:600],
     ]];
@@ -323,6 +1328,10 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
+- (void)configDidUpdate {
+    [self reloadContentRows];
+}
+
 - (void)setupContent {
     CLBatteryManager *manager = [CLBatteryManager shared];
     
@@ -339,7 +1348,29 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
     [stopChargeCard addSwitchRowWithIcon:@"bolt.slash.fill" title:CLL(@"智能停充") subtitle:CLL(@"使用 SmartBattery API 进行停充") isOn:manager.predictiveInhibitCharge color:[UIColor systemRedColor] tag:300 target:self action:@selector(smartChargeChanged:)];
     [stopChargeCard addSeparator];
     [stopChargeCard addSwitchRowWithIcon:@"xmark.circle.fill" title:CLL(@"停充时启用禁流") subtitle:CLL(@"禁止电流流入设备，电池放电供电") isOn:manager.disableInflow color:[UIColor systemRedColor] tag:301 target:self action:@selector(disableInflowChanged:)];
+    [stopChargeCard addSeparator];
+    [stopChargeCard addSwitchRowWithIcon:@"battery.100" title:CLL(@"插电保持") subtitle:CLL(@"围绕“停止充电”目标小范围补电，更接近电脑保电量体验") isOn:manager.holdModeEnabled color:[UIColor systemIndigoColor] tag:302 target:self action:@selector(holdModeChanged:)];
+    [stopChargeCard addSeparator];
+    [stopChargeCard addPickerRowWithIcon:@"arrow.left.arrow.right" title:CLL(@"保持带宽") value:[self holdModeBandText] color:[UIColor systemIndigoColor] tag:305 target:self action:@selector(holdModeBandTapped:)];
+    [stopChargeCard addSeparator];
+    [stopChargeCard addPickerRowWithIcon:@"slider.horizontal.3" title:CLL(@"保持策略") value:[self holdModeBehaviorText] color:[UIColor systemIndigoColor] tag:313 target:self action:@selector(holdModeBehaviorTapped:)];
+    [self addTipRowToCard:stopChargeCard text:CLL(@"开启后会以“停止充电”作为目标电量，并在目标下方缓冲范围内自动补电；不建议同时开启禁流。")];
+    [self addTipRowToCard:stopChargeCard text:CLL(@"保持策略只影响插电保持模式，不会变成真正硬件旁路。")];
     [self.mainStack addArrangedSubview:stopChargeCard];
+
+    CLAdvSettingsCard *smartChargeCard = [[CLAdvSettingsCard alloc] init];
+    [smartChargeCard addSectionHeader:CLL(@"系统优化充电")];
+    [smartChargeCard addSwitchRowWithIcon:@"battery.100.circle" title:CLL(@"永久停用系统优化充电") subtitle:CLL(@"直接关闭系统的优化充电策略；旧版本默认可能已开启") isOn:manager.disableSmartCharge color:[UIColor systemBlueColor] tag:311 target:self action:@selector(disableSmartChargeChanged:)];
+    [smartChargeCard addSeparator];
+    [smartChargeCard addSwitchRowWithIcon:@"clock.badge.checkmark" title:CLL(@"插电保持时临时停用") subtitle:CLL(@"仅在保持/停充阶段暂时停用，退出后尝试恢复系统优化充电") isOn:manager.holdTempDisableSmartCharge color:[UIColor systemBlueColor] tag:312 target:self action:@selector(holdTempDisableSmartChargeChanged:)];
+    [self addTipRowToCard:smartChargeCard text:CLL(@"若永久停用已开启，临时停用不会再额外生效。")];
+    [self.mainStack addArrangedSubview:smartChargeCard];
+
+    CLAdvSettingsCard *diagnosticsCard = [[CLAdvSettingsCard alloc] init];
+    [diagnosticsCard addSectionHeader:CLL(@"调试与观测")];
+    [diagnosticsCard addPickerRowWithIcon:@"waveform.path.ecg" title:CLL(@"策略诊断") value:CLL(@"查看") color:[UIColor systemTealColor] tag:314 target:self action:@selector(policyDiagnosticsTapped)];
+    [self addTipRowToCard:diagnosticsCard text:CLL(@"集中查看策略切换原因、hold 运行时参数和 Smart Charge 接管状态。")];
+    [self.mainStack addArrangedSubview:diagnosticsCard];
 
     // 满充计划
     CLAdvSettingsCard *scheduleCard = [[CLAdvSettingsCard alloc] init];
@@ -428,6 +1459,15 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
     return [self thermalModeString:manager.limitInflowThermalMode];
 }
 
+- (NSString *)holdModeBandText {
+    NSInteger band = MAX([CLBatteryManager shared].holdModeBand, 1);
+    return [NSString stringWithFormat:CLL(@"目标下方 %ld%%"), (long)band];
+}
+
+- (NSString *)holdModeBehaviorText {
+    return CLHoldBehaviorLabel([CLBatteryManager shared].holdModeBehavior);
+}
+
 - (NSString *)fullChargeScheduleIntervalText {
     NSInteger intervalDays = MAX([CLBatteryManager shared].fullChargeScheduleIntervalDays, 1);
     return [NSString stringWithFormat:CLL(@"每 %ld 天"), (long)intervalDays];
@@ -490,6 +1530,11 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
     }
 }
 
+- (void)policyDiagnosticsTapped {
+    CLPolicyDiagnosticsViewController *vc = [[CLPolicyDiagnosticsViewController alloc] init];
+    [self.navigationController pushViewController:vc animated:YES];
+}
+
 - (void)smartChargeChanged:(UISwitch *)sender {
     [CLBatteryManager shared].predictiveInhibitCharge = sender.on;
     [[CLAPIClient shared] setConfigWithKey:@"adv_predictive_inhibit_charge" value:@(sender.on) completion:nil];
@@ -498,6 +1543,57 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
 - (void)disableInflowChanged:(UISwitch *)sender {
     [CLBatteryManager shared].disableInflow = sender.on;
     [[CLAPIClient shared] setConfigWithKey:@"adv_disable_inflow" value:@(sender.on) completion:nil];
+}
+
+- (void)disableSmartChargeChanged:(UISwitch *)sender {
+    [CLBatteryManager shared].disableSmartCharge = sender.on;
+    [[CLAPIClient shared] setConfigWithKey:@"disable_smart_charge" value:@(sender.on) completion:nil];
+}
+
+- (void)holdModeChanged:(UISwitch *)sender {
+    [CLBatteryManager shared].holdModeEnabled = sender.on;
+    [[CLAPIClient shared] setConfigWithKey:@"adv_hold_enabled" value:@(sender.on) completion:nil];
+}
+
+- (void)holdTempDisableSmartChargeChanged:(UISwitch *)sender {
+    [CLBatteryManager shared].holdTempDisableSmartCharge = sender.on;
+    [[CLAPIClient shared] setConfigWithKey:@"adv_hold_temp_disable_smart_charge" value:@(sender.on) completion:nil];
+}
+
+- (void)holdModeBandTapped:(UITapGestureRecognizer *)tap {
+    NSInteger currentValue = MAX([CLBatteryManager shared].holdModeBand, 1);
+    __weak typeof(self) weakSelf = self;
+    [self presentIntegerInputAlertWithTitle:CLL(@"保持带宽")
+                                    message:CLL(@"请输入 1 ~ 10 之间的百分比\n设备会在目标电量下方这段范围内恢复补电")
+                               currentValue:currentValue
+                                   minValue:1
+                                   maxValue:10
+                                 completion:^(NSInteger value) {
+        [CLBatteryManager shared].holdModeBand = value;
+        [[CLAPIClient shared] setConfigWithKey:@"adv_hold_band" value:@(value) completion:nil];
+        [weakSelf reloadContentRows];
+    }];
+}
+
+- (void)holdModeBehaviorTapped:(UITapGestureRecognizer *)tap {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"保持策略")
+                                                                   message:CLL(@"选择插电保持时更偏向哪一种行为")
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+
+    NSArray *titles = @[CLL(@"平衡"), CLL(@"偏向外接供电"), CLL(@"偏向减少循环"), CLL(@"智能自适应")];
+    NSArray *values = @[@"balanced", @"power_first", @"battery_first", @"adaptive"];
+    __weak typeof(self) weakSelf = self;
+    for (NSInteger i = 0; i < titles.count; i++) {
+        UIAlertAction *action = [UIAlertAction actionWithTitle:titles[i] style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+            [CLBatteryManager shared].holdModeBehavior = (CLHoldModeBehavior)i;
+            [[CLAPIClient shared] setConfigWithKey:@"adv_hold_behavior" value:values[i] completion:nil];
+            [weakSelf reloadContentRows];
+        }];
+        [alert addAction:action];
+    }
+
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"取消") style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)fullChargeScheduleEnabledChanged:(UISwitch *)sender {

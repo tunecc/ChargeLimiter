@@ -4,6 +4,7 @@
 xcuserdata/
 
 # Build outputs
+build/
 build_roothide/
 build_rootless/
 Packages/
@@ -37,3 +38,4 @@ SWIFTUI_CHANGES_LOG.txt
 REFACTOR_SUMMARY.md
 /docs
 LatestBuild
+后续工作计划.md

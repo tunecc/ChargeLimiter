@@ -9,6 +9,7 @@ PKG_ROOTHIDE_DIR="$ROOT_DIR/ChargeLimiter/Package_roothide"
 BUILD_ROOTLESS="$ROOT_DIR/build_rootless"
 BUILD_ROOTHIDE="$ROOT_DIR/build_roothide"
 PAYLOAD_DIR="$ROOT_DIR/Payload"
+STAGE_DIR=""
 
 require_cmd() {
     command -v "$1" >/dev/null 2>&1 || {
@@ -62,7 +63,14 @@ set_control_version() {
   mv "$tmp_file" "$control_file"
 }
 
-VERSION="${1:-1.9.6.3}"
+cleanup() {
+  [ -n "$STAGE_DIR" ] && rm -rf "$STAGE_DIR"
+  [ -d "$PAYLOAD_DIR" ] && rm -rf "$PAYLOAD_DIR"
+}
+
+trap cleanup EXIT INT TERM
+
+VERSION="${1:-}"
 if [ -z "$VERSION" ]; then
     VERSION="$(awk -F' = ' '/MARKETING_VERSION =/{gsub(/;/, "", $2); print $2; exit}' "$ROOT_DIR/ChargeLimiter.xcodeproj/project.pbxproj")"
 fi
@@ -87,6 +95,9 @@ force_clean_dir "$BUILD_ROOTLESS"
 force_clean_dir "$BUILD_ROOTHIDE"
 force_clean_dir "$PAYLOAD_DIR"
 mkdir -p "$OUT_DIR" "$PAYLOAD_DIR"
+STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/chargelimiter-pack.XXXXXX")"
+STAGE_ROOTLESS_DIR="$STAGE_DIR/rootless"
+STAGE_ROOTHIDE_DIR="$STAGE_DIR/roothide"
 
 echo "[1/8] Build rootless app (arm64)..."
 xcodebuild \
@@ -145,17 +156,19 @@ sign_app "$ROOTLESS_APP" "$APP_ENT_JB"
 sign_app "$ROOTHIDE_APP" "$APP_ENT_JB"
 
 echo "[5/8] Prepare package trees..."
-rm -rf "$PKG_ROOTLESS_DIR/Applications" "$PKG_ROOTHIDE_DIR/Applications"
-rm -rf "$PKG_ROOTLESS_DIR/var/jb/Applications/ChargeLimiter.app"
-rm -rf "$PKG_ROOTHIDE_DIR/var/jb/Applications/ChargeLimiter.app"
-cp -a "$ROOTLESS_APP" "$PKG_ROOTLESS_DIR/var/jb/Applications/ChargeLimiter.app"
-cp -a "$ROOTHIDE_APP" "$PKG_ROOTHIDE_DIR/var/jb/Applications/ChargeLimiter.app"
+cp -a "$PKG_ROOTLESS_DIR" "$STAGE_ROOTLESS_DIR"
+cp -a "$PKG_ROOTHIDE_DIR" "$STAGE_ROOTHIDE_DIR"
+rm -rf "$STAGE_ROOTLESS_DIR/Applications" "$STAGE_ROOTHIDE_DIR/Applications"
+rm -rf "$STAGE_ROOTLESS_DIR/var/jb/Applications/ChargeLimiter.app"
+rm -rf "$STAGE_ROOTHIDE_DIR/var/jb/Applications/ChargeLimiter.app"
+cp -a "$ROOTLESS_APP" "$STAGE_ROOTLESS_DIR/var/jb/Applications/ChargeLimiter.app"
+cp -a "$ROOTHIDE_APP" "$STAGE_ROOTHIDE_DIR/var/jb/Applications/ChargeLimiter.app"
 
-find "$PKG_ROOTLESS_DIR" -name .DS_Store -delete
-find "$PKG_ROOTHIDE_DIR" -name .DS_Store -delete
-chmod 755 "$PKG_ROOTLESS_DIR/DEBIAN"/* "$PKG_ROOTHIDE_DIR/DEBIAN"/*
-set_control_version "$PKG_ROOTLESS_DIR/DEBIAN/control"
-set_control_version "$PKG_ROOTHIDE_DIR/DEBIAN/control"
+find "$STAGE_ROOTLESS_DIR" -name .DS_Store -delete
+find "$STAGE_ROOTHIDE_DIR" -name .DS_Store -delete
+chmod 755 "$STAGE_ROOTLESS_DIR/DEBIAN"/* "$STAGE_ROOTHIDE_DIR/DEBIAN"/*
+set_control_version "$STAGE_ROOTLESS_DIR/DEBIAN/control"
+set_control_version "$STAGE_ROOTHIDE_DIR/DEBIAN/control"
 
 echo "[6/8] Build TrollStore package..."
 cp -a "$ROOTLESS_APP" "$PAYLOAD_DIR/ChargeLimiter.app"
@@ -170,8 +183,8 @@ rm -rf "$PAYLOAD_DIR"
 
 echo "[7/8] Build deb packages..."
 rm -f "$ROOTLESS_DEB_OUT" "$ROOTHIDE_DEB_OUT"
-dpkg-deb -Zxz -b "$PKG_ROOTLESS_DIR" "$ROOTLESS_DEB_OUT" >/dev/null
-dpkg-deb -Zxz -b "$PKG_ROOTHIDE_DIR" "$ROOTHIDE_DEB_OUT" >/dev/null
+dpkg-deb -Zxz -b "$STAGE_ROOTLESS_DIR" "$ROOTLESS_DEB_OUT" >/dev/null
+dpkg-deb -Zxz -b "$STAGE_ROOTHIDE_DIR" "$ROOTHIDE_DEB_OUT" >/dev/null
 
 extract_arch() {
   xcrun lipo -info "$1" | sed -n 's/.*architecture: \(.*\)$/\1/p'
