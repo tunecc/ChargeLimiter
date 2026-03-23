@@ -123,6 +123,12 @@ static id CLPerformSelectorNoArg(id target, SEL selector) {
 #pragma clang diagnostic pop
 }
 
+static NSInteger CLEffectiveBatteryCurrentForManager(CLBatteryManager *manager);
+static BOOL CLManagerLooksChargingForDisplay(CLBatteryManager *manager);
+static BOOL CLManagerLooksDischargingForDisplay(CLBatteryManager *manager);
+static NSString *CLDisplayedPowerStateForManager(CLBatteryManager *manager);
+static BOOL CLDisplayedPowerStateUsesExternalPower(CLBatteryManager *manager);
+
 static const void *kCLCardValueTitleKey = &kCLCardValueTitleKey;
 
 static NSArray<NSString *> *CLKnownFilzaBundleIDs(void) {
@@ -3802,7 +3808,7 @@ static UIViewController *CLTopVisibleViewController(void) {
 }
 
 - (CLBatteryVisualState)visualStateForManager:(CLBatteryManager *)manager {
-    NSString *policyState = manager.policyState ?: @"";
+    NSString *policyState = CLDisplayedPowerStateForManager(manager);
     if ([policyState isEqualToString:@"temp_paused"]) {
         return CLBatteryVisualStateTempPaused;
     }
@@ -3823,9 +3829,6 @@ static UIViewController *CLTopVisibleViewController(void) {
     }
     if (manager.currentCapacity <= 20) {
         return CLBatteryVisualStateLowBattery;
-    }
-    if (manager.externalConnected && !manager.isCharging) {
-        return CLBatteryVisualStatePaused;
     }
     return CLBatteryVisualStateIdleNormal;
 }
@@ -5438,7 +5441,7 @@ static UIViewController *CLTopVisibleViewController(void) {
 - (void)setupPowerPathCard {
     self.powerPathCard = [[CLGlassCard alloc] init];
 
-    [self.powerPathCard addRowWithIcon:@"point.topleft.down.curvedto.point.bottomright.up" title:CLL(@"守护策略") value:CLL(@"使用电池") color:[UIColor systemBlueColor]];
+    [self.powerPathCard addRowWithIcon:@"point.topleft.down.curvedto.point.bottomright.up" title:CLL(@"供电状态") value:CLL(@"使用电池") color:[UIColor systemBlueColor]];
     [self.powerPathCard addSeparator];
     [self.powerPathCard addRowWithIcon:@"bolt.shield" title:CLL(@"充电命令") value:CLL(@"允许充电") color:[UIColor systemGreenColor]];
     [self.powerPathCard addSeparator];
@@ -5739,6 +5742,75 @@ static UIViewController *CLTopVisibleViewController(void) {
     return nil;
 }
 
+static const NSInteger CLDisplayChargingThresholdmA = 120;
+static const NSInteger CLDisplayDischargingThresholdmA = -120;
+
+static NSInteger CLEffectiveBatteryCurrentForManager(CLBatteryManager *manager) {
+    if (!manager) {
+        return 0;
+    }
+    if (manager.instantAmperage != 0) {
+        return manager.instantAmperage;
+    }
+    return manager.amperage;
+}
+
+static BOOL CLManagerLooksChargingForDisplay(CLBatteryManager *manager) {
+    if (!manager) {
+        return NO;
+    }
+    NSInteger current = CLEffectiveBatteryCurrentForManager(manager);
+    return manager.isCharging || manager.holdCharging || current > CLDisplayChargingThresholdmA;
+}
+
+static BOOL CLManagerLooksDischargingForDisplay(CLBatteryManager *manager) {
+    if (!manager) {
+        return NO;
+    }
+    return CLEffectiveBatteryCurrentForManager(manager) < CLDisplayDischargingThresholdmA;
+}
+
+static NSString *CLDisplayedPowerStateForManager(CLBatteryManager *manager) {
+    if (!manager) {
+        return @"battery";
+    }
+
+    NSString *policyState = [manager.policyState isKindOfClass:[NSString class]] ? manager.policyState : @"";
+    if (CLManagerLooksChargingForDisplay(manager)) {
+        if ([policyState isEqualToString:@"hold_recharge"] || manager.holdCharging) {
+            return @"hold_recharge";
+        }
+        return @"charging";
+    }
+    if ([policyState isEqualToString:@"no_inflow"]) {
+        return @"battery";
+    }
+    if (CLManagerLooksDischargingForDisplay(manager)) {
+        return @"battery";
+    }
+
+    BOOL hasRealtimeExternalPower = manager.externalConnected
+        || manager.adapterWatts > 0
+        || (manager.adapterCurrent > 0 && manager.adapterVoltage > 0.1);
+    if (!hasRealtimeExternalPower) {
+        return @"battery";
+    }
+    if ([policyState isEqualToString:@"temp_paused"]) {
+        return @"temp_paused";
+    }
+    if ([policyState isEqualToString:@"hold"] || manager.holdActive) {
+        return @"hold";
+    }
+    if ([policyState isEqualToString:@"stopped"] || manager.predictiveChargingInhibitActive || !manager.chargeCommandEnabled) {
+        return @"stopped";
+    }
+    return @"external_idle";
+}
+
+static BOOL CLDisplayedPowerStateUsesExternalPower(CLBatteryManager *manager) {
+    return ![[CLDisplayedPowerStateForManager(manager) lowercaseString] isEqualToString:@"battery"];
+}
+
 - (NSInteger)normalizedChargeValueForSlider:(UISlider *)slider value:(NSInteger)value {
     BOOL enforceEdge = (self.currentChargeMode == 1);
     if (!enforceEdge) {
@@ -5925,10 +5997,10 @@ static UIViewController *CLTopVisibleViewController(void) {
 
 - (void)batteryInfoDidUpdate {
     CLBatteryManager *manager = [CLBatteryManager shared];
-    NSString *policyStateLabel = [self policyStateLabelForManager:manager];
+    NSString *powerStateLabel = [self powerStateLabelForManager:manager];
 
     // 更新电池状态
-    [self.batteryStatus applyBatteryManager:manager statusText:policyStateLabel];
+    [self.batteryStatus applyBatteryManager:manager statusText:powerStateLabel];
     
     // 更新信息卡片
     CGFloat health = manager.designCapacity > 0 ? (manager.nominalCapacity * 100.0 / manager.designCapacity) : 100;
@@ -5939,7 +6011,7 @@ static UIViewController *CLTopVisibleViewController(void) {
     [self updateCardValue:self.infoCard title:CLL(@"电压") value:[NSString stringWithFormat:@"%.2f V", manager.voltage]];
     [self updateCardValue:self.infoCard title:CLL(@"循环") value:[NSString stringWithFormat:@"%ld 次", (long)manager.cycleCount]];
     
-    [self updateCardValue:self.powerPathCard title:CLL(@"守护策略") value:policyStateLabel];
+    [self updateCardValue:self.powerPathCard title:CLL(@"供电状态") value:powerStateLabel];
     [self updateCardValue:self.powerPathCard title:CLL(@"充电命令") value:[self chargeCommandLabelForManager:manager]];
     [self updateCardValue:self.powerPathCard title:CLL(@"系统停充抑制") value:(manager.predictiveChargingInhibitActive ? CLL(@"已启用") : CLL(@"未启用"))];
     [self updateCardValue:self.powerPathCard title:CLL(@"系统优化充电") value:[self smartChargeStatusLabelForManager:manager]];
@@ -5947,13 +6019,14 @@ static UIViewController *CLTopVisibleViewController(void) {
     [self updateCardValue:self.powerPathCard title:CLL(@"保持范围") value:[self holdRangeLabelForManager:manager]];
 
     // 更新适配器卡片
-    if (manager.externalConnected && manager.adapterName.length > 0) {
+    BOOL hasExternalPower = CLDisplayedPowerStateUsesExternalPower(manager);
+    if (hasExternalPower && manager.adapterName.length > 0) {
         [self updateCardValue:self.adapterCard title:CLL(@"适配器") value:manager.adapterName];
         [self updateCardValue:self.adapterCard title:CLL(@"输出功率") value:[NSString stringWithFormat:@"%ld W", (long)manager.adapterWatts]];
         [self updateCardValue:self.adapterCard title:CLL(@"输入电压") value:[NSString stringWithFormat:@"%.1f V", manager.adapterVoltage]];
-    } else if (manager.externalConnected) {
+    } else if (hasExternalPower) {
         [self updateCardValue:self.adapterCard title:CLL(@"适配器") value:CLL(@"已连接")];
-        CGFloat watts = (manager.adapterVoltage * manager.adapterCurrent) / 1000.0;
+        CGFloat watts = manager.adapterWatts > 0 ? manager.adapterWatts : ((manager.adapterVoltage * manager.adapterCurrent) / 1000.0);
         [self updateCardValue:self.adapterCard title:CLL(@"输出功率") value:[NSString stringWithFormat:@"%.1f W", watts]];
         [self updateCardValue:self.adapterCard title:CLL(@"输入电压") value:[NSString stringWithFormat:@"%.1f V", manager.adapterVoltage]];
     } else {
@@ -6023,26 +6096,27 @@ static UIViewController *CLTopVisibleViewController(void) {
     }
 }
 
-- (NSString *)policyStateLabelForManager:(CLBatteryManager *)manager {
-    if ([manager.policyState isEqualToString:@"hold_recharge"]) {
+- (NSString *)powerStateLabelForManager:(CLBatteryManager *)manager {
+    NSString *policyState = CLDisplayedPowerStateForManager(manager);
+    if ([policyState isEqualToString:@"hold_recharge"]) {
         return CLL(@"插电保持中 · 补电");
     }
-    if ([manager.policyState isEqualToString:@"hold"]) {
+    if ([policyState isEqualToString:@"hold"]) {
         return CLL(@"插电保持中");
     }
-    if ([manager.policyState isEqualToString:@"stopped"]) {
+    if ([policyState isEqualToString:@"stopped"]) {
         return CLL(@"已连接电源 · 停止充电");
     }
-    if ([manager.policyState isEqualToString:@"temp_paused"]) {
+    if ([policyState isEqualToString:@"temp_paused"]) {
         return CLL(@"温控暂停充电");
     }
-    if ([manager.policyState isEqualToString:@"no_inflow"]) {
+    if ([policyState isEqualToString:@"no_inflow"]) {
         return CLL(@"停充时已禁流");
     }
-    if ([manager.policyState isEqualToString:@"charging"]) {
+    if ([policyState isEqualToString:@"charging"]) {
         return CLL(@"正在充电");
     }
-    if ([manager.policyState isEqualToString:@"external_idle"]) {
+    if ([policyState isEqualToString:@"external_idle"]) {
         return CLL(@"已连接电源 · 未充电");
     }
     return CLL(@"使用电池");

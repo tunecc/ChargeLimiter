@@ -196,6 +196,27 @@ static int clampIntValue(int value, int minValue, int maxValue) {
     return value;
 }
 
+static BOOL shouldRefreshBatteryPolicyForConfigKey(NSString* key) {
+    if (![key isKindOfClass:[NSString class]] || key.length == 0) {
+        return NO;
+    }
+    return [@[
+        @"mode",
+        @"charge_below",
+        @"charge_above",
+        @"enable_temp",
+        @"charge_temp_below",
+        @"charge_temp_above",
+        @"adv_predictive_inhibit_charge",
+        @"adv_disable_inflow",
+        @"adv_hold_enabled",
+        @"adv_hold_band",
+        @"adv_hold_behavior",
+        @"adv_hold_temp_disable_smart_charge",
+        @"disable_smart_charge"
+    ] containsObject:key];
+}
+
 static BOOL isFullChargeScheduleEnabled() {
     return getLocalBool(@"full_charge_sched_enabled", NO);
 }
@@ -1997,7 +2018,7 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
     }
     // 优先级: 电量极低 > 停充(电量>温度) > 充电(电量>温度) > 插电
     do {
-        if (capacity.intValue <= 5) { // 电量极低,优先级=1
+        if (is_adaptor_connected && capacity.intValue <= 5) { // 电量极低,优先级=1
             // 防止误用或意外造成无法充电
             if (is_adaptor_connected && (!g_chargeCommandEnabled || !is_charging || predictive_inhibit_active)) {
                 NSFileLog(@"start charging for extremely low capacity %@", capacity);
@@ -2009,7 +2030,7 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
             nextPolicyReason = @"critical_low_battery";
             break;
         }
-        if (enable_temp && temperature >= charge_temp_above) { // 停充-温度高,优先级=3
+        if (is_adaptor_connected && enable_temp && temperature >= charge_temp_above) { // 停充-温度高,优先级=3
             if (g_chargeCommandEnabled || current_looks_charging) {
                 NSFileLog(@"stop charging for high temperature %lf >= %lf", temperature, charge_temp_above);
                 setBatteryStatus(NO);
@@ -2024,7 +2045,7 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
             nextPolicyReason = @"temperature_high";
             break;
         }
-        if (full_charge_window_active) { // 满充计划窗口内，只跳过电量上限控制
+        if (is_adaptor_connected && full_charge_window_active) { // 满充计划窗口内，只跳过电量上限控制
             if (is_adaptor_connected && (!g_chargeCommandEnabled || !is_charging || predictive_inhibit_active) && capacity.intValue < 100) {
                 if (adv_disable_inflow && !is_inflow_enabled.boolValue) {
                     NSFileLog(@"enable inflow for scheduled full-charge window");
@@ -2080,7 +2101,7 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
             nextPolicyReason = [nextPolicyState isEqualToString:@"hold_recharge"] ? @"hold_recharge_active" : @"hold_monitoring";
             break;
         }
-        if (!disable_capacity_control && capacity.intValue >= charge_above) { // 停充-电量高,优先级=2
+        if (is_adaptor_connected && !disable_capacity_control && capacity.intValue >= charge_above) { // 停充-电量高,优先级=2
             if (g_chargeCommandEnabled || current_looks_charging) {
                 NSFileLog(@"stop charging for high capacity %@ >= %d", capacity, charge_above);
                 setBatteryStatus(NO);
@@ -2114,7 +2135,7 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
                 break;
             }
         }
-        if (!disable_capacity_control && capacity.intValue <= charge_below) { // 充电-电量低,优先级=5
+        if (is_adaptor_connected && !disable_capacity_control && capacity.intValue <= charge_below) { // 充电-电量低,优先级=5
             // 禁流模式下电量下降后恢复充电
             if (is_adaptor_connected) {
                 if (adv_disable_inflow && !is_inflow_enabled.boolValue) {
@@ -2130,7 +2151,7 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
             nextPolicyReason = @"capacity_low";
             break;
         }
-        if (!disable_capacity_control) {
+        if (is_adaptor_connected && !disable_capacity_control) {
             if (mode == CL_MODE_PLUG) {
                 if (is_adaptor_new_connected) { // 充电-插电,优先级=6
                     if (adv_disable_inflow && !is_inflow_enabled.boolValue) {
@@ -2424,16 +2445,8 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             }
         } else if ([key isEqualToString:@"adv_hold_enabled"]) {
             refreshHoldMonitorTimer();
-            refreshBatteryStateAndApplyPolicy();
-        } else if ([key isEqualToString:@"adv_hold_band"]) {
-            refreshBatteryStateAndApplyPolicy();
         } else if ([key isEqualToString:@"adv_hold_behavior"]) {
             refreshHoldMonitorTimer();
-            refreshBatteryStateAndApplyPolicy();
-        } else if ([key isEqualToString:@"adv_hold_temp_disable_smart_charge"]) {
-            refreshBatteryStateAndApplyPolicy();
-        } else if ([key isEqualToString:@"disable_smart_charge"]) {
-            refreshBatteryStateAndApplyPolicy();
         } else if ([key isEqualToString:@"adv_predictive_inhibit_charge"]) {
             resetBatteryStatus();
         } else if ([key isEqualToString:@"adv_disable_inflow"]) {
@@ -2463,6 +2476,9 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
                 setLocalFloat(@"charge_temp_below", [vals[0] floatValue]);
                 setLocalFloat(@"charge_temp_above", [vals[1] floatValue]);
             }
+        }
+        if (shouldRefreshBatteryPolicyForConfigKey(key)) {
+            refreshBatteryStateAndApplyPolicy();
         }
         return @{
             @"status": @0,
