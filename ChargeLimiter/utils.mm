@@ -1,5 +1,6 @@
 #include "utils.h"
 #import "CLLocalization.h"
+#import <TargetConditionals.h>
 #include <limits.h>
 #include <stdlib.h>
 #include <sys/utsname.h>
@@ -16,6 +17,17 @@ static NSString* const kContainerCacheFileName = @"com.chargelimiter.mod.contain
 typedef const char* (*jbroot_fn_t)(const char* path);
 static NSArray<NSString*>* availableContainerCachePaths(void);
 static NSString* resolveDocumentsByContainerCache(void);
+
+static void* CLLoadPrivateSymbol(const char* imagePath, const char* symbol) {
+    void* handle = dlopen(imagePath, RTLD_LAZY);
+    if (handle != NULL) {
+        void* fn = dlsym(handle, symbol);
+        if (fn != NULL) {
+            return fn;
+        }
+    }
+    return dlsym(RTLD_DEFAULT, symbol);
+}
 
 static BOOL isValidAppDocumentsPath(NSString* path) {
     if (path.length == 0) {
@@ -818,7 +830,18 @@ extern "C" NSDictionary* migrateLegacyConfigFiles_C(void) {
 }
 
 extern "C" {
-CFTypeRef MGCopyAnswer(CFStringRef str);
+static CFTypeRef CLCopyMobileGestaltAnswer(CFStringRef key) {
+    typedef CFTypeRef (*MGCopyAnswerFn)(CFStringRef);
+    static MGCopyAnswerFn copyAnswerFn = NULL;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        copyAnswerFn = (MGCopyAnswerFn)CLLoadPrivateSymbol("/usr/lib/libMobileGestalt.dylib", "MGCopyAnswer");
+    });
+    if (copyAnswerFn == NULL) {
+        return nil;
+    }
+    return copyAnswerFn(key);
+}
 }
 
 int platformize_me() {
@@ -1292,8 +1315,13 @@ NSString* getAppVer() {
 }
 
 NSString* getSysVer() {
-    CFTypeRef val = MGCopyAnswer(CFSTR("ProductVersion"));
-    return (__bridge_transfer NSString*)val;
+    CFTypeRef val = CLCopyMobileGestaltAnswer(CFSTR("ProductVersion"));
+    NSString* version = (__bridge_transfer NSString*)val;
+    if (version.length > 0) {
+        return version;
+    }
+    NSOperatingSystemVersion os = NSProcessInfo.processInfo.operatingSystemVersion;
+    return [NSString stringWithFormat:@"%ld.%ld.%ld", (long)os.majorVersion, (long)os.minorVersion, (long)os.patchVersion];
 }
 
 NSOperatingSystemVersion getSysVerInt() {
@@ -1600,16 +1628,19 @@ void setLocEnable(BOOL flag) {
 static float (*BrightnessGet)();
 static CFTypeRef (*BrightnessCreate)(CFAllocatorRef allocator);
 static void (*BrightnessSet)(float brightness, NSInteger unknown);
-extern "C" {
-void BKSDisplayBrightnessSetAutoBrightnessEnabled(Boolean enabled);
-}
+static void (*BrightnessSetAutoEnabled)(Boolean enabled);
 
 void initBrightness() {
     static bool inited = false;
     if (!inited) {
-        BrightnessGet = (__typeof(BrightnessGet))dlsym(RTLD_DEFAULT, "BKSDisplayBrightnessGetCurrent");
-        BrightnessCreate = (__typeof(BrightnessCreate))dlsym(RTLD_DEFAULT, "BKSDisplayBrightnessTransactionCreate");
-        BrightnessSet = (__typeof(BrightnessSet))dlsym(RTLD_DEFAULT, "BKSDisplayBrightnessSet");
+        BrightnessGet = (__typeof(BrightnessGet))CLLoadPrivateSymbol("/System/Library/PrivateFrameworks/BackBoardServices.framework/BackBoardServices",
+                                                                     "BKSDisplayBrightnessGetCurrent");
+        BrightnessCreate = (__typeof(BrightnessCreate))CLLoadPrivateSymbol("/System/Library/PrivateFrameworks/BackBoardServices.framework/BackBoardServices",
+                                                                           "BKSDisplayBrightnessTransactionCreate");
+        BrightnessSet = (__typeof(BrightnessSet))CLLoadPrivateSymbol("/System/Library/PrivateFrameworks/BackBoardServices.framework/BackBoardServices",
+                                                                     "BKSDisplayBrightnessSet");
+        BrightnessSetAutoEnabled = (__typeof(BrightnessSetAutoEnabled))CLLoadPrivateSymbol("/System/Library/PrivateFrameworks/BackBoardServices.framework/BackBoardServices",
+                                                                                            "BKSDisplayBrightnessSetAutoBrightnessEnabled");
         inited = true;
     }
 }
@@ -1641,7 +1672,10 @@ BOOL isAutoBrightEnable() {
 }
 
 void setAutoBrightEnable(BOOL flag) {
-    BKSDisplayBrightnessSetAutoBrightnessEnabled(flag);
+    initBrightness();
+    if (BrightnessSetAutoEnabled != NULL) {
+        BrightnessSetAutoEnabled(flag);
+    }
 }
 
 NSDictionary* getThermalData() {

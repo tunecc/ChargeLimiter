@@ -64,8 +64,17 @@ set_control_version() {
 }
 
 cleanup() {
-  [ -n "$STAGE_DIR" ] && rm -rf "$STAGE_DIR"
-  [ -d "$PAYLOAD_DIR" ] && rm -rf "$PAYLOAD_DIR"
+  status=$?
+
+  if [ -n "$STAGE_DIR" ]; then
+    rm -rf "$STAGE_DIR"
+  fi
+
+  if [ -d "$PAYLOAD_DIR" ]; then
+    rm -rf "$PAYLOAD_DIR"
+  fi
+
+  return "$status"
 }
 
 trap cleanup EXIT INT TERM

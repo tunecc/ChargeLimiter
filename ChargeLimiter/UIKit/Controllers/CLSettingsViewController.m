@@ -2832,6 +2832,653 @@ static NSString *CLHistoryEventTimestampLabel(NSTimeInterval timestamp) {
 
 @end
 
+typedef NS_ENUM(NSInteger, CLUpdateCheckState) {
+    CLUpdateCheckStateUnknown = 0,
+    CLUpdateCheckStateChecking,
+    CLUpdateCheckStateUpToDate,
+    CLUpdateCheckStateUpdateAvailable,
+    CLUpdateCheckStateFailed,
+};
+
+typedef void (^CLUpdateReleaseFetchCompletion)(NSString *latestVersion,
+                                               NSString *releaseURLString,
+                                               NSString *releaseNotes,
+                                               NSString *errorMessage);
+
+static NSString * const CLUpdateCheckStatusDidChangeNotification = @"CLUpdateCheckStatusDidChangeNotification";
+static NSString * const CLUpdateCheckLastDateKey = @"CLUpdateCheckLastDate";
+static NSString * const CLUpdateCheckLatestVersionKey = @"CLUpdateCheckLatestVersion";
+static NSString * const CLUpdateCheckLatestURLKey = @"CLUpdateCheckLatestURL";
+static NSString * const CLUpdateCheckLatestNotesKey = @"CLUpdateCheckLatestNotes";
+static NSString * const CLUpdateCheckLastErrorKey = @"CLUpdateCheckLastError";
+static NSString * const CLUpdateCheckStateKey = @"CLUpdateCheckState";
+static NSString * const CLUpdateCheckLastAlertedVersionKey = @"CLUpdateCheckLastAlertedVersion";
+static NSString * const CLUpdateCheckAPIURLString = @"https://api.github.com/repos/tunecc/ChargeLimiter/releases/latest";
+static NSString * const CLUpdateCheckFallbackReleaseURLString = @"https://github.com/tunecc/ChargeLimiter/releases/latest";
+static NSTimeInterval const CLUpdateCheckAutoInterval = 24 * 60 * 60;
+static NSTimeInterval const CLUpdateCheckFailureRetryInterval = 15 * 60;
+
+static NSString *CLCurrentAppVersion(void) {
+    NSString *version = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
+    if (![version isKindOfClass:[NSString class]]) {
+        return @"";
+    }
+    return version;
+}
+
+static NSString *CLNormalizeVersionString(NSString *version) {
+    if (![version isKindOfClass:[NSString class]]) {
+        return @"";
+    }
+    NSString *trimmed = [version stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    while ([trimmed hasPrefix:@"v"] || [trimmed hasPrefix:@"V"]) {
+        trimmed = [trimmed substringFromIndex:1];
+    }
+    return trimmed;
+}
+
+static NSComparisonResult CLCompareVersionStrings(NSString *lhs, NSString *rhs) {
+    NSString *normalizedLHS = CLNormalizeVersionString(lhs);
+    NSString *normalizedRHS = CLNormalizeVersionString(rhs);
+    return [normalizedLHS compare:normalizedRHS options:NSNumericSearch];
+}
+
+static NSString *CLCompactReleaseNotes(NSString *notes) {
+    if (![notes isKindOfClass:[NSString class]]) {
+        return @"";
+    }
+    NSArray<NSString *> *lines = [notes componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
+    NSMutableArray<NSString *> *kept = [NSMutableArray array];
+    NSUInteger totalLength = 0;
+    for (NSString *line in lines) {
+        NSString *trimmed = [line stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (trimmed.length == 0) {
+            continue;
+        }
+        [kept addObject:trimmed];
+        totalLength += trimmed.length;
+        if (kept.count >= 6 || totalLength >= 260) {
+            break;
+        }
+    }
+    NSString *summary = [kept componentsJoinedByString:@"\n"];
+    if (summary.length > 320) {
+        summary = [[summary substringToIndex:320] stringByAppendingString:@"…"];
+    }
+    return summary;
+}
+
+static NSString *CLGitHubReleaseVersionFromURL(NSURL *url) {
+    if (![url isKindOfClass:[NSURL class]]) {
+        return @"";
+    }
+    NSString *host = [url.host.lowercaseString stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (host.length == 0 || [host rangeOfString:@"github.com"].location == NSNotFound) {
+        return @"";
+    }
+
+    NSArray<NSString *> *pathComponents = url.pathComponents ?: @[];
+    NSUInteger tagIndex = [pathComponents indexOfObject:@"tag"];
+    if (tagIndex == NSNotFound || tagIndex + 1 >= pathComponents.count) {
+        return @"";
+    }
+
+    return CLNormalizeVersionString(pathComponents[tagIndex + 1]);
+}
+
+static NSString *CLCombineUpdateCheckErrorMessages(NSString *primary, NSString *secondary) {
+    NSString *trimmedPrimary = [primary isKindOfClass:[NSString class]]
+        ? [primary stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]]
+        : @"";
+    NSString *trimmedSecondary = [secondary isKindOfClass:[NSString class]]
+        ? [secondary stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]]
+        : @"";
+
+    if (trimmedPrimary.length == 0) {
+        return trimmedSecondary;
+    }
+    if (trimmedSecondary.length == 0 || [trimmedPrimary isEqualToString:trimmedSecondary]) {
+        return trimmedPrimary;
+    }
+    return [NSString stringWithFormat:@"%@\n%@", trimmedPrimary, trimmedSecondary];
+}
+
+static UIWindow *CLActiveKeyWindow(void) {
+    UIApplication *application = UIApplication.sharedApplication;
+    if (@available(iOS 13.0, *)) {
+        for (UIScene *scene in application.connectedScenes) {
+            if (![scene isKindOfClass:[UIWindowScene class]]) {
+                continue;
+            }
+            UIWindowScene *windowScene = (UIWindowScene *)scene;
+            if (windowScene.activationState != UISceneActivationStateForegroundActive &&
+                windowScene.activationState != UISceneActivationStateForegroundInactive) {
+                continue;
+            }
+            for (UIWindow *window in windowScene.windows) {
+                if (window.isKeyWindow) {
+                    return window;
+                }
+            }
+        }
+    }
+    return application.keyWindow;
+}
+
+static UIViewController *CLVisibleViewControllerFromRoot(UIViewController *rootViewController) {
+    UIViewController *current = rootViewController;
+    while (current) {
+        if ([current isKindOfClass:[UINavigationController class]]) {
+            UINavigationController *nav = (UINavigationController *)current;
+            current = nav.visibleViewController ?: nav.topViewController ?: current;
+            continue;
+        }
+        if ([current isKindOfClass:[UITabBarController class]]) {
+            UITabBarController *tab = (UITabBarController *)current;
+            current = tab.selectedViewController ?: current;
+            continue;
+        }
+        if (current.presentedViewController && ![current.presentedViewController isKindOfClass:[UIAlertController class]]) {
+            current = current.presentedViewController;
+            continue;
+        }
+        break;
+    }
+    return current;
+}
+
+static UIViewController *CLTopVisibleViewController(void) {
+    UIWindow *window = CLActiveKeyWindow();
+    if (!window) {
+        return nil;
+    }
+    return CLVisibleViewControllerFromRoot(window.rootViewController);
+}
+
+@interface CLUpdateCheckManager : NSObject
+@property (nonatomic, assign, readonly) CLUpdateCheckState state;
++ (instancetype)sharedManager;
+- (NSString *)statusText;
+- (void)performAutomaticCheck;
+- (void)performManualCheckFromPresenter:(UIViewController *)presenter;
+- (void)presentPendingAlertIfNeeded;
+@end
+
+@interface CLUpdateCheckManager ()
+@property (nonatomic, strong) NSURLSession *session;
+@property (nonatomic, assign, readwrite) CLUpdateCheckState state;
+@property (nonatomic, strong) NSDate *lastCheckDate;
+@property (nonatomic, copy) NSString *latestVersion;
+@property (nonatomic, copy) NSString *latestReleaseURLString;
+@property (nonatomic, copy) NSString *latestReleaseNotes;
+@property (nonatomic, copy) NSString *lastErrorMessage;
+@property (nonatomic, copy) NSString *lastAlertedVersion;
+@property (nonatomic, assign) BOOL checking;
+- (NSTimeInterval)automaticCheckInterval;
+- (void)fetchLatestReleaseFromAPIWithCompletion:(CLUpdateReleaseFetchCompletion)completion;
+- (void)fetchLatestReleaseFromFallbackPageWithCompletion:(CLUpdateReleaseFetchCompletion)completion;
+- (void)finishCheckWithLatestVersion:(NSString *)latestVersion
+                    releaseURLString:(NSString *)releaseURLString
+                        releaseNotes:(NSString *)releaseNotes
+                        errorMessage:(NSString *)errorMessage
+                       previousState:(CLUpdateCheckState)previousState
+               previousLatestVersion:(NSString *)previousLatestVersion
+                           presenter:(UIViewController *)presenter
+                       userInitiated:(BOOL)userInitiated;
+@end
+
+@implementation CLUpdateCheckManager
+
++ (instancetype)sharedManager {
+    static CLUpdateCheckManager *manager = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        manager = [[CLUpdateCheckManager alloc] init];
+    });
+    return manager;
+}
+
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        NSURLSessionConfiguration *config = [NSURLSessionConfiguration defaultSessionConfiguration];
+        config.timeoutIntervalForRequest = 10.0;
+        config.timeoutIntervalForResource = 15.0;
+        _session = [NSURLSession sessionWithConfiguration:config];
+        [self loadPersistedState];
+        [self normalizePersistedStateIfNeeded];
+    }
+    return self;
+}
+
+- (void)loadPersistedState {
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    id savedDate = [defaults objectForKey:CLUpdateCheckLastDateKey];
+    if ([savedDate isKindOfClass:[NSDate class]]) {
+        self.lastCheckDate = savedDate;
+    }
+    self.latestVersion = CLNormalizeVersionString([defaults stringForKey:CLUpdateCheckLatestVersionKey]);
+    self.latestReleaseURLString = [defaults stringForKey:CLUpdateCheckLatestURLKey] ?: CLUpdateCheckFallbackReleaseURLString;
+    self.latestReleaseNotes = [defaults stringForKey:CLUpdateCheckLatestNotesKey] ?: @"";
+    self.lastErrorMessage = [defaults stringForKey:CLUpdateCheckLastErrorKey] ?: @"";
+    self.lastAlertedVersion = CLNormalizeVersionString([defaults stringForKey:CLUpdateCheckLastAlertedVersionKey]);
+    NSInteger savedState = [defaults integerForKey:CLUpdateCheckStateKey];
+    if (savedState < CLUpdateCheckStateUnknown || savedState > CLUpdateCheckStateFailed) {
+        savedState = CLUpdateCheckStateUnknown;
+    }
+    self.state = (CLUpdateCheckState)savedState;
+}
+
+- (void)normalizePersistedStateIfNeeded {
+    NSString *currentVersion = CLNormalizeVersionString(CLCurrentAppVersion());
+    if (self.state == CLUpdateCheckStateChecking) {
+        self.state = CLUpdateCheckStateUnknown;
+    }
+    if (self.latestVersion.length == 0 && self.state == CLUpdateCheckStateUpdateAvailable) {
+        self.state = CLUpdateCheckStateUnknown;
+    }
+    if (self.latestVersion.length > 0 &&
+        CLCompareVersionStrings(self.latestVersion, currentVersion) != NSOrderedDescending &&
+        self.state == CLUpdateCheckStateUpdateAvailable) {
+        self.state = CLUpdateCheckStateUpToDate;
+    }
+    [self persistState];
+}
+
+- (void)persistState {
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    if (self.lastCheckDate) {
+        [defaults setObject:self.lastCheckDate forKey:CLUpdateCheckLastDateKey];
+    } else {
+        [defaults removeObjectForKey:CLUpdateCheckLastDateKey];
+    }
+    if (self.latestVersion.length > 0) {
+        [defaults setObject:self.latestVersion forKey:CLUpdateCheckLatestVersionKey];
+    } else {
+        [defaults removeObjectForKey:CLUpdateCheckLatestVersionKey];
+    }
+    if (self.latestReleaseURLString.length > 0) {
+        [defaults setObject:self.latestReleaseURLString forKey:CLUpdateCheckLatestURLKey];
+    } else {
+        [defaults removeObjectForKey:CLUpdateCheckLatestURLKey];
+    }
+    if (self.latestReleaseNotes.length > 0) {
+        [defaults setObject:self.latestReleaseNotes forKey:CLUpdateCheckLatestNotesKey];
+    } else {
+        [defaults removeObjectForKey:CLUpdateCheckLatestNotesKey];
+    }
+    if (self.lastErrorMessage.length > 0) {
+        [defaults setObject:self.lastErrorMessage forKey:CLUpdateCheckLastErrorKey];
+    } else {
+        [defaults removeObjectForKey:CLUpdateCheckLastErrorKey];
+    }
+    if (self.lastAlertedVersion.length > 0) {
+        [defaults setObject:self.lastAlertedVersion forKey:CLUpdateCheckLastAlertedVersionKey];
+    } else {
+        [defaults removeObjectForKey:CLUpdateCheckLastAlertedVersionKey];
+    }
+    [defaults setInteger:self.state forKey:CLUpdateCheckStateKey];
+    [defaults synchronize];
+}
+
+- (void)postStatusDidChange {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[NSNotificationCenter defaultCenter] postNotificationName:CLUpdateCheckStatusDidChangeNotification object:self];
+    });
+}
+
+- (BOOL)shouldPerformAutomaticCheck {
+    if (!self.lastCheckDate) {
+        return YES;
+    }
+    return [[NSDate date] timeIntervalSinceDate:self.lastCheckDate] >= [self automaticCheckInterval];
+}
+
+- (NSTimeInterval)automaticCheckInterval {
+    return self.state == CLUpdateCheckStateFailed ? CLUpdateCheckFailureRetryInterval : CLUpdateCheckAutoInterval;
+}
+
+- (NSString *)statusText {
+    switch (self.state) {
+        case CLUpdateCheckStateChecking:
+            return CLL(@"检查中...");
+        case CLUpdateCheckStateUpdateAvailable:
+            return self.latestVersion.length > 0
+                ? [NSString stringWithFormat:CLL(@"发现新版本 %@"), self.latestVersion]
+                : CLL(@"发现新版本");
+        case CLUpdateCheckStateUpToDate:
+            return CLL(@"已是最新版本");
+        case CLUpdateCheckStateFailed:
+            return CLL(@"更新检查失败");
+        default:
+            return CLL(@"未检查更新");
+    }
+}
+
+- (void)fetchLatestReleaseFromAPIWithCompletion:(CLUpdateReleaseFetchCompletion)completion {
+    NSURL *url = [NSURL URLWithString:CLUpdateCheckAPIURLString];
+    if (!url) {
+        if (completion) {
+            completion(@"", CLUpdateCheckFallbackReleaseURLString, @"", CLL(@"无法获取最新版本信息。"));
+        }
+        return;
+    }
+
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+    request.HTTPMethod = @"GET";
+    request.timeoutInterval = 10.0;
+    [request setValue:@"application/vnd.github+json" forHTTPHeaderField:@"Accept"];
+    [request setValue:@"2022-11-28" forHTTPHeaderField:@"X-GitHub-Api-Version"];
+    [request setValue:@"ChargeLimiter/1.0" forHTTPHeaderField:@"User-Agent"];
+
+    NSURLSessionDataTask *task = [self.session dataTaskWithRequest:request
+                                                 completionHandler:^(NSData * _Nullable data, NSURLResponse * _Nullable response, NSError * _Nullable error) {
+        NSHTTPURLResponse *httpResponse = [response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)response : nil;
+        NSString *latestVersion = @"";
+        NSString *releaseURLString = CLUpdateCheckFallbackReleaseURLString;
+        NSString *releaseNotes = @"";
+        NSString *errorMessage = @"";
+
+        if (!error && httpResponse && (httpResponse.statusCode < 200 || httpResponse.statusCode >= 300)) {
+            errorMessage = [NSString stringWithFormat:@"HTTP %ld", (long)httpResponse.statusCode];
+        }
+
+        if (!error && errorMessage.length == 0) {
+            NSError *jsonError = nil;
+            id jsonObject = [NSJSONSerialization JSONObjectWithData:data ?: [NSData data] options:0 error:&jsonError];
+            if (![jsonObject isKindOfClass:[NSDictionary class]]) {
+                errorMessage = jsonError.localizedDescription ?: CLL(@"无法获取最新版本信息。");
+            } else {
+                NSDictionary *release = (NSDictionary *)jsonObject;
+                latestVersion = CLNormalizeVersionString(release[@"tag_name"] ?: release[@"name"]);
+                releaseURLString = [release[@"html_url"] isKindOfClass:[NSString class]] ? release[@"html_url"] : CLUpdateCheckFallbackReleaseURLString;
+                releaseNotes = CLCompactReleaseNotes(release[@"body"]);
+                if (latestVersion.length == 0) {
+                    errorMessage = CLL(@"无法获取最新版本信息。");
+                }
+            }
+        }
+
+        if (error && errorMessage.length == 0) {
+            errorMessage = error.localizedDescription ?: CLL(@"更新检查失败");
+        }
+
+        if (completion) {
+            completion(latestVersion, releaseURLString, releaseNotes, errorMessage);
+        }
+    }];
+    [task resume];
+}
+
+- (void)fetchLatestReleaseFromFallbackPageWithCompletion:(CLUpdateReleaseFetchCompletion)completion {
+    NSURL *url = [NSURL URLWithString:CLUpdateCheckFallbackReleaseURLString];
+    if (!url) {
+        if (completion) {
+            completion(@"", CLUpdateCheckFallbackReleaseURLString, @"", CLL(@"无法从 GitHub Releases 页面解析最新版本信息。"));
+        }
+        return;
+    }
+
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+    request.HTTPMethod = @"GET";
+    request.timeoutInterval = 10.0;
+    [request setValue:@"text/html,application/xhtml+xml" forHTTPHeaderField:@"Accept"];
+    [request setValue:@"ChargeLimiter/1.0" forHTTPHeaderField:@"User-Agent"];
+
+    NSURLSessionDataTask *task = [self.session dataTaskWithRequest:request
+                                                 completionHandler:^(NSData * _Nullable data, NSURLResponse * _Nullable response, NSError * _Nullable error) {
+        NSHTTPURLResponse *httpResponse = [response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)response : nil;
+        NSString *latestVersion = @"";
+        NSString *releaseURLString = CLUpdateCheckFallbackReleaseURLString;
+        NSString *errorMessage = @"";
+
+        if (!error && httpResponse && (httpResponse.statusCode < 200 || httpResponse.statusCode >= 300)) {
+            errorMessage = [NSString stringWithFormat:@"HTTP %ld", (long)httpResponse.statusCode];
+        }
+
+        if (!error && errorMessage.length == 0) {
+            NSURL *finalURL = response.URL ?: url;
+            releaseURLString = finalURL.absoluteString.length > 0 ? finalURL.absoluteString : CLUpdateCheckFallbackReleaseURLString;
+            latestVersion = CLGitHubReleaseVersionFromURL(finalURL);
+            if (latestVersion.length == 0) {
+                errorMessage = CLL(@"无法从 GitHub Releases 页面解析最新版本信息。");
+            }
+        }
+
+        if (error && errorMessage.length == 0) {
+            errorMessage = error.localizedDescription ?: CLL(@"更新检查失败");
+        }
+
+        if (completion) {
+            completion(latestVersion, releaseURLString, @"", errorMessage);
+        }
+    }];
+    [task resume];
+}
+
+- (void)finishCheckWithLatestVersion:(NSString *)latestVersion
+                    releaseURLString:(NSString *)releaseURLString
+                        releaseNotes:(NSString *)releaseNotes
+                        errorMessage:(NSString *)errorMessage
+                       previousState:(CLUpdateCheckState)previousState
+               previousLatestVersion:(NSString *)previousLatestVersion
+                           presenter:(UIViewController *)presenter
+                       userInitiated:(BOOL)userInitiated {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self.checking = NO;
+        self.lastCheckDate = [NSDate date];
+
+        if (errorMessage.length > 0) {
+            BOOL keepKnownUpdate = previousLatestVersion.length > 0 &&
+                CLCompareVersionStrings(previousLatestVersion, CLCurrentAppVersion()) == NSOrderedDescending &&
+                (previousState == CLUpdateCheckStateUpdateAvailable || previousState == CLUpdateCheckStateFailed || previousState == CLUpdateCheckStateChecking);
+            self.state = keepKnownUpdate ? CLUpdateCheckStateUpdateAvailable : CLUpdateCheckStateFailed;
+            self.lastErrorMessage = errorMessage;
+            [self persistState];
+            [self postStatusDidChange];
+            if (userInitiated) {
+                [self presentFailureAlertFromPresenter:(presenter ?: CLTopVisibleViewController())];
+            }
+            return;
+        }
+
+        self.latestVersion = CLNormalizeVersionString(latestVersion);
+        self.latestReleaseURLString = releaseURLString.length > 0 ? releaseURLString : CLUpdateCheckFallbackReleaseURLString;
+        self.latestReleaseNotes = releaseNotes ?: @"";
+        self.lastErrorMessage = @"";
+
+        if (CLCompareVersionStrings(self.latestVersion, CLCurrentAppVersion()) == NSOrderedDescending) {
+            self.state = CLUpdateCheckStateUpdateAvailable;
+        } else {
+            self.state = CLUpdateCheckStateUpToDate;
+        }
+        [self persistState];
+        [self postStatusDidChange];
+
+        if (self.state == CLUpdateCheckStateUpdateAvailable) {
+            UIViewController *alertPresenter = presenter ?: CLTopVisibleViewController();
+            if (userInitiated) {
+                [self presentUpdateAlertFromPresenter:alertPresenter];
+            } else {
+                [self presentPendingAlertIfNeeded];
+            }
+        } else if (userInitiated) {
+            [self presentUpToDateAlertFromPresenter:(presenter ?: CLTopVisibleViewController())];
+        }
+    });
+}
+
+- (void)performAutomaticCheck {
+    if (self.checking) {
+        return;
+    }
+    if (![self shouldPerformAutomaticCheck]) {
+        [self presentPendingAlertIfNeeded];
+        [self postStatusDidChange];
+        return;
+    }
+    [self startCheckForced:NO presenter:nil userInitiated:NO];
+}
+
+- (void)performManualCheckFromPresenter:(UIViewController *)presenter {
+    if (self.checking) {
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"检查更新")
+                                                                       message:CLL(@"正在检查更新，请稍候。")
+                                                                preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:CLL(@"确定") style:UIAlertActionStyleDefault handler:nil]];
+        [presenter presentViewController:alert animated:YES completion:nil];
+        return;
+    }
+    [self startCheckForced:YES presenter:presenter userInitiated:YES];
+}
+
+- (void)startCheckForced:(BOOL)forced presenter:(UIViewController *)presenter userInitiated:(BOOL)userInitiated {
+    if (!forced && ![self shouldPerformAutomaticCheck]) {
+        [self presentPendingAlertIfNeeded];
+        return;
+    }
+    CLUpdateCheckState previousState = self.state;
+    NSString *previousLatestVersion = self.latestVersion ?: @"";
+    self.checking = YES;
+    self.state = CLUpdateCheckStateChecking;
+    self.lastErrorMessage = @"";
+    [self persistState];
+    [self postStatusDidChange];
+
+    __weak typeof(self) weakSelf = self;
+    [self fetchLatestReleaseFromAPIWithCompletion:^(NSString *latestVersion, NSString *releaseURLString, NSString *releaseNotes, NSString *errorMessage) {
+        CLUpdateCheckManager *strongSelf = weakSelf;
+        if (!strongSelf) {
+            return;
+        }
+
+        if (errorMessage.length == 0) {
+            [strongSelf finishCheckWithLatestVersion:latestVersion
+                                    releaseURLString:releaseURLString
+                                        releaseNotes:releaseNotes
+                                        errorMessage:@""
+                                       previousState:previousState
+                               previousLatestVersion:previousLatestVersion
+                                           presenter:presenter
+                                       userInitiated:userInitiated];
+            return;
+        }
+
+        [strongSelf fetchLatestReleaseFromFallbackPageWithCompletion:^(NSString *fallbackVersion, NSString *fallbackReleaseURLString, NSString *fallbackReleaseNotes, NSString *fallbackErrorMessage) {
+            NSString *finalErrorMessage = @"";
+            NSString *finalLatestVersion = fallbackVersion;
+            NSString *finalReleaseURLString = fallbackReleaseURLString;
+            NSString *finalReleaseNotes = fallbackReleaseNotes;
+
+            if (fallbackVersion.length == 0) {
+                finalErrorMessage = CLCombineUpdateCheckErrorMessages(errorMessage, fallbackErrorMessage);
+                finalReleaseURLString = CLUpdateCheckFallbackReleaseURLString;
+                finalReleaseNotes = @"";
+            }
+
+            [strongSelf finishCheckWithLatestVersion:finalLatestVersion
+                                    releaseURLString:finalReleaseURLString
+                                        releaseNotes:finalReleaseNotes
+                                        errorMessage:finalErrorMessage
+                                       previousState:previousState
+                               previousLatestVersion:previousLatestVersion
+                                           presenter:presenter
+                                       userInitiated:userInitiated];
+        }];
+    }];
+}
+
+- (BOOL)shouldPresentAutoAlert {
+    if (self.state != CLUpdateCheckStateUpdateAvailable || self.latestVersion.length == 0) {
+        return NO;
+    }
+    NSString *alertedVersion = CLNormalizeVersionString(self.lastAlertedVersion);
+    return alertedVersion.length == 0 || ![alertedVersion isEqualToString:self.latestVersion];
+}
+
+- (void)presentPendingAlertIfNeeded {
+    if (self.checking || ![self shouldPresentAutoAlert]) {
+        return;
+    }
+    UIViewController *presenter = CLTopVisibleViewController();
+    if (!presenter) {
+        return;
+    }
+    if ([presenter isKindOfClass:[UIAlertController class]] ||
+        [presenter.presentedViewController isKindOfClass:[UIAlertController class]]) {
+        __weak typeof(self) weakSelf = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [weakSelf presentPendingAlertIfNeeded];
+        });
+        return;
+    }
+    [self presentUpdateAlertFromPresenter:presenter];
+}
+
+- (void)presentUpToDateAlertFromPresenter:(UIViewController *)presenter {
+    if (!presenter) {
+        return;
+    }
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"检查更新")
+                                                                   message:[NSString stringWithFormat:CLL(@"当前已是最新版本 %@"), CLCurrentAppVersion()]
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"确定") style:UIAlertActionStyleDefault handler:nil]];
+    [presenter presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)presentFailureAlertFromPresenter:(UIViewController *)presenter {
+    if (!presenter) {
+        return;
+    }
+    NSString *message = self.lastErrorMessage.length > 0 ? self.lastErrorMessage : CLL(@"更新检查失败");
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"更新检查失败")
+                                                                   message:message
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"确定") style:UIAlertActionStyleDefault handler:nil]];
+    [presenter presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)presentUpdateAlertFromPresenter:(UIViewController *)presenter {
+    if (!presenter || self.latestVersion.length == 0) {
+        return;
+    }
+    self.lastAlertedVersion = self.latestVersion;
+    [self persistState];
+
+    NSMutableString *message = [NSMutableString stringWithFormat:CLL(@"当前版本：%@\n最新版本：%@"),
+                                CLCurrentAppVersion(),
+                                self.latestVersion];
+    if (self.latestReleaseNotes.length > 0) {
+        [message appendFormat:@"\n\n%@", [NSString stringWithFormat:CLL(@"更新说明：\n%@"), self.latestReleaseNotes]];
+    }
+    [message appendFormat:@"\n\n%@", CLL(@"是否前往 GitHub Releases 查看更新？")];
+
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:CLL(@"发现新版本 %@"), self.latestVersion]
+                                                                   message:message
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"稍后") style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"查看更新")
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction * _Nonnull action) {
+        NSURL *url = [NSURL URLWithString:weakSelf.latestReleaseURLString.length > 0 ? weakSelf.latestReleaseURLString : CLUpdateCheckFallbackReleaseURLString];
+        if (!url) {
+            return;
+        }
+        if (@available(iOS 10.0, *)) {
+            [UIApplication.sharedApplication openURL:url options:@{} completionHandler:nil];
+        } else {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+            [UIApplication.sharedApplication openURL:url];
+#pragma clang diagnostic pop
+        }
+    }]];
+    [presenter presentViewController:alert animated:YES completion:nil];
+}
+
+@end
+
 @implementation CLBatteryStatusView
 
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -3144,6 +3791,10 @@ static NSString *CLHistoryEventTimestampLabel(NSTimeInterval timestamp) {
                                              selector:@selector(languageDidChange)
                                                  name:CLAppLanguageDidChangeNotification
                                                object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(updateCheckStatusDidChange)
+                                                 name:CLUpdateCheckStatusDidChangeNotification
+                                               object:nil];
 }
 
 - (void)setupUI {
@@ -3207,9 +3858,15 @@ static NSString *CLHistoryEventTimestampLabel(NSTimeInterval timestamp) {
     [self.settingsCard addSeparator];
     [self.settingsCard addNavigationRowWithIcon:@"arrow.triangle.swap" title:CLL(@"迁移/删除旧版数据") value:@"" color:[UIColor systemOrangeColor] target:self action:@selector(migrateLegacyDataTapped)];
     [self.settingsCard addSeparator];
+    [self.settingsCard addNavigationRowWithIcon:@"arrow.triangle.2.circlepath" title:CLL(@"检查更新") value:[self updateStatusValue] color:[UIColor systemIndigoColor] target:self action:@selector(checkUpdateTapped)];
+    [self.settingsCard addSeparator];
     [self.settingsCard addNavigationRowWithIcon:@"questionmark.circle" title:CLL(@"帮助") value:@"" color:[UIColor systemBlueColor] target:self action:@selector(helpTapped)];
     
     [self.mainStack addArrangedSubview:self.settingsCard];
+}
+
+- (NSString *)updateStatusValue {
+    return [[CLUpdateCheckManager sharedManager] statusText];
 }
 
 - (NSString *)frequencyString:(NSInteger)freq {
@@ -3539,6 +4196,10 @@ static NSString *CLHistoryEventTimestampLabel(NSTimeInterval timestamp) {
     }
 }
 
+- (void)checkUpdateTapped {
+    [[CLUpdateCheckManager sharedManager] performManualCheckFromPresenter:self];
+}
+
 - (void)migrateLegacyDataTapped {
     NSArray<NSString*> *legacyDirs = getLegacyConfigDirsWithData_C();
     NSArray<NSString*> *residualFiles = getLegacyResidualFiles_C();
@@ -3703,6 +4364,10 @@ static NSString *CLHistoryEventTimestampLabel(NSTimeInterval timestamp) {
     }
 }
 
+- (void)updateCheckStatusDidChange {
+    [self updateCardValue:self.settingsCard title:CLL(@"检查更新") value:[self updateStatusValue]];
+}
+
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
@@ -3726,6 +4391,7 @@ static NSString *CLHistoryEventTimestampLabel(NSTimeInterval timestamp) {
 @property (nonatomic, strong) CLGlassCard *historyEntryCard;
 @property (nonatomic, strong) CLGlassCard *moreCard;
 @property (nonatomic, strong) UIButton *refreshButton;
+@property (nonatomic, strong) UILabel *softwareSettingsSubtitleLabel;
 @property (nonatomic, assign) NSInteger chargeBelow;
 @property (nonatomic, assign) NSInteger chargeAbove;
 @property (nonatomic, assign) NSInteger currentChargeMode; // 0=插电即充, 1=边缘触发
@@ -3783,6 +4449,16 @@ static NSString *CLHistoryEventTimestampLabel(NSTimeInterval timestamp) {
                                              selector:@selector(languageDidChange)
                                                  name:CLAppLanguageDidChangeNotification
                                                object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(updateCheckStatusDidChange)
+                                                 name:CLUpdateCheckStatusDidChangeNotification
+                                               object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(applicationDidBecomeActive)
+                                                 name:UIApplicationDidBecomeActiveNotification
+                                               object:nil];
+
+    [self updateCheckStatusDidChange];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -3795,6 +4471,11 @@ static NSString *CLHistoryEventTimestampLabel(NSTimeInterval timestamp) {
             [self promptLegacyMigrationIfNeeded];
         });
     }
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    [[CLUpdateCheckManager sharedManager] performAutomaticCheck];
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
@@ -4453,9 +5134,11 @@ static NSString *CLHistoryEventTimestampLabel(NSTimeInterval timestamp) {
     UILabel *subtitleLabel = [[UILabel alloc] init];
     subtitleLabel.translatesAutoresizingMaskIntoConstraints = NO;
     subtitleLabel.userInteractionEnabled = NO;
-    subtitleLabel.text = CLL(@"刷新频率 / 语言 / 外观 / 配置");
     subtitleLabel.font = [UIFont systemFontOfSize:12];
     subtitleLabel.textColor = [UIColor secondaryLabelColor];
+    subtitleLabel.numberOfLines = 2;
+    self.softwareSettingsSubtitleLabel = subtitleLabel;
+    [self updateSoftwareSettingsEntrySubtitle];
     
     UIStackView *textStack = [[UIStackView alloc] initWithArrangedSubviews:@[titleLabel, subtitleLabel]];
     textStack.translatesAutoresizingMaskIntoConstraints = NO;
@@ -4489,6 +5172,18 @@ static NSString *CLHistoryEventTimestampLabel(NSTimeInterval timestamp) {
     
     [self.softwareSettingsEntryCard.contentStack addArrangedSubview:entry];
     [self.mainStack addArrangedSubview:self.softwareSettingsEntryCard];
+}
+
+- (NSString *)softwareSettingsSubtitleText {
+    return CLL(@"刷新频率 / 语言 / 外观 / 配置");
+}
+
+- (void)updateSoftwareSettingsEntrySubtitle {
+    if (!self.softwareSettingsSubtitleLabel) {
+        return;
+    }
+    self.softwareSettingsSubtitleLabel.text = [self softwareSettingsSubtitleText];
+    self.softwareSettingsSubtitleLabel.textColor = [UIColor secondaryLabelColor];
 }
 
 - (void)setupHistoryEntryCard {
@@ -4844,6 +5539,14 @@ static NSString *CLHistoryEventTimestampLabel(NSTimeInterval timestamp) {
     }];
 }
 
+- (void)applicationDidBecomeActive {
+    [[CLUpdateCheckManager sharedManager] performAutomaticCheck];
+}
+
+- (void)updateCheckStatusDidChange {
+    [self updateSoftwareSettingsEntrySubtitle];
+}
+
 #pragma mark - Update UI
 
 - (void)batteryInfoDidUpdate {
@@ -5076,7 +5779,7 @@ static NSString *CLHistoryEventTimestampLabel(NSTimeInterval timestamp) {
     [self updateSliderValue:self.tempAboveRow value:manager.chargeTempAbove];
     [self updateSliderLabel:self.tempAboveRow value:manager.chargeTempAbove suffix:@"°C"];
     
-    // 软件设置入口不需要实时刷新
+    [self updateSoftwareSettingsEntrySubtitle];
 }
 
 - (void)updateSliderValue:(UIView *)row value:(NSInteger)value {
@@ -5100,6 +5803,7 @@ static NSString *CLHistoryEventTimestampLabel(NSTimeInterval timestamp) {
     [self setupUI];
     [self batteryInfoDidUpdate];
     [self configDidUpdate];
+    [self updateSoftwareSettingsEntrySubtitle];
 }
 
 @end

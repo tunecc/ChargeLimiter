@@ -1,3 +1,18 @@
+#import <TargetConditionals.h>
+
+#if TARGET_OS_SIMULATOR
+
+#import <Foundation/Foundation.h>
+
+int main(int argc, char** argv) {
+    @autoreleasepool {
+        NSLog(@"[CL-Daemon] simulator stub start");
+        return 0;
+    }
+}
+
+#else
+
 #include <sqlite3.h>
 #import <Foundation/Foundation.h>
 #import <UserNotifications/UserNotifications.h>
@@ -2992,3 +3007,5 @@ int main(int argc, char** argv) { // daemon_main
         return -1;
     }
 }
+
+#endif

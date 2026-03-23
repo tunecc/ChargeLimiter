@@ -143,7 +143,7 @@
 		18C123E42C8C08CB00FAAC6C /* ChargeLimiterDaemon_rootless.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ChargeLimiterDaemon_rootless.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		18C123E92C8C135F00FAAC6C /* libMobileGestalt.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libMobileGestalt.tbd; path = usr/lib/libMobileGestalt.tbd; sourceTree = SDKROOT; };
 		18C123EF2C8C168100FAAC6C /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
-		18C50C632B6CE41800793FA9 /* IOKit.tbd */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = "sourcecode.text-based-dylib-definition"; path = IOKit.tbd; sourceTree = "<group>"; };
+		18C50C632B6CE41800793FA9 /* IOKit.tbd */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = IOKit.framework; path = System/Library/Frameworks/IOKit.framework; sourceTree = SDKROOT; };
 		18C50C652B6D2D5D00793FA9 /* utils.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = utils.mm; sourceTree = "<group>"; };
 		18C50C672B6D2D6E00793FA9 /* utils.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = utils.h; sourceTree = "<group>"; };
 		18C50C772B6DFD5500793FA9 /* GCDWebServers.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = GCDWebServers.framework; path = ../../../../../opt/framework/GCDWebServers.framework; sourceTree = "<group>"; };
@@ -182,10 +182,7 @@
 				18C123F12C8C168E00FAAC6C /* JavaScriptCore.framework in Frameworks */,
 				184EA9AC2B7A373300D0981D /* UIKit.framework in Frameworks */,
 				182AAAF62B916632006BBE9A /* UserNotifications.framework in Frameworks */,
-				18D0C4302B7FC64F006A7AB7 /* BackBoardServices.tbd in Frameworks */,
-				1870F5FE2B83B8F100B3660F /* GraphicsServices.tbd in Frameworks */,
 				18C123F52C8C16DA00FAAC6C /* IOKit.tbd in Frameworks */,
-				18C123F22C8C16A700FAAC6C /* libMobileGestalt.tbd in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -199,10 +196,7 @@
 				18C123F02C8C168100FAAC6C /* JavaScriptCore.framework in Frameworks */,
 				187886552B519B2100E48B28 /* UIKit.framework in Frameworks */,
 				182AAAF52B91661B006BBE9A /* UserNotifications.framework in Frameworks */,
-				18D0C42F2B7FC64F006A7AB7 /* BackBoardServices.tbd in Frameworks */,
-				1870F5FD2B83B8F100B3660F /* GraphicsServices.tbd in Frameworks */,
 				18C123F42C8C16D600FAAC6C /* IOKit.tbd in Frameworks */,
-				18C123F32C8C16C200FAAC6C /* libMobileGestalt.tbd in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -213,9 +207,7 @@
 				18C123B32C8C08B300FAAC6C /* CFNetwork.framework in Frameworks */,
 				18C123EE2C8C14CD00FAAC6C /* CoreServices.framework in Frameworks */,
 				18C123B82C8C08B300FAAC6C /* UserNotifications.framework in Frameworks */,
-				18C123ED2C8C14B200FAAC6C /* BackBoardServices.tbd in Frameworks */,
 				18C123BD2C8C08B300FAAC6C /* IOKit.tbd in Frameworks */,
-				18C123EA2C8C135F00FAAC6C /* libMobileGestalt.tbd in Frameworks */,
 				18C123BB2C8C08B300FAAC6C /* libsqlite3.tbd in Frameworks */,
 				18C123BC2C8C08B300FAAC6C /* libz.tbd in Frameworks */,
 			);
@@ -228,9 +220,7 @@
 				18C123CF2C8C08CB00FAAC6C /* CFNetwork.framework in Frameworks */,
 				18C123D12C8C08CB00FAAC6C /* CoreServices.framework in Frameworks */,
 				18C123D42C8C08CB00FAAC6C /* UserNotifications.framework in Frameworks */,
-				18C123D52C8C08CB00FAAC6C /* BackBoardServices.tbd in Frameworks */,
 				18C123D92C8C08CB00FAAC6C /* IOKit.tbd in Frameworks */,
-				18C123EB2C8C136E00FAAC6C /* libMobileGestalt.tbd in Frameworks */,
 				18C123D82C8C08CB00FAAC6C /* libsqlite3.tbd in Frameworks */,
 				18C123D72C8C08CB00FAAC6C /* libz.tbd in Frameworks */,
 			);
