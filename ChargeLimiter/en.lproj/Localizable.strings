@@ -31,6 +31,7 @@
 "输出功率" = "Output Power";
 "输入电压" = "Input Voltage";
 "守护策略" = "Daemon Strategy";
+"供电状态" = "Power State";
 "充电命令" = "Charge Command";
 "系统停充抑制" = "System Stop Inhibit";
 "系统优化充电" = "Optimized Charging";
