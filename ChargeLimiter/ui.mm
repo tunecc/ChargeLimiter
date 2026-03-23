@@ -20,55 +20,6 @@ static int g_wind_type  = 0; // 1: HUD
 
 static void daemonRun(NSArray* nsreq);
 
-static void* CLLoadPrivateSymbol(const char* imagePath, const char* symbol) {
-    void* handle = dlopen(imagePath, RTLD_LAZY);
-    if (handle != NULL) {
-        void* fn = dlsym(handle, symbol);
-        if (fn != NULL) {
-            return fn;
-        }
-    }
-    return dlsym(RTLD_DEFAULT, symbol);
-}
-
-static void CLRegisterHIDEventCallback(void (*callback)(void*, void*, IOHIDServiceRef, IOHIDEventRef)) {
-    typedef void (*RegisterFn)(void (*)(void*, void*, IOHIDServiceRef, IOHIDEventRef));
-    static RegisterFn registerFn = NULL;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        registerFn = (RegisterFn)CLLoadPrivateSymbol("/System/Library/PrivateFrameworks/BackBoardServices.framework/BackBoardServices",
-                                                     "BKSHIDEventRegisterEventCallback");
-        if (registerFn == NULL) {
-            registerFn = (RegisterFn)CLLoadPrivateSymbol("/System/Library/PrivateFrameworks/GraphicsServices.framework/GraphicsServices",
-                                                         "BKSHIDEventRegisterEventCallback");
-        }
-    });
-    if (registerFn != NULL) {
-        registerFn(callback);
-    }
-}
-
-static void CLInstantiateApplicationSingleton(Class appClass) {
-    typedef void (*InstantiateFn)(id);
-    static InstantiateFn instantiateFn = NULL;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        instantiateFn = (InstantiateFn)CLLoadPrivateSymbol("/System/Library/PrivateFrameworks/GraphicsServices.framework/GraphicsServices",
-                                                           "UIApplicationInstantiateSingleton");
-        if (instantiateFn == NULL) {
-            instantiateFn = (InstantiateFn)CLLoadPrivateSymbol("/System/Library/PrivateFrameworks/UIKitCore.framework/UIKitCore",
-                                                               "UIApplicationInstantiateSingleton");
-        }
-        if (instantiateFn == NULL) {
-            instantiateFn = (InstantiateFn)CLLoadPrivateSymbol("/System/Library/Frameworks/UIKit.framework/UIKit",
-                                                               "UIApplicationInstantiateSingleton");
-        }
-    });
-    if (instantiateFn != NULL) {
-        instantiateFn(appClass);
-    }
-}
-
 static BOOL isDarkMode() {
     if (@available(iOS 13, *)) {
         if (UITraitCollection.currentTraitCollection.userInterfaceStyle == UIUserInterfaceStyleDark) {
@@ -239,7 +190,7 @@ static AppDelegate* _app = nil;
             NSURL* url = [NSURL URLWithString:initUrl];
             NSURLRequest* req = [NSURLRequest requestWithURL:url cachePolicy:NSURLRequestReloadIgnoringCacheData timeoutInterval:3.0];
             [webview loadRequest:req];
-            CLRegisterHIDEventCallback([](void* target, void* refcon, IOHIDServiceRef service, IOHIDEventRef event) {
+            BKSHIDEventRegisterEventCallback([](void* target, void* refcon, IOHIDServiceRef service, IOHIDEventRef event) {
                 @autoreleasepool {
                     IOHIDEventType type = IOHIDEventGetType(event);
                     if (type != kIOHIDEventTypeDigitizer) {
@@ -524,7 +475,7 @@ int main(int argc, char** argv) { // ChargeLimiter
             start_daemon();
             g_wind_type = 1;
             static id<UIApplicationDelegate> appDelegate = [AppDelegate new];
-            CLInstantiateApplicationSingleton(HUDMainApplication.class);
+            UIApplicationInstantiateSingleton(HUDMainApplication.class);
             static UIApplication* app = [UIApplication sharedApplication];
             [app setDelegate:appDelegate];
             [app __completeAndRunAsPlugin];

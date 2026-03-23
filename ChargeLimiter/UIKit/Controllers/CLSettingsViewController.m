@@ -25,10 +25,13 @@ NSDictionary* migrateLegacyConfigFiles_C(void);
 @property (nonatomic, assign) NSInteger chargeBelow;
 @property (nonatomic, assign) NSInteger chargeAbove;
 @property (nonatomic, assign) BOOL showLowMarker;
+@property (nonatomic, strong) NSLayoutConstraint *fillWidthConstraint;
 @property (nonatomic, strong) UIView *batteryBody;
 @property (nonatomic, strong) UIView *batteryTip;
 @property (nonatomic, strong) UIView *batteryInner;
 @property (nonatomic, strong) CAGradientLayer *fillGradient;
+@property (nonatomic, strong) CAGradientLayer *flowOverlayLayer;
+@property (nonatomic, strong) CAGradientLayer *temperatureGlowLayer;
 @property (nonatomic, strong) UIView *fillView;
 @property (nonatomic, strong) UIView *glossView;
 @property (nonatomic, strong) UIView *lowMarker;
@@ -36,7 +39,23 @@ NSDictionary* migrateLegacyConfigFiles_C(void);
 @property (nonatomic, strong) UILabel *percentLabel;
 @property (nonatomic, strong) UIImageView *chargingIcon;
 @property (nonatomic, strong) UILabel *statusLabel;
+@property (nonatomic, assign) NSInteger visualState;
+@property (nonatomic, strong) UIColor *fillPrimaryColor;
+@property (nonatomic, strong) UIColor *fillSecondaryColor;
+@property (nonatomic, strong) UIColor *statusAccentColor;
+- (void)applyBatteryManager:(CLBatteryManager *)manager statusText:(NSString *)statusText;
 @end
+
+typedef NS_ENUM(NSInteger, CLBatteryVisualState) {
+    CLBatteryVisualStateIdleNormal = 0,
+    CLBatteryVisualStateCharging,
+    CLBatteryVisualStateLowBattery,
+    CLBatteryVisualStatePaused,
+    CLBatteryVisualStateHold,
+    CLBatteryVisualStateHoldRecharge,
+    CLBatteryVisualStateTempPaused,
+    CLBatteryVisualStateNoInflow
+};
 
 #pragma mark - 毛玻璃卡片
 
@@ -3481,6 +3500,14 @@ static UIViewController *CLTopVisibleViewController(void) {
 
 @implementation CLBatteryStatusView
 
+// 电池尺寸常量
+#define BATTERY_BODY_WIDTH 110.0
+#define BATTERY_BODY_HEIGHT 46.0
+#define BATTERY_BODY_PADDING 4.0
+#define BATTERY_FILL_PADDING 3.0
+#define BATTERY_USABLE_WIDTH (BATTERY_BODY_WIDTH - 2*BATTERY_BODY_PADDING - 2*BATTERY_FILL_PADDING)
+#define BATTERY_USABLE_HEIGHT (BATTERY_BODY_HEIGHT - 2*BATTERY_BODY_PADDING - 2*BATTERY_FILL_PADDING)
+
 - (instancetype)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame];
     if (self) {
@@ -3488,9 +3515,18 @@ static UIViewController *CLTopVisibleViewController(void) {
         _chargeAbove = 80;
         _percentage = 75;
         _showLowMarker = YES;
+        _visualState = CLBatteryVisualStateIdleNormal;
         [self setupView];
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(accessibilitySettingsDidChange)
+                                                     name:UIAccessibilityReduceMotionStatusDidChangeNotification
+                                                   object:nil];
     }
     return self;
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
 - (void)setupView {
@@ -3555,6 +3591,29 @@ static UIViewController *CLTopVisibleViewController(void) {
     self.fillGradient.startPoint = CGPointMake(0, 0);
     self.fillGradient.endPoint = CGPointMake(0, 1);
     [self.fillView.layer addSublayer:self.fillGradient];
+
+    self.flowOverlayLayer = [CAGradientLayer layer];
+    self.flowOverlayLayer.colors = @[
+        (id)[UIColor clearColor].CGColor,
+        (id)[[UIColor whiteColor] colorWithAlphaComponent:0.7].CGColor,
+        (id)[UIColor clearColor].CGColor
+    ];
+    self.flowOverlayLayer.startPoint = CGPointMake(0, 0.5);
+    self.flowOverlayLayer.endPoint = CGPointMake(1, 0.5);
+    self.flowOverlayLayer.locations = @[@(-1.0), @(-0.45), @(0.1)];
+    self.flowOverlayLayer.opacity = 0.0;
+    [self.fillView.layer addSublayer:self.flowOverlayLayer];
+
+    self.temperatureGlowLayer = [CAGradientLayer layer];
+    self.temperatureGlowLayer.colors = @[
+        (id)[[UIColor systemOrangeColor] colorWithAlphaComponent:0.6].CGColor,
+        (id)[[UIColor systemRedColor] colorWithAlphaComponent:0.16].CGColor,
+        (id)[UIColor clearColor].CGColor
+    ];
+    self.temperatureGlowLayer.startPoint = CGPointMake(0.5, 0);
+    self.temperatureGlowLayer.endPoint = CGPointMake(0.5, 1);
+    self.temperatureGlowLayer.opacity = 0.0;
+    [self.fillView.layer addSublayer:self.temperatureGlowLayer];
     
     // 光泽效果
     self.glossView = [[UIView alloc] init];
@@ -3651,63 +3710,33 @@ static UIViewController *CLTopVisibleViewController(void) {
         [self.glossView.topAnchor constraintEqualToAnchor:self.fillView.topAnchor constant:2],
         [self.glossView.heightAnchor constraintEqualToConstant:8],
     ]];
-    
+
+    self.fillWidthConstraint = [self.fillView.widthAnchor constraintEqualToConstant:MAX(BATTERY_USABLE_WIDTH * (self.percentage / 100.0), 4)];
+    self.fillWidthConstraint.active = YES;
+
+    self.fillPrimaryColor = [UIColor systemGreenColor];
+    self.fillSecondaryColor = [[UIColor systemGreenColor] colorWithAlphaComponent:0.6];
+    self.statusAccentColor = [UIColor systemGreenColor];
     [self updateFillWidth];
+    [self applyVisualStateAnimated:NO forceAnimationRestart:YES];
     [self updateMarkersAnimated:NO];
 }
 
-// 电池尺寸常量
-#define BATTERY_BODY_WIDTH 110.0
-#define BATTERY_BODY_HEIGHT 46.0
-#define BATTERY_BODY_PADDING 4.0
-#define BATTERY_FILL_PADDING 3.0
-
-// 计算可用宽度: batteryInner宽度 - fillView左右边距
-// batteryInner宽度 = BATTERY_BODY_WIDTH - 2*BATTERY_BODY_PADDING = 110 - 8 = 102
-// 可用宽度 = 102 - 2*BATTERY_FILL_PADDING = 102 - 6 = 96
-#define BATTERY_USABLE_WIDTH (BATTERY_BODY_WIDTH - 2*BATTERY_BODY_PADDING - 2*BATTERY_FILL_PADDING)
-#define BATTERY_USABLE_HEIGHT (BATTERY_BODY_HEIGHT - 2*BATTERY_BODY_PADDING - 2*BATTERY_FILL_PADDING)
-
 - (void)updateFillWidth {
     CGFloat fillWidth = BATTERY_USABLE_WIDTH * (self.percentage / 100.0);
-    
-    for (NSLayoutConstraint *c in self.fillView.constraints) {
-        if (c.firstAttribute == NSLayoutAttributeWidth) {
-            [self.fillView removeConstraint:c];
-        }
-    }
-    [self.fillView.widthAnchor constraintEqualToConstant:MAX(fillWidth, 4)].active = YES;
-    
-    // 更新颜色和渐变
-    UIColor *color;
-    UIColor *colorLight;
-    if (self.percentage <= 20) {
-        color = [UIColor systemRedColor];
-        colorLight = [[UIColor systemRedColor] colorWithAlphaComponent:0.6];
-    } else if (self.percentage <= 50) {
-        color = [UIColor systemOrangeColor];
-        colorLight = [[UIColor systemOrangeColor] colorWithAlphaComponent:0.6];
-    } else {
-        color = [UIColor systemGreenColor];
-        colorLight = [[UIColor systemGreenColor] colorWithAlphaComponent:0.6];
-    }
-    
-    // 更新渐变
-    self.fillGradient.colors = @[(id)color.CGColor, (id)colorLight.CGColor];
-    self.chargingIcon.tintColor = color;
-    
+
+    self.fillWidthConstraint.constant = MAX(fillWidth, 4);
     [self setNeedsLayout];
 }
 
 - (void)setPercentage:(CGFloat)percentage {
-    _percentage = percentage;
-    self.percentLabel.text = [NSString stringWithFormat:@"%.0f%%", percentage];
+    _percentage = MAX(0.0, MIN(percentage, 100.0));
+    self.percentLabel.text = [NSString stringWithFormat:@"%.0f%%", _percentage];
     [self updateFillWidth];
 }
 
 - (void)setIsCharging:(BOOL)isCharging {
     _isCharging = isCharging;
-    self.chargingIcon.hidden = !isCharging;
 }
 
 - (void)setChargeBelow:(NSInteger)chargeBelow {
@@ -3751,9 +3780,354 @@ static UIViewController *CLTopVisibleViewController(void) {
 
 - (void)layoutSubviews {
     [super layoutSubviews];
-    // 更新渐变层frame
     self.fillGradient.frame = self.fillView.bounds;
+    self.flowOverlayLayer.frame = self.fillView.bounds;
+    self.temperatureGlowLayer.frame = self.fillView.bounds;
+    self.flowOverlayLayer.cornerRadius = self.fillView.layer.cornerRadius;
+    self.temperatureGlowLayer.cornerRadius = self.fillView.layer.cornerRadius;
     [self updateMarkersAnimated:NO];
+}
+
+- (void)didMoveToWindow {
+    [super didMoveToWindow];
+    [self applyVisualStateAnimated:NO forceAnimationRestart:YES];
+}
+
+- (void)accessibilitySettingsDidChange {
+    [self applyVisualStateAnimated:NO forceAnimationRestart:YES];
+}
+
+- (BOOL)shouldReduceMotion {
+    return UIAccessibilityIsReduceMotionEnabled() || self.window == nil;
+}
+
+- (CLBatteryVisualState)visualStateForManager:(CLBatteryManager *)manager {
+    NSString *policyState = manager.policyState ?: @"";
+    if ([policyState isEqualToString:@"temp_paused"]) {
+        return CLBatteryVisualStateTempPaused;
+    }
+    if ([policyState isEqualToString:@"hold_recharge"]) {
+        return CLBatteryVisualStateHoldRecharge;
+    }
+    if ([policyState isEqualToString:@"hold"]) {
+        return CLBatteryVisualStateHold;
+    }
+    if ([policyState isEqualToString:@"no_inflow"]) {
+        return CLBatteryVisualStateNoInflow;
+    }
+    if ([policyState isEqualToString:@"charging"] || manager.holdCharging) {
+        return CLBatteryVisualStateCharging;
+    }
+    if ([policyState isEqualToString:@"stopped"] || [policyState isEqualToString:@"external_idle"]) {
+        return CLBatteryVisualStatePaused;
+    }
+    if (manager.currentCapacity <= 20) {
+        return CLBatteryVisualStateLowBattery;
+    }
+    if (manager.externalConnected && !manager.isCharging) {
+        return CLBatteryVisualStatePaused;
+    }
+    return CLBatteryVisualStateIdleNormal;
+}
+
+- (NSString *)statusIconNameForVisualState:(CLBatteryVisualState)state {
+    switch (state) {
+        case CLBatteryVisualStateCharging:
+        case CLBatteryVisualStateHoldRecharge:
+            return @"bolt.fill";
+        case CLBatteryVisualStatePaused:
+            return @"pause.fill";
+        case CLBatteryVisualStateHold:
+            return @"pause.circle.fill";
+        case CLBatteryVisualStateTempPaused:
+            return @"thermometer.sun";
+        case CLBatteryVisualStateNoInflow:
+            return @"slash.circle.fill";
+        default:
+            return nil;
+    }
+}
+
+- (void)applyBatteryManager:(CLBatteryManager *)manager statusText:(NSString *)statusText {
+    if (!manager) {
+        return;
+    }
+
+    self.statusLabel.text = statusText ?: @"";
+    self.percentage = manager.currentCapacity;
+    self.isCharging = manager.isCharging;
+
+    CLBatteryVisualState nextState = [self visualStateForManager:manager];
+    BOOL stateChanged = (nextState != (CLBatteryVisualState)self.visualState);
+    self.visualState = nextState;
+    [self applyVisualStateAnimated:(self.window != nil && stateChanged) forceAnimationRestart:stateChanged];
+}
+
+- (void)applyVisualStateAnimated:(BOOL)animated forceAnimationRestart:(BOOL)forceAnimationRestart {
+    CLBatteryVisualState state = (CLBatteryVisualState)self.visualState;
+    BOOL reduceMotion = [self shouldReduceMotion];
+    UIColor *primaryColor = [UIColor systemGreenColor];
+    UIColor *secondaryColor = [[UIColor systemGreenColor] colorWithAlphaComponent:0.68];
+    UIColor *accentColor = primaryColor;
+    UIColor *glossColor = [UIColor colorWithWhite:1.0 alpha:0.3];
+    UIColor *statusColor = [UIColor secondaryLabelColor];
+    NSString *iconName = [self statusIconNameForVisualState:state];
+
+    CGFloat fillAlpha = 1.0;
+    CGFloat flowOpacity = 0.0;
+    CGFloat temperatureOpacity = 0.0;
+
+    switch (state) {
+        case CLBatteryVisualStateCharging:
+            primaryColor = [UIColor systemGreenColor];
+            secondaryColor = [[UIColor systemTealColor] colorWithAlphaComponent:0.72];
+            accentColor = primaryColor;
+            glossColor = [UIColor colorWithWhite:1.0 alpha:0.36];
+            flowOpacity = reduceMotion ? 0.14 : 0.45;
+            break;
+        case CLBatteryVisualStateLowBattery:
+            if (self.percentage <= 10) {
+                primaryColor = [UIColor systemRedColor];
+                secondaryColor = [[UIColor systemOrangeColor] colorWithAlphaComponent:0.65];
+                statusColor = [UIColor systemRedColor];
+            } else {
+                primaryColor = [UIColor systemOrangeColor];
+                secondaryColor = [[UIColor systemRedColor] colorWithAlphaComponent:0.42];
+                statusColor = [UIColor systemOrangeColor];
+            }
+            accentColor = primaryColor;
+            glossColor = [primaryColor colorWithAlphaComponent:0.2];
+            break;
+        case CLBatteryVisualStatePaused:
+            primaryColor = [UIColor systemBlueColor];
+            secondaryColor = [[UIColor systemIndigoColor] colorWithAlphaComponent:0.48];
+            accentColor = primaryColor;
+            glossColor = [[UIColor systemBlueColor] colorWithAlphaComponent:0.16];
+            break;
+        case CLBatteryVisualStateHold:
+            primaryColor = [UIColor systemTealColor];
+            secondaryColor = [[UIColor systemBlueColor] colorWithAlphaComponent:0.5];
+            accentColor = primaryColor;
+            glossColor = [[UIColor systemTealColor] colorWithAlphaComponent:0.18];
+            break;
+        case CLBatteryVisualStateHoldRecharge:
+            primaryColor = [UIColor systemGreenColor];
+            secondaryColor = [[UIColor systemTealColor] colorWithAlphaComponent:0.66];
+            accentColor = primaryColor;
+            glossColor = [UIColor colorWithWhite:1.0 alpha:0.34];
+            flowOpacity = reduceMotion ? 0.12 : 0.3;
+            break;
+        case CLBatteryVisualStateTempPaused:
+            primaryColor = [UIColor systemOrangeColor];
+            secondaryColor = [[UIColor systemRedColor] colorWithAlphaComponent:0.55];
+            accentColor = [UIColor systemOrangeColor];
+            glossColor = [[UIColor systemOrangeColor] colorWithAlphaComponent:0.2];
+            statusColor = [UIColor systemOrangeColor];
+            temperatureOpacity = reduceMotion ? 0.2 : 0.34;
+            break;
+        case CLBatteryVisualStateNoInflow:
+            primaryColor = [UIColor systemGrayColor];
+            secondaryColor = [[UIColor systemTealColor] colorWithAlphaComponent:0.35];
+            accentColor = [UIColor systemTealColor];
+            glossColor = [[UIColor systemGrayColor] colorWithAlphaComponent:0.14];
+            statusColor = [UIColor tertiaryLabelColor];
+            fillAlpha = 0.9;
+            break;
+        case CLBatteryVisualStateIdleNormal:
+        default:
+            primaryColor = [UIColor systemGreenColor];
+            secondaryColor = [[UIColor systemGreenColor] colorWithAlphaComponent:0.62];
+            accentColor = primaryColor;
+            glossColor = [UIColor colorWithWhite:1.0 alpha:0.28];
+            break;
+    }
+
+    self.fillPrimaryColor = primaryColor;
+    self.fillSecondaryColor = secondaryColor;
+    self.statusAccentColor = accentColor;
+    self.statusLabel.textColor = statusColor;
+    self.fillView.alpha = fillAlpha;
+    self.glossView.backgroundColor = glossColor;
+    self.flowOverlayLayer.opacity = flowOpacity;
+    self.temperatureGlowLayer.opacity = temperatureOpacity;
+
+    [self applyGradientColorsAnimated:animated];
+    [self updateStatusIconWithName:iconName animated:animated];
+
+    BOOL needsAnimation = [self needsContinuousAnimationForState:state];
+    BOOL hasAnimation = [self hasContinuousAnimationForState:state];
+
+    if (forceAnimationRestart || (!needsAnimation && hasAnimation)) {
+        [self stopContinuousAnimations];
+    }
+
+    if (needsAnimation && (forceAnimationRestart || !hasAnimation)) {
+        [self startContinuousAnimationIfNeeded];
+    }
+}
+
+- (BOOL)needsContinuousAnimationForState:(CLBatteryVisualState)state {
+    switch (state) {
+        case CLBatteryVisualStateCharging:
+        case CLBatteryVisualStateHoldRecharge:
+        case CLBatteryVisualStateTempPaused:
+            return YES;
+        case CLBatteryVisualStateLowBattery:
+            return (self.percentage <= 10);
+        case CLBatteryVisualStateIdleNormal:
+            return YES;
+        default:
+            return NO;
+    }
+}
+
+- (BOOL)hasContinuousAnimationForState:(CLBatteryVisualState)state {
+    switch (state) {
+        case CLBatteryVisualStateCharging:
+        case CLBatteryVisualStateHoldRecharge:
+            return ([self.flowOverlayLayer animationForKey:@"cl.flow"] != nil);
+        case CLBatteryVisualStateLowBattery:
+            return ([self.fillView.layer animationForKey:@"cl.lowBatteryPulse"] != nil);
+        case CLBatteryVisualStateTempPaused:
+            return ([self.temperatureGlowLayer animationForKey:@"cl.temperature"] != nil);
+        case CLBatteryVisualStateIdleNormal:
+            return ([self.glossView.layer animationForKey:@"cl.gloss"] != nil);
+        default:
+            return NO;
+    }
+}
+
+- (void)applyGradientColorsAnimated:(BOOL)animated {
+    NSArray *targetColors = @[(id)self.fillPrimaryColor.CGColor, (id)self.fillSecondaryColor.CGColor];
+    id currentColors = self.fillGradient.presentationLayer ? ((CAGradientLayer *)self.fillGradient.presentationLayer).colors : self.fillGradient.colors;
+    self.fillGradient.colors = targetColors;
+    self.chargingIcon.tintColor = self.statusAccentColor;
+
+    if (animated && currentColors) {
+        CABasicAnimation *animation = [CABasicAnimation animationWithKeyPath:@"colors"];
+        animation.fromValue = currentColors;
+        animation.toValue = targetColors;
+        animation.duration = 0.22;
+        animation.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+        [self.fillGradient addAnimation:animation forKey:@"cl.gradient.transition"];
+    }
+}
+
+- (void)updateStatusIconWithName:(NSString *)iconName animated:(BOOL)animated {
+    UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:18 weight:UIImageSymbolWeightSemibold];
+    UIImage *icon = iconName.length > 0 ? CLSymbolImage(iconName, config) : nil;
+    void (^changes)(void) = ^{
+        self.chargingIcon.image = icon;
+        self.chargingIcon.tintColor = self.statusAccentColor;
+        self.chargingIcon.alpha = icon ? 1.0 : 0.0;
+    };
+
+    if (animated && self.window != nil) {
+        if (!self.chargingIcon.hidden || icon != nil) {
+            self.chargingIcon.hidden = NO;
+            [UIView transitionWithView:self.chargingIcon
+                              duration:0.18
+                               options:UIViewAnimationOptionTransitionCrossDissolve | UIViewAnimationOptionAllowUserInteraction
+                            animations:changes
+                            completion:^(BOOL finished) {
+                                self.chargingIcon.hidden = (icon == nil);
+                            }];
+            return;
+        }
+    }
+
+    changes();
+    self.chargingIcon.hidden = (icon == nil);
+}
+
+- (void)stopContinuousAnimations {
+    [self.flowOverlayLayer removeAnimationForKey:@"cl.flow"];
+    [self.temperatureGlowLayer removeAnimationForKey:@"cl.temperature"];
+    [self.glossView.layer removeAnimationForKey:@"cl.gloss"];
+    [self.fillView.layer removeAnimationForKey:@"cl.lowBatteryPulse"];
+    [self.chargingIcon.layer removeAnimationForKey:@"cl.iconPulse"];
+}
+
+- (void)startContinuousAnimationIfNeeded {
+    if ([self shouldReduceMotion]) {
+        return;
+    }
+
+    CLBatteryVisualState state = (CLBatteryVisualState)self.visualState;
+    switch (state) {
+        case CLBatteryVisualStateCharging:
+            [self startFlowAnimationWithDuration:1.25 opacity:0.45];
+            [self startIconPulseWithScale:1.06 duration:0.95];
+            break;
+        case CLBatteryVisualStateHoldRecharge:
+            [self startFlowAnimationWithDuration:2.0 opacity:0.28];
+            [self startIconPulseWithScale:1.04 duration:1.35];
+            break;
+        case CLBatteryVisualStateLowBattery:
+            if (self.percentage <= 10) {
+                CABasicAnimation *pulse = [CABasicAnimation animationWithKeyPath:@"opacity"];
+                pulse.fromValue = @0.78;
+                pulse.toValue = @1.0;
+                pulse.duration = 0.9;
+                pulse.autoreverses = YES;
+                pulse.repeatCount = HUGE_VALF;
+                pulse.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+                [self.fillView.layer addAnimation:pulse forKey:@"cl.lowBatteryPulse"];
+            }
+            break;
+        case CLBatteryVisualStateTempPaused: {
+            [self startIconPulseWithScale:1.03 duration:1.45];
+            CABasicAnimation *heat = [CABasicAnimation animationWithKeyPath:@"opacity"];
+            heat.fromValue = @0.16;
+            heat.toValue = @0.42;
+            heat.duration = 1.45;
+            heat.autoreverses = YES;
+            heat.repeatCount = HUGE_VALF;
+            heat.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+            [self.temperatureGlowLayer addAnimation:heat forKey:@"cl.temperature"];
+            break;
+        }
+        case CLBatteryVisualStateIdleNormal:
+            {
+                CABasicAnimation *gloss = [CABasicAnimation animationWithKeyPath:@"opacity"];
+                gloss.fromValue = @0.12;
+                gloss.toValue = @0.28;
+                gloss.duration = 2.6;
+                gloss.autoreverses = YES;
+                gloss.repeatCount = HUGE_VALF;
+                gloss.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+                [self.glossView.layer addAnimation:gloss forKey:@"cl.gloss"];
+            }
+            break;
+        default:
+            break;
+    }
+}
+
+- (void)startFlowAnimationWithDuration:(CFTimeInterval)duration opacity:(CGFloat)opacity {
+    self.flowOverlayLayer.opacity = opacity;
+    CABasicAnimation *animation = [CABasicAnimation animationWithKeyPath:@"locations"];
+    animation.fromValue = @[@(-1.0), @(-0.45), @(0.1)];
+    animation.toValue = @[@(0.9), @(1.35), @(1.8)];
+    animation.duration = duration;
+    animation.repeatCount = HUGE_VALF;
+    animation.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+    [self.flowOverlayLayer addAnimation:animation forKey:@"cl.flow"];
+}
+
+- (void)startIconPulseWithScale:(CGFloat)scale duration:(CFTimeInterval)duration {
+    if (self.chargingIcon.hidden) {
+        return;
+    }
+    CAKeyframeAnimation *pulse = [CAKeyframeAnimation animationWithKeyPath:@"transform.scale"];
+    pulse.values = @[@1.0, @(scale), @1.0];
+    pulse.duration = duration;
+    pulse.repeatCount = HUGE_VALF;
+    pulse.timingFunctions = @[
+        [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut],
+        [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut]
+    ];
+    [self.chargingIcon.layer addAnimation:pulse forKey:@"cl.iconPulse"];
 }
 
 @end
@@ -5551,14 +5925,10 @@ static UIViewController *CLTopVisibleViewController(void) {
 
 - (void)batteryInfoDidUpdate {
     CLBatteryManager *manager = [CLBatteryManager shared];
-    
+    NSString *policyStateLabel = [self policyStateLabelForManager:manager];
+
     // 更新电池状态
-    self.batteryStatus.percentage = manager.currentCapacity;
-    BOOL showChargingIcon = manager.holdCharging || (manager.isCharging && !manager.predictiveChargingInhibitActive);
-    self.batteryStatus.isCharging = showChargingIcon;
-    
-    // 更新状态文字
-    self.batteryStatus.statusLabel.text = [self policyStateLabelForManager:manager];
+    [self.batteryStatus applyBatteryManager:manager statusText:policyStateLabel];
     
     // 更新信息卡片
     CGFloat health = manager.designCapacity > 0 ? (manager.nominalCapacity * 100.0 / manager.designCapacity) : 100;
@@ -5569,7 +5939,7 @@ static UIViewController *CLTopVisibleViewController(void) {
     [self updateCardValue:self.infoCard title:CLL(@"电压") value:[NSString stringWithFormat:@"%.2f V", manager.voltage]];
     [self updateCardValue:self.infoCard title:CLL(@"循环") value:[NSString stringWithFormat:@"%ld 次", (long)manager.cycleCount]];
     
-    [self updateCardValue:self.powerPathCard title:CLL(@"守护策略") value:[self policyStateLabelForManager:manager]];
+    [self updateCardValue:self.powerPathCard title:CLL(@"守护策略") value:policyStateLabel];
     [self updateCardValue:self.powerPathCard title:CLL(@"充电命令") value:[self chargeCommandLabelForManager:manager]];
     [self updateCardValue:self.powerPathCard title:CLL(@"系统停充抑制") value:(manager.predictiveChargingInhibitActive ? CLL(@"已启用") : CLL(@"未启用"))];
     [self updateCardValue:self.powerPathCard title:CLL(@"系统优化充电") value:[self smartChargeStatusLabelForManager:manager]];
