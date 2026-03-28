@@ -34,6 +34,17 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
     return img;
 }
 
+static char kCLAdvPickerColorKey;
+static char kCLAdvPickerIconViewKey;
+static char kCLAdvPickerTitleLabelKey;
+static char kCLAdvPickerValueLabelKey;
+static char kCLAdvPickerChevronKey;
+static char kCLAdvSwitchColorKey;
+static char kCLAdvSwitchIconViewKey;
+static char kCLAdvSwitchTitleLabelKey;
+static char kCLAdvSwitchSubtitleLabelKey;
+static char kCLAdvSwitchViewKey;
+
 @interface CLAdvSettingsCard : UIView
 @property (nonatomic, strong) UIStackView *contentStack;
 @end
@@ -90,6 +101,7 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
 - (void)addSwitchRowWithIcon:(NSString *)iconName title:(NSString *)title subtitle:(NSString *)subtitle isOn:(BOOL)isOn color:(UIColor *)color tag:(NSInteger)tag target:(id)target action:(SEL)action {
     UIView *row = [[UIView alloc] init];
     row.translatesAutoresizingMaskIntoConstraints = NO;
+    row.tag = tag;
     
     UIImageView *iconView = [[UIImageView alloc] init];
     iconView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -123,9 +135,10 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
     [row addSubview:switchView];
     
     CGFloat minimumRowHeight = 50;
+    UILabel *subtitleLabel = nil;
     
     if (subtitle) {
-        UILabel *subtitleLabel = [[UILabel alloc] init];
+        subtitleLabel = [[UILabel alloc] init];
         subtitleLabel.translatesAutoresizingMaskIntoConstraints = NO;
         subtitleLabel.text = subtitle;
         subtitleLabel.font = [UIFont systemFontOfSize:12];
@@ -160,6 +173,14 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
         [switchView.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-16],
         [switchView.centerYAnchor constraintEqualToAnchor:row.centerYAnchor]
     ]];
+
+    objc_setAssociatedObject(row, &kCLAdvSwitchColorKey, iconColor, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(row, &kCLAdvSwitchIconViewKey, iconView, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(row, &kCLAdvSwitchTitleLabelKey, titleLabel, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (subtitleLabel) {
+        objc_setAssociatedObject(row, &kCLAdvSwitchSubtitleLabelKey, subtitleLabel, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    objc_setAssociatedObject(row, &kCLAdvSwitchViewKey, switchView, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     
     [self.contentStack addArrangedSubview:row];
 }
@@ -168,11 +189,12 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
     UIView *row = [[UIView alloc] init];
     row.translatesAutoresizingMaskIntoConstraints = NO;
     row.tag = tag;
+    UIColor *rowColor = color ?: [UIColor systemBlueColor];
     
     UIImageView *iconView = [[UIImageView alloc] init];
     iconView.translatesAutoresizingMaskIntoConstraints = NO;
     iconView.contentMode = UIViewContentModeScaleAspectFit;
-    iconView.tintColor = color ?: [UIColor systemBlueColor];
+    iconView.tintColor = rowColor;
     UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:16 weight:UIImageSymbolWeightMedium];
     iconView.image = CLSymbolImage(iconName, config);
     [row addSubview:iconView];
@@ -207,6 +229,11 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
     
     UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:target action:action];
     [row addGestureRecognizer:tap];
+    objc_setAssociatedObject(row, &kCLAdvPickerColorKey, rowColor, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(row, &kCLAdvPickerIconViewKey, iconView, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(row, &kCLAdvPickerTitleLabelKey, titleLabel, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(row, &kCLAdvPickerValueLabelKey, valueLabel, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(row, &kCLAdvPickerChevronKey, chevron, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     
     [NSLayoutConstraint activateConstraints:@[
         [row.heightAnchor constraintGreaterThanOrEqualToConstant:50],
@@ -291,6 +318,10 @@ static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config
     UIImageView *iconView = objc_getAssociatedObject(sender, "iconView");
     UIColor *iconColor = objc_getAssociatedObject(sender, "iconColor");
     if (iconView) {
+        if (!sender.enabled) {
+            iconView.tintColor = [UIColor tertiaryLabelColor];
+            return;
+        }
         iconView.tintColor = sender.on ? (iconColor ?: [UIColor systemBlueColor])
                                        : [[UIColor secondaryLabelColor] colorWithAlphaComponent:0.7];
     }
@@ -530,6 +561,13 @@ static NSString *CLCompactTimestampLabel(NSTimeInterval timestamp) {
 static NSString *CLYesNoLabel(BOOL value) {
     return value ? CLL(@"是") : CLL(@"否");
 }
+
+static const NSInteger CLAdvDisableInflowTag = 301;
+static const NSInteger CLAdvHoldModeTag = 302;
+static const NSInteger CLAdvHoldTempDisableSmartChargeTag = 312;
+static const NSInteger CLAdvDisableSmartChargeTag = 311;
+static const NSInteger CLAdvHoldModeBandTag = 305;
+static const NSInteger CLAdvHoldModeBehaviorTag = 313;
 
 #pragma mark - 策略诊断控制器
 
@@ -1270,6 +1308,9 @@ static NSString *CLYesNoLabel(BOOL value) {
                                              selector:@selector(configDidUpdate)
                                                  name:CLConfigDidUpdateNotification
                                                object:nil];
+    if ([self normalizeAdvancedOptionInterlocksIfNeeded]) {
+        [self reloadContentRows];
+    }
 }
 
 - (void)setupScrollView {
@@ -1322,6 +1363,9 @@ static NSString *CLYesNoLabel(BOOL value) {
     }
     [self setupScrollView];
     [self setupContent];
+    if ([self normalizeAdvancedOptionInterlocksIfNeeded]) {
+        [self reloadContentRows];
+    }
 }
 
 - (void)dealloc {
@@ -1329,11 +1373,112 @@ static NSString *CLYesNoLabel(BOOL value) {
 }
 
 - (void)configDidUpdate {
+    [self normalizeAdvancedOptionInterlocksIfNeeded];
     [self reloadContentRows];
+}
+
+- (BOOL)normalizeAdvancedOptionInterlocksIfNeeded {
+    CLBatteryManager *manager = [CLBatteryManager shared];
+    BOOL changed = NO;
+    if (manager.holdModeEnabled && manager.disableInflow) {
+        manager.holdModeEnabled = NO;
+        [[CLAPIClient shared] setConfigWithKey:@"adv_hold_enabled" value:@NO completion:nil];
+        changed = YES;
+    }
+    if (manager.holdTempDisableSmartCharge && manager.disableSmartCharge) {
+        manager.holdTempDisableSmartCharge = NO;
+        [[CLAPIClient shared] setConfigWithKey:@"adv_hold_temp_disable_smart_charge" value:@NO completion:nil];
+        changed = YES;
+    }
+    return changed;
+}
+
+- (UIView *)switchRowInCard:(CLAdvSettingsCard *)card tag:(NSInteger)tag {
+    for (UIView *row in card.contentStack.arrangedSubviews) {
+        if (row.tag == tag) {
+            return row;
+        }
+    }
+    return nil;
+}
+
+- (UIView *)pickerRowInCard:(CLAdvSettingsCard *)card tag:(NSInteger)tag {
+    for (UIView *row in card.contentStack.arrangedSubviews) {
+        if (row.tag == tag) {
+            return row;
+        }
+    }
+    return nil;
+}
+
+- (void)updatePickerRow:(UIView *)row enabled:(BOOL)enabled {
+    if (!row) {
+        return;
+    }
+    row.userInteractionEnabled = enabled;
+    row.alpha = enabled ? 1.0 : 0.5;
+
+    UIColor *baseColor = objc_getAssociatedObject(row, &kCLAdvPickerColorKey);
+    UIImageView *iconView = objc_getAssociatedObject(row, &kCLAdvPickerIconViewKey);
+    UILabel *titleLabel = objc_getAssociatedObject(row, &kCLAdvPickerTitleLabelKey);
+    UILabel *valueLabel = objc_getAssociatedObject(row, &kCLAdvPickerValueLabelKey);
+    UIImageView *chevron = objc_getAssociatedObject(row, &kCLAdvPickerChevronKey);
+
+    if (iconView) {
+        iconView.tintColor = enabled ? (baseColor ?: [UIColor systemBlueColor]) : [UIColor tertiaryLabelColor];
+    }
+    if (titleLabel) {
+        titleLabel.textColor = enabled ? [UIColor labelColor] : [UIColor secondaryLabelColor];
+    }
+    if (valueLabel) {
+        valueLabel.textColor = enabled ? [UIColor secondaryLabelColor] : [UIColor tertiaryLabelColor];
+    }
+    if (chevron) {
+        chevron.tintColor = enabled ? [UIColor tertiaryLabelColor] : [UIColor quaternaryLabelColor];
+    }
+}
+
+- (void)updateSwitchRow:(UIView *)row enabled:(BOOL)enabled {
+    if (!row) {
+        return;
+    }
+    UIColor *baseColor = objc_getAssociatedObject(row, &kCLAdvSwitchColorKey);
+    UIImageView *iconView = objc_getAssociatedObject(row, &kCLAdvSwitchIconViewKey);
+    UILabel *titleLabel = objc_getAssociatedObject(row, &kCLAdvSwitchTitleLabelKey);
+    UILabel *subtitleLabel = objc_getAssociatedObject(row, &kCLAdvSwitchSubtitleLabelKey);
+    UISwitch *switchView = objc_getAssociatedObject(row, &kCLAdvSwitchViewKey);
+
+    switchView.enabled = enabled;
+    switchView.alpha = enabled ? 1.0 : 0.55;
+
+    if (iconView) {
+        iconView.tintColor = enabled
+            ? (switchView.on ? (baseColor ?: [UIColor systemBlueColor]) : [[UIColor secondaryLabelColor] colorWithAlphaComponent:0.7])
+            : [UIColor tertiaryLabelColor];
+    }
+    if (titleLabel) {
+        titleLabel.textColor = enabled ? [UIColor labelColor] : [UIColor secondaryLabelColor];
+    }
+    if (subtitleLabel) {
+        subtitleLabel.textColor = enabled ? [UIColor secondaryLabelColor] : [UIColor tertiaryLabelColor];
+    }
+}
+
+- (void)updateHoldOptionInterlockStateInCard:(CLAdvSettingsCard *)card manager:(CLBatteryManager *)manager {
+    BOOL holdOptionsEnabled = !manager.disableInflow;
+    [self updatePickerRow:[self pickerRowInCard:card tag:CLAdvHoldModeBandTag] enabled:holdOptionsEnabled];
+    [self updatePickerRow:[self pickerRowInCard:card tag:CLAdvHoldModeBehaviorTag] enabled:holdOptionsEnabled];
+}
+
+- (void)updateSmartChargeOptionInterlockStateInCard:(CLAdvSettingsCard *)card manager:(CLBatteryManager *)manager {
+    BOOL tempDisableEnabled = !manager.disableSmartCharge;
+    [self updateSwitchRow:[self switchRowInCard:card tag:CLAdvHoldTempDisableSmartChargeTag] enabled:tempDisableEnabled];
 }
 
 - (void)setupContent {
     CLBatteryManager *manager = [CLBatteryManager shared];
+    BOOL holdModeEnabled = manager.holdModeEnabled && !manager.disableInflow;
+    BOOL holdTempDisableSmartChargeEnabled = manager.holdTempDisableSmartCharge && !manager.disableSmartCharge;
     
     // 加速充电
     CLAdvSettingsCard *accCard = [[CLAdvSettingsCard alloc] init];
@@ -1347,23 +1492,24 @@ static NSString *CLYesNoLabel(BOOL value) {
     [stopChargeCard addSectionHeader:CLL(@"停充控制")];
     [stopChargeCard addSwitchRowWithIcon:@"bolt.slash.fill" title:CLL(@"智能停充") subtitle:CLL(@"使用 SmartBattery API 进行停充") isOn:manager.predictiveInhibitCharge color:[UIColor systemRedColor] tag:300 target:self action:@selector(smartChargeChanged:)];
     [stopChargeCard addSeparator];
-    [stopChargeCard addSwitchRowWithIcon:@"xmark.circle.fill" title:CLL(@"停充时启用禁流") subtitle:CLL(@"禁止电流流入设备，电池放电供电") isOn:manager.disableInflow color:[UIColor systemRedColor] tag:301 target:self action:@selector(disableInflowChanged:)];
+    [stopChargeCard addSwitchRowWithIcon:@"xmark.circle.fill" title:CLL(@"停充时启用禁流") subtitle:CLL(@"禁止电流流入设备，电池放电供电") isOn:manager.disableInflow color:[UIColor systemRedColor] tag:CLAdvDisableInflowTag target:self action:@selector(disableInflowChanged:)];
     [stopChargeCard addSeparator];
-    [stopChargeCard addSwitchRowWithIcon:@"battery.100" title:CLL(@"插电保持") subtitle:CLL(@"围绕“停止充电”目标小范围补电，更接近电脑保电量体验") isOn:manager.holdModeEnabled color:[UIColor systemIndigoColor] tag:302 target:self action:@selector(holdModeChanged:)];
+    [stopChargeCard addSwitchRowWithIcon:@"battery.100" title:CLL(@"插电保持") subtitle:CLL(@"围绕“停止充电”目标小范围补电，更接近电脑保电量体验") isOn:holdModeEnabled color:[UIColor systemIndigoColor] tag:CLAdvHoldModeTag target:self action:@selector(holdModeChanged:)];
     [stopChargeCard addSeparator];
-    [stopChargeCard addPickerRowWithIcon:@"arrow.left.arrow.right" title:CLL(@"保持带宽") value:[self holdModeBandText] color:[UIColor systemIndigoColor] tag:305 target:self action:@selector(holdModeBandTapped:)];
+    [stopChargeCard addPickerRowWithIcon:@"arrow.left.arrow.right" title:CLL(@"保持带宽") value:[self holdModeBandText] color:[UIColor systemIndigoColor] tag:CLAdvHoldModeBandTag target:self action:@selector(holdModeBandTapped:)];
     [stopChargeCard addSeparator];
-    [stopChargeCard addPickerRowWithIcon:@"slider.horizontal.3" title:CLL(@"保持策略") value:[self holdModeBehaviorText] color:[UIColor systemIndigoColor] tag:313 target:self action:@selector(holdModeBehaviorTapped:)];
-    [self addTipRowToCard:stopChargeCard text:CLL(@"开启后会以“停止充电”作为目标电量，并在目标下方缓冲范围内自动补电；不建议同时开启禁流。")];
+    [stopChargeCard addPickerRowWithIcon:@"slider.horizontal.3" title:CLL(@"保持策略") value:[self holdModeBehaviorText] color:[UIColor systemIndigoColor] tag:CLAdvHoldModeBehaviorTag target:self action:@selector(holdModeBehaviorTapped:)];
+    [self addTipRowToCard:stopChargeCard text:CLL(@"开启后会以“停止充电”作为目标电量，并在目标下方缓冲范围内自动补电；开启禁流会自动关闭插电保持。")];
     [self addTipRowToCard:stopChargeCard text:CLL(@"保持策略只影响插电保持模式，不会变成真正硬件旁路。")];
+    [self updateHoldOptionInterlockStateInCard:stopChargeCard manager:manager];
     [self.mainStack addArrangedSubview:stopChargeCard];
 
     CLAdvSettingsCard *smartChargeCard = [[CLAdvSettingsCard alloc] init];
     [smartChargeCard addSectionHeader:CLL(@"系统优化充电")];
-    [smartChargeCard addSwitchRowWithIcon:@"battery.100.circle" title:CLL(@"永久停用系统优化充电") subtitle:CLL(@"直接关闭系统的优化充电策略；旧版本默认可能已开启") isOn:manager.disableSmartCharge color:[UIColor systemBlueColor] tag:311 target:self action:@selector(disableSmartChargeChanged:)];
+    [smartChargeCard addSwitchRowWithIcon:@"battery.100.circle" title:CLL(@"永久停用系统优化充电") subtitle:CLL(@"直接关闭系统的优化充电策略；旧版本默认可能已开启") isOn:manager.disableSmartCharge color:[UIColor systemBlueColor] tag:CLAdvDisableSmartChargeTag target:self action:@selector(disableSmartChargeChanged:)];
     [smartChargeCard addSeparator];
-    [smartChargeCard addSwitchRowWithIcon:@"clock.badge.checkmark" title:CLL(@"插电保持时临时停用") subtitle:CLL(@"仅在保持/停充阶段暂时停用，退出后尝试恢复系统优化充电") isOn:manager.holdTempDisableSmartCharge color:[UIColor systemBlueColor] tag:312 target:self action:@selector(holdTempDisableSmartChargeChanged:)];
-    [self addTipRowToCard:smartChargeCard text:CLL(@"若永久停用已开启，临时停用不会再额外生效。")];
+    [smartChargeCard addSwitchRowWithIcon:@"clock.badge.checkmark" title:CLL(@"插电保持时临时停用") subtitle:CLL(@"仅在保持/停充阶段暂时停用，退出后尝试恢复系统优化充电") isOn:holdTempDisableSmartChargeEnabled color:[UIColor systemBlueColor] tag:CLAdvHoldTempDisableSmartChargeTag target:self action:@selector(holdTempDisableSmartChargeChanged:)];
+    [self updateSmartChargeOptionInterlockStateInCard:smartChargeCard manager:manager];
     [self.mainStack addArrangedSubview:smartChargeCard];
 
     CLAdvSettingsCard *diagnosticsCard = [[CLAdvSettingsCard alloc] init];
@@ -1541,22 +1687,47 @@ static NSString *CLYesNoLabel(BOOL value) {
 }
 
 - (void)disableInflowChanged:(UISwitch *)sender {
-    [CLBatteryManager shared].disableInflow = sender.on;
+    CLBatteryManager *manager = [CLBatteryManager shared];
+    manager.disableInflow = sender.on;
+    if (sender.on && manager.holdModeEnabled) {
+        manager.holdModeEnabled = NO;
+        [[CLAPIClient shared] setConfigWithKey:@"adv_hold_enabled" value:@NO completion:nil];
+    }
     [[CLAPIClient shared] setConfigWithKey:@"adv_disable_inflow" value:@(sender.on) completion:nil];
+    [self reloadContentRows];
 }
 
 - (void)disableSmartChargeChanged:(UISwitch *)sender {
-    [CLBatteryManager shared].disableSmartCharge = sender.on;
+    CLBatteryManager *manager = [CLBatteryManager shared];
+    manager.disableSmartCharge = sender.on;
+    if (sender.on && manager.holdTempDisableSmartCharge) {
+        manager.holdTempDisableSmartCharge = NO;
+        [[CLAPIClient shared] setConfigWithKey:@"adv_hold_temp_disable_smart_charge" value:@NO completion:nil];
+    }
     [[CLAPIClient shared] setConfigWithKey:@"disable_smart_charge" value:@(sender.on) completion:nil];
+    [self reloadContentRows];
 }
 
 - (void)holdModeChanged:(UISwitch *)sender {
-    [CLBatteryManager shared].holdModeEnabled = sender.on;
+    CLBatteryManager *manager = [CLBatteryManager shared];
+    manager.holdModeEnabled = sender.on;
+    if (sender.on && manager.disableInflow) {
+        manager.disableInflow = NO;
+        [[CLAPIClient shared] setConfigWithKey:@"adv_disable_inflow" value:@NO completion:nil];
+    }
     [[CLAPIClient shared] setConfigWithKey:@"adv_hold_enabled" value:@(sender.on) completion:nil];
+    [self reloadContentRows];
 }
 
 - (void)holdTempDisableSmartChargeChanged:(UISwitch *)sender {
-    [CLBatteryManager shared].holdTempDisableSmartCharge = sender.on;
+    CLBatteryManager *manager = [CLBatteryManager shared];
+    if (manager.disableSmartCharge) {
+        manager.holdTempDisableSmartCharge = NO;
+        sender.on = NO;
+        [self reloadContentRows];
+        return;
+    }
+    manager.holdTempDisableSmartCharge = sender.on;
     [[CLAPIClient shared] setConfigWithKey:@"adv_hold_temp_disable_smart_charge" value:@(sender.on) completion:nil];
 }
 
