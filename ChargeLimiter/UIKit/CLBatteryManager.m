@@ -437,6 +437,10 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
         _chargeMode = chargeMode;
         NSString *modeStr = (chargeMode == CLChargeModePlugAndCharge) ? @"charge_on_plug" : @"edge_trigger";
         [self saveConfigKey:@"mode" value:modeStr completion:nil];
+        if (chargeMode == CLChargeModePlugAndCharge && self.predictiveInhibitCharge && self.disableInflow) {
+            _disableInflow = NO;
+            [self saveConfigKey:@"adv_disable_inflow" value:@NO completion:nil];
+        }
     }
 }
 

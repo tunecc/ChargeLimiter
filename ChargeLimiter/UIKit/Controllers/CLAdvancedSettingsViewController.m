@@ -1380,6 +1380,11 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
 - (BOOL)normalizeAdvancedOptionInterlocksIfNeeded {
     CLBatteryManager *manager = [CLBatteryManager shared];
     BOOL changed = NO;
+    if ([self shouldDisableInflowForCurrentModeAndSmartStopWithManager:manager] && manager.disableInflow) {
+        manager.disableInflow = NO;
+        [[CLAPIClient shared] setConfigWithKey:@"adv_disable_inflow" value:@NO completion:nil];
+        changed = YES;
+    }
     if (manager.holdModeEnabled && manager.disableInflow) {
         manager.holdModeEnabled = NO;
         [[CLAPIClient shared] setConfigWithKey:@"adv_hold_enabled" value:@NO completion:nil];
@@ -1465,9 +1470,22 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
 }
 
 - (void)updateHoldOptionInterlockStateInCard:(CLAdvSettingsCard *)card manager:(CLBatteryManager *)manager {
-    BOOL holdOptionsEnabled = !manager.disableInflow;
+    BOOL holdOptionsEnabled = ![self isDisableInflowEffectivelyEnabledForManager:manager];
     [self updatePickerRow:[self pickerRowInCard:card tag:CLAdvHoldModeBandTag] enabled:holdOptionsEnabled];
     [self updatePickerRow:[self pickerRowInCard:card tag:CLAdvHoldModeBehaviorTag] enabled:holdOptionsEnabled];
+}
+
+- (BOOL)shouldDisableInflowForCurrentModeAndSmartStopWithManager:(CLBatteryManager *)manager {
+    return manager.chargeMode == CLChargeModePlugAndCharge && manager.predictiveInhibitCharge;
+}
+
+- (BOOL)isDisableInflowEffectivelyEnabledForManager:(CLBatteryManager *)manager {
+    return manager.disableInflow && ![self shouldDisableInflowForCurrentModeAndSmartStopWithManager:manager];
+}
+
+- (void)updateDisableInflowInterlockStateInCard:(CLAdvSettingsCard *)card manager:(CLBatteryManager *)manager {
+    BOOL disableInflowEnabled = ![self shouldDisableInflowForCurrentModeAndSmartStopWithManager:manager];
+    [self updateSwitchRow:[self switchRowInCard:card tag:CLAdvDisableInflowTag] enabled:disableInflowEnabled];
 }
 
 - (void)updateSmartChargeOptionInterlockStateInCard:(CLAdvSettingsCard *)card manager:(CLBatteryManager *)manager {
@@ -1477,7 +1495,9 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
 
 - (void)setupContent {
     CLBatteryManager *manager = [CLBatteryManager shared];
-    BOOL holdModeEnabled = manager.holdModeEnabled && !manager.disableInflow;
+    BOOL disableInflowAvailable = ![self shouldDisableInflowForCurrentModeAndSmartStopWithManager:manager];
+    BOOL disableInflowEnabled = [self isDisableInflowEffectivelyEnabledForManager:manager] && disableInflowAvailable;
+    BOOL holdModeEnabled = manager.holdModeEnabled && ![self isDisableInflowEffectivelyEnabledForManager:manager];
     BOOL holdTempDisableSmartChargeEnabled = manager.holdTempDisableSmartCharge && !manager.disableSmartCharge;
     
     // 加速充电
@@ -1492,7 +1512,7 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
     [stopChargeCard addSectionHeader:CLL(@"停充控制")];
     [stopChargeCard addSwitchRowWithIcon:@"bolt.slash.fill" title:CLL(@"智能停充") subtitle:CLL(@"使用 SmartBattery API 进行停充") isOn:manager.predictiveInhibitCharge color:[UIColor systemRedColor] tag:300 target:self action:@selector(smartChargeChanged:)];
     [stopChargeCard addSeparator];
-    [stopChargeCard addSwitchRowWithIcon:@"xmark.circle.fill" title:CLL(@"停充时启用禁流") subtitle:CLL(@"禁止电流流入设备，电池放电供电") isOn:manager.disableInflow color:[UIColor systemRedColor] tag:CLAdvDisableInflowTag target:self action:@selector(disableInflowChanged:)];
+    [stopChargeCard addSwitchRowWithIcon:@"xmark.circle.fill" title:CLL(@"停充时启用禁流") subtitle:CLL(@"禁止电流流入设备，电池放电供电") isOn:disableInflowEnabled color:[UIColor systemRedColor] tag:CLAdvDisableInflowTag target:self action:@selector(disableInflowChanged:)];
     [stopChargeCard addSeparator];
     [stopChargeCard addSwitchRowWithIcon:@"battery.100" title:CLL(@"插电保持") subtitle:CLL(@"围绕“停止充电”目标小范围补电，更接近电脑保电量体验") isOn:holdModeEnabled color:[UIColor systemIndigoColor] tag:CLAdvHoldModeTag target:self action:@selector(holdModeChanged:)];
     [stopChargeCard addSeparator];
@@ -1501,6 +1521,7 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
     [stopChargeCard addPickerRowWithIcon:@"slider.horizontal.3" title:CLL(@"保持策略") value:[self holdModeBehaviorText] color:[UIColor systemIndigoColor] tag:CLAdvHoldModeBehaviorTag target:self action:@selector(holdModeBehaviorTapped:)];
     [self addTipRowToCard:stopChargeCard text:CLL(@"开启后会以“停止充电”作为目标电量，并在目标下方缓冲范围内自动补电；开启禁流会自动关闭插电保持。")];
     [self addTipRowToCard:stopChargeCard text:CLL(@"保持策略只影响插电保持模式，不会变成真正硬件旁路。")];
+    [self updateDisableInflowInterlockStateInCard:stopChargeCard manager:manager];
     [self updateHoldOptionInterlockStateInCard:stopChargeCard manager:manager];
     [self.mainStack addArrangedSubview:stopChargeCard];
 
@@ -1682,12 +1703,24 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
 }
 
 - (void)smartChargeChanged:(UISwitch *)sender {
-    [CLBatteryManager shared].predictiveInhibitCharge = sender.on;
+    CLBatteryManager *manager = [CLBatteryManager shared];
+    manager.predictiveInhibitCharge = sender.on;
+    if ([self shouldDisableInflowForCurrentModeAndSmartStopWithManager:manager] && manager.disableInflow) {
+        manager.disableInflow = NO;
+        [[CLAPIClient shared] setConfigWithKey:@"adv_disable_inflow" value:@NO completion:nil];
+    }
     [[CLAPIClient shared] setConfigWithKey:@"adv_predictive_inhibit_charge" value:@(sender.on) completion:nil];
+    [self reloadContentRows];
 }
 
 - (void)disableInflowChanged:(UISwitch *)sender {
     CLBatteryManager *manager = [CLBatteryManager shared];
+    if ([self shouldDisableInflowForCurrentModeAndSmartStopWithManager:manager]) {
+        manager.disableInflow = NO;
+        sender.on = NO;
+        [self reloadContentRows];
+        return;
+    }
     manager.disableInflow = sender.on;
     if (sender.on && manager.holdModeEnabled) {
         manager.holdModeEnabled = NO;
