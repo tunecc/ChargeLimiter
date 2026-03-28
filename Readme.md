@@ -766,7 +766,7 @@ Apple 对热状态的官方定义重点是：
 手动指定版本号：
 
 ```bash
-./scripts/build_packages.sh 1.11.2
+./scripts/build_packages.sh 1.11.3
 ```
 
 ## 相关文档

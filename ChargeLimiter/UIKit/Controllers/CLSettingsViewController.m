@@ -4774,6 +4774,7 @@ static UIViewController *CLTopVisibleViewController(void) {
 @property (nonatomic, assign) NSInteger currentChargeMode; // 0=插电即充, 1=边缘触发
 @property (nonatomic, strong) UIView *chargeBelowRow;
 @property (nonatomic, strong) UIView *chargeAboveRow;      // 停止充电行
+@property (nonatomic, strong) UIButton *setChargeAboveCurrentButton;
 @property (nonatomic, strong) UIView *chargeBelowSeparator;
 @property (nonatomic, strong) UIView *tempBelowRow;        // 温度下限行
 @property (nonatomic, strong) UIView *tempAboveRow;        // 温度上限行
@@ -5266,6 +5267,7 @@ static UIViewController *CLTopVisibleViewController(void) {
         weakSelf.batteryStatus.chargeAbove = adjustedValue;
         [weakSelf updateSystemControlHintForChargeAbove:adjustedValue];
     }];
+    [self attachSetCurrentButtonToChargeAboveRow];
 
     // 保存分隔线引用
     self.chargeBelowSeparator = [self.limitCard addSeparator];
@@ -5310,6 +5312,94 @@ static UIViewController *CLTopVisibleViewController(void) {
     self.currentChargeMode = 0;
     self.chargeBelowRow.hidden = YES;
     self.chargeBelowRow.alpha = 0;
+}
+
+- (void)attachSetCurrentButtonToChargeAboveRow {
+    if (!self.chargeAboveRow || self.setChargeAboveCurrentButton) {
+        return;
+    }
+
+    UILabel *valueLabel = (UILabel *)[self.chargeAboveRow viewWithTag:(201 + 10000)];
+    if (![valueLabel isKindOfClass:[UILabel class]]) {
+        return;
+    }
+
+    UILabel *titleLabel = nil;
+    for (UIView *subview in self.chargeAboveRow.subviews) {
+        if ([subview isKindOfClass:[UILabel class]] && subview != valueLabel) {
+            titleLabel = (UILabel *)subview;
+            break;
+        }
+    }
+
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+    button.translatesAutoresizingMaskIntoConstraints = NO;
+    [button setTitle:CLL(@"设为当前") forState:UIControlStateNormal];
+    button.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
+    button.titleLabel.adjustsFontSizeToFitWidth = YES;
+    button.titleLabel.minimumScaleFactor = 0.85;
+    button.tintColor = [UIColor systemGreenColor];
+    button.backgroundColor = [[UIColor systemGreenColor] colorWithAlphaComponent:0.16];
+    button.contentEdgeInsets = UIEdgeInsetsMake(4, 10, 4, 10);
+    button.layer.cornerRadius = 11;
+    if (@available(iOS 13.0, *)) {
+        button.layer.cornerCurve = kCACornerCurveContinuous;
+    }
+    [button setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    [button setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    [button addTarget:self action:@selector(setChargeAboveToCurrentTapped) forControlEvents:UIControlEventTouchUpInside];
+    button.accessibilityLabel = CLL(@"设为当前");
+    [self applyPressEffectToControl:button];
+    [self.chargeAboveRow addSubview:button];
+
+    NSMutableArray<NSLayoutConstraint *> *constraints = [NSMutableArray arrayWithArray:@[
+        [button.trailingAnchor constraintEqualToAnchor:valueLabel.leadingAnchor constant:-8],
+        [button.centerYAnchor constraintEqualToAnchor:valueLabel.centerYAnchor],
+        [button.heightAnchor constraintGreaterThanOrEqualToConstant:22]
+    ]];
+    if (titleLabel) {
+        [constraints addObject:[button.leadingAnchor constraintGreaterThanOrEqualToAnchor:titleLabel.trailingAnchor constant:12]];
+    }
+    [NSLayoutConstraint activateConstraints:constraints];
+
+    self.setChargeAboveCurrentButton = button;
+    [self updateSetChargeAboveCurrentButtonState];
+}
+
+- (void)updateSetChargeAboveCurrentButtonState {
+    if (!self.setChargeAboveCurrentButton) {
+        return;
+    }
+    CLBatteryManager *manager = [CLBatteryManager shared];
+    BOOL enabled = manager.batteryInstalled && manager.currentCapacity > 0;
+    self.setChargeAboveCurrentButton.enabled = enabled;
+    self.setChargeAboveCurrentButton.alpha = enabled ? 1.0 : 0.45;
+}
+
+- (void)setChargeAboveToCurrentTapped {
+    CLBatteryManager *manager = [CLBatteryManager shared];
+    UISlider *slider = [self sliderForTag:201];
+    if (!slider || !manager.batteryInstalled || manager.currentCapacity <= 0) {
+        return;
+    }
+
+    NSInteger minValue = (NSInteger)roundf(slider.minimumValue);
+    NSInteger maxValue = (NSInteger)roundf(slider.maximumValue);
+    NSInteger clampedValue = MIN(MAX(manager.currentCapacity, minValue), maxValue);
+    NSInteger adjustedValue = [self normalizedChargeValueForSlider:slider value:clampedValue];
+
+    self.chargeAbove = adjustedValue;
+    self.batteryStatus.chargeAbove = adjustedValue;
+    manager.chargeAbove = adjustedValue;
+
+    [self updateSliderValue:self.chargeAboveRow value:adjustedValue];
+    [self updateSliderLabel:self.chargeAboveRow value:adjustedValue suffix:@"%"];
+    [self updateSystemControlHintForChargeAbove:adjustedValue];
+
+    if (@available(iOS 10.0, *)) {
+        UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+        [feedback impactOccurred];
+    }
 }
 
 - (void)setupTempCard {
@@ -5998,6 +6088,7 @@ static BOOL CLDisplayedPowerStateUsesExternalPower(CLBatteryManager *manager) {
 - (void)batteryInfoDidUpdate {
     CLBatteryManager *manager = [CLBatteryManager shared];
     NSString *powerStateLabel = [self powerStateLabelForManager:manager];
+    [self updateSetChargeAboveCurrentButtonState];
 
     // 更新电池状态
     [self.batteryStatus applyBatteryManager:manager statusText:powerStateLabel];
