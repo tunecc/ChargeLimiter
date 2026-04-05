@@ -358,6 +358,20 @@ static NSString *CLDebugValueWithRaw(NSString *label, NSString *raw) {
     return [NSString stringWithFormat:@"%@ (%@)", safeLabel, raw];
 }
 
+static BOOL CLHoldSuppressedBySystemCapacityControl(CLBatteryManager *manager) {
+    return manager.chargeAbove >= 100;
+}
+
+static NSString *CLHoldUnavailableReason(CLBatteryManager *manager) {
+    if (CLHoldSuppressedBySystemCapacityControl(manager)) {
+        return CLL(@"停止电量=100% 时停用");
+    }
+    if (!manager.holdModeEnabled) {
+        return CLL(@"未启用");
+    }
+    return nil;
+}
+
 static NSString *CLPolicyStateLabel(NSString *policyState) {
     if ([policyState isEqualToString:@"hold_recharge"]) {
         return CLL(@"插电保持中 · 补电");
@@ -843,24 +857,27 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
 
 - (NSString *)holdBandTextForManager:(CLBatteryManager *)manager {
     NSString *base = [NSString stringWithFormat:CLL(@"目标下方 %ld%%"), (long)MAX(manager.holdModeBand, 1)];
-    if (!manager.holdModeEnabled) {
-        return [NSString stringWithFormat:@"%@ · %@", base, CLL(@"未启用")];
+    NSString *reason = CLHoldUnavailableReason(manager);
+    if (reason.length > 0) {
+        return [NSString stringWithFormat:@"%@ · %@", base, reason];
     }
     return base;
 }
 
 - (NSString *)holdTargetTextForManager:(CLBatteryManager *)manager {
     NSString *base = manager.holdTarget > 0 ? [NSString stringWithFormat:@"%ld%%", (long)manager.holdTarget] : CLL(@"未记录");
-    if (!manager.holdModeEnabled) {
-        return [NSString stringWithFormat:@"%@ · %@", base, CLL(@"未启用")];
+    NSString *reason = CLHoldUnavailableReason(manager);
+    if (reason.length > 0) {
+        return [NSString stringWithFormat:@"%@ · %@", base, reason];
     }
     return base;
 }
 
 - (NSString *)holdLowerBoundTextForManager:(CLBatteryManager *)manager {
     NSString *base = [NSString stringWithFormat:@"%ld%%", (long)MAX(manager.holdRangeLower, 0)];
-    if (!manager.holdModeEnabled) {
-        return [NSString stringWithFormat:@"%@ · %@", base, CLL(@"未启用")];
+    NSString *reason = CLHoldUnavailableReason(manager);
+    if (reason.length > 0) {
+        return [NSString stringWithFormat:@"%@ · %@", base, reason];
     }
     return base;
 }
@@ -875,8 +892,9 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
 
 - (NSString *)holdRuntimeBehaviorTextForManager:(CLBatteryManager *)manager {
     NSString *base = CLHoldBehaviorLabel(manager.holdRuntimeBehavior);
-    if (!manager.holdModeEnabled) {
-        return [NSString stringWithFormat:@"%@ · %@", base, CLL(@"未启用")];
+    NSString *reason = CLHoldUnavailableReason(manager);
+    if (reason.length > 0) {
+        return [NSString stringWithFormat:@"%@ · %@", base, reason];
     }
     if (manager.holdModeBehavior != CLHoldModeBehaviorAdaptive) {
         return [NSString stringWithFormat:@"%@ · %@", base, CLL(@"固定策略")];
@@ -886,16 +904,18 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
 
 - (NSString *)holdAdaptiveLoadLevelTextForManager:(CLBatteryManager *)manager {
     NSString *base = CLDebugValueWithRaw(CLAdaptiveLoadLevelLabel(manager.holdAdaptiveLoadLevel), manager.holdAdaptiveLoadLevel);
-    if (!manager.holdModeEnabled) {
-        return [NSString stringWithFormat:@"%@ · %@", base, CLL(@"未启用")];
+    NSString *reason = CLHoldUnavailableReason(manager);
+    if (reason.length > 0) {
+        return [NSString stringWithFormat:@"%@ · %@", base, reason];
     }
     return base;
 }
 
 - (NSString *)holdAdaptiveAverageCurrentTextForManager:(CLBatteryManager *)manager {
     NSString *base = [NSString stringWithFormat:@"%ld mA", (long)manager.holdAdaptiveAverageCurrent];
-    if (!manager.holdModeEnabled) {
-        return [NSString stringWithFormat:@"%@ · %@", base, CLL(@"未启用")];
+    NSString *reason = CLHoldUnavailableReason(manager);
+    if (reason.length > 0) {
+        return [NSString stringWithFormat:@"%@ · %@", base, reason];
     }
     return base;
 }
@@ -1282,6 +1302,9 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
 @interface CLAdvancedSettingsViewController : UIViewController
 @property (nonatomic, strong) UIScrollView *scrollView;
 @property (nonatomic, strong) UIStackView *mainStack;
+- (BOOL)isHoldSuppressedBySystemCapacityControlForManager:(CLBatteryManager *)manager;
+- (BOOL)isHoldControlAvailableForManager:(CLBatteryManager *)manager;
+- (NSString *)holdUnavailableReasonForManager:(CLBatteryManager *)manager;
 @end
 
 @implementation CLAdvancedSettingsViewController
@@ -1470,7 +1493,8 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
 }
 
 - (void)updateHoldOptionInterlockStateInCard:(CLAdvSettingsCard *)card manager:(CLBatteryManager *)manager {
-    BOOL holdOptionsEnabled = ![self isDisableInflowEffectivelyEnabledForManager:manager];
+    BOOL holdOptionsEnabled = [self isHoldControlAvailableForManager:manager];
+    [self updateSwitchRow:[self switchRowInCard:card tag:CLAdvHoldModeTag] enabled:holdOptionsEnabled];
     [self updatePickerRow:[self pickerRowInCard:card tag:CLAdvHoldModeBandTag] enabled:holdOptionsEnabled];
     [self updatePickerRow:[self pickerRowInCard:card tag:CLAdvHoldModeBehaviorTag] enabled:holdOptionsEnabled];
 }
@@ -1481,6 +1505,19 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
 
 - (BOOL)isDisableInflowEffectivelyEnabledForManager:(CLBatteryManager *)manager {
     return manager.disableInflow && ![self shouldDisableInflowForCurrentModeAndSmartStopWithManager:manager];
+}
+
+- (BOOL)isHoldSuppressedBySystemCapacityControlForManager:(CLBatteryManager *)manager {
+    return CLHoldSuppressedBySystemCapacityControl(manager);
+}
+
+- (BOOL)isHoldControlAvailableForManager:(CLBatteryManager *)manager {
+    return ![self isDisableInflowEffectivelyEnabledForManager:manager] &&
+           ![self isHoldSuppressedBySystemCapacityControlForManager:manager];
+}
+
+- (NSString *)holdUnavailableReasonForManager:(CLBatteryManager *)manager {
+    return CLHoldUnavailableReason(manager);
 }
 
 - (void)updateDisableInflowInterlockStateInCard:(CLAdvSettingsCard *)card manager:(CLBatteryManager *)manager {
@@ -1497,7 +1534,7 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
     CLBatteryManager *manager = [CLBatteryManager shared];
     BOOL disableInflowAvailable = ![self shouldDisableInflowForCurrentModeAndSmartStopWithManager:manager];
     BOOL disableInflowEnabled = [self isDisableInflowEffectivelyEnabledForManager:manager] && disableInflowAvailable;
-    BOOL holdModeEnabled = manager.holdModeEnabled && ![self isDisableInflowEffectivelyEnabledForManager:manager];
+    BOOL holdModeEnabled = manager.holdModeEnabled;
     BOOL holdTempDisableSmartChargeEnabled = manager.holdTempDisableSmartCharge && !manager.disableSmartCharge;
     
     // 加速充电
@@ -1521,6 +1558,9 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
     [stopChargeCard addPickerRowWithIcon:@"slider.horizontal.3" title:CLL(@"保持策略") value:[self holdModeBehaviorText] color:[UIColor systemIndigoColor] tag:CLAdvHoldModeBehaviorTag target:self action:@selector(holdModeBehaviorTapped:)];
     [self addTipRowToCard:stopChargeCard text:CLL(@"开启后会以“停止充电”作为目标电量，并在目标下方缓冲范围内自动补电；开启禁流会自动关闭插电保持。")];
     [self addTipRowToCard:stopChargeCard text:CLL(@"保持策略只影响插电保持模式，不会变成真正硬件旁路。")];
+    if ([self isHoldSuppressedBySystemCapacityControlForManager:manager]) {
+        [self addTipRowToCard:stopChargeCard text:CLL(@"当前“停止充电”已设为 100%，插电保持暂时停用并置灰；当上限调回 100% 以下时，会自动恢复到你之前的 hold 设置。")];
+    }
     [self updateDisableInflowInterlockStateInCard:stopChargeCard manager:manager];
     [self updateHoldOptionInterlockStateInCard:stopChargeCard manager:manager];
     [self.mainStack addArrangedSubview:stopChargeCard];
@@ -1743,6 +1783,11 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
 
 - (void)holdModeChanged:(UISwitch *)sender {
     CLBatteryManager *manager = [CLBatteryManager shared];
+    if (sender.on && [self isHoldSuppressedBySystemCapacityControlForManager:manager]) {
+        sender.on = NO;
+        [self reloadContentRows];
+        return;
+    }
     manager.holdModeEnabled = sender.on;
     if (sender.on && manager.disableInflow) {
         manager.disableInflow = NO;

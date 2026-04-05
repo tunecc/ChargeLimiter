@@ -131,6 +131,7 @@ static int g_smartChargeCoordinationOriginalStatus = -1;
 static NSString* g_smartChargeCoordinationSessionID = nil;
 static time_t g_smartChargeCoordinationStartedTs = 0;
 static int g_holdDischargeStreak = 0;
+static BOOL g_holdHasReachedTargetSincePlug = NO;
 static NSArray* g_recentPolicyTransitions = nil;
 static NSArray* g_policyEventHistory = nil;
 static NSString* g_holdRuntimeBehavior = @"balanced";
@@ -317,6 +318,11 @@ static void resetHoldAdaptiveRuntimeState() {
 
 static void resetHoldRuntimeState() {
     g_holdDischargeStreak = 0;
+}
+
+static void resetHoldSessionState() {
+    g_holdHasReachedTargetSincePlug = NO;
+    resetHoldRuntimeState();
 }
 
 static void appendHoldCurrentSample(int current) {
@@ -875,7 +881,7 @@ static void refreshFullChargeScheduleTimer(time_t nextBoundaryTs) {
 }
 
 static void refreshHoldMonitorTimer(void) {
-    BOOL shouldRun = (g_enable && isHoldModeEnabled());
+    BOOL shouldRun = (g_enable && isHoldModeEnabled() && getLocalInt(@"charge_above", 100) < 100);
     if (!shouldRun) {
         if (g_holdMonitorTimer != nil) {
             [g_holdMonitorTimer invalidate];
@@ -1983,8 +1989,15 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
                                  nil,
                                  now);
     }
+    BOOL holdCapacityControlActive = (!disable_capacity_control && adv_hold_enabled && is_adaptor_connected);
+    if (!holdCapacityControlActive || is_adaptor_new_connected) {
+        resetHoldSessionState();
+    }
     int hold_lower = getHoldModeLowerBound(charge_above);
-    BOOL within_hold_band = (!disable_capacity_control && adv_hold_enabled && is_adaptor_connected && capacity.intValue > hold_lower && capacity.intValue < charge_above);
+    BOOL within_hold_band = (holdCapacityControlActive &&
+                             g_holdHasReachedTargetSincePlug &&
+                             capacity.intValue > hold_lower &&
+                             capacity.intValue < charge_above);
     if (within_hold_band) {
         if (current_looks_discharging) {
             g_holdDischargeStreak = MIN(g_holdDischargeStreak + 1, 99);
@@ -2060,7 +2073,7 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
             nextPolicyReason = @"full_charge_window";
             break;
         }
-        if (!disable_capacity_control && adv_hold_enabled && is_adaptor_connected) {
+        if (holdCapacityControlActive) {
             if (capacity.intValue >= charge_above) {
                 if (g_chargeCommandEnabled || current_looks_charging) {
                     NSFileLog(@"hold stop at target %@ >= %d current=%d", capacity, charge_above, effective_current);
@@ -2068,38 +2081,41 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
                     performAction(@"stop_charge");
                     performAcccharge(NO);
                 }
+                g_holdHasReachedTargetSincePlug = YES;
                 resetHoldRuntimeState();
                 nextPolicyState = @"hold";
                 nextPolicyReason = @"hold_target_reached";
                 break;
             }
-            BOOL should_recharge_for_hold = (capacity.intValue <= hold_lower);
-            NSString* holdRechargeReason = @"hold_band_lower_reached";
-            if (!should_recharge_for_hold &&
-                within_hold_band &&
-                shouldUseHoldEarlyRechargeAssistForBehavior(runtimeHoldBehavior) &&
-                g_holdDischargeStreak >= getHoldEarlyRechargeDischargeStreakRequiredForBehavior(runtimeHoldBehavior) &&
-                canToggleChargeCommand(now)) {
-                NSFileLog(@"hold early recharge for discharge trend %@ target=%d lower=%d streak=%d current=%d behavior=%@",
-                          capacity, charge_above, hold_lower, g_holdDischargeStreak, effective_current, runtimeHoldBehavior);
-                should_recharge_for_hold = YES;
-                holdRechargeReason = @"hold_discharge_trend";
-            }
-            if (should_recharge_for_hold) {
-                if (!g_chargeCommandEnabled || predictive_inhibit_active || !current_looks_charging) {
-                    NSFileLog(@"hold recharge within band %@ <= %d current=%d", capacity, hold_lower, effective_current);
-                    setBatteryStatus(YES);
-                    performAction(@"start_charge");
-                    performAcccharge(YES);
+            if (g_holdHasReachedTargetSincePlug) {
+                BOOL should_recharge_for_hold = (capacity.intValue <= hold_lower);
+                NSString* holdRechargeReason = @"hold_band_lower_reached";
+                if (!should_recharge_for_hold &&
+                    within_hold_band &&
+                    shouldUseHoldEarlyRechargeAssistForBehavior(runtimeHoldBehavior) &&
+                    g_holdDischargeStreak >= getHoldEarlyRechargeDischargeStreakRequiredForBehavior(runtimeHoldBehavior) &&
+                    canToggleChargeCommand(now)) {
+                    NSFileLog(@"hold early recharge for discharge trend %@ target=%d lower=%d streak=%d current=%d behavior=%@",
+                              capacity, charge_above, hold_lower, g_holdDischargeStreak, effective_current, runtimeHoldBehavior);
+                    should_recharge_for_hold = YES;
+                    holdRechargeReason = @"hold_discharge_trend";
                 }
-                resetHoldRuntimeState();
-                nextPolicyState = @"hold_recharge";
-                nextPolicyReason = holdRechargeReason;
+                if (should_recharge_for_hold) {
+                    if (!g_chargeCommandEnabled || predictive_inhibit_active || !current_looks_charging) {
+                        NSFileLog(@"hold recharge within band %@ <= %d current=%d", capacity, hold_lower, effective_current);
+                        setBatteryStatus(YES);
+                        performAction(@"start_charge");
+                        performAcccharge(YES);
+                    }
+                    resetHoldRuntimeState();
+                    nextPolicyState = @"hold_recharge";
+                    nextPolicyReason = holdRechargeReason;
+                    break;
+                }
+                nextPolicyState = (g_chargeCommandEnabled && (is_charging || current_looks_charging)) ? @"hold_recharge" : @"hold";
+                nextPolicyReason = [nextPolicyState isEqualToString:@"hold_recharge"] ? @"hold_recharge_active" : @"hold_monitoring";
                 break;
             }
-            nextPolicyState = (g_chargeCommandEnabled && (is_charging || current_looks_charging)) ? @"hold_recharge" : @"hold";
-            nextPolicyReason = [nextPolicyState isEqualToString:@"hold_recharge"] ? @"hold_recharge_active" : @"hold_monitoring";
-            break;
         }
         if (is_adaptor_connected && !disable_capacity_control && capacity.intValue >= charge_above) { // 停充-电量高,优先级=2
             if (g_chargeCommandEnabled || current_looks_charging) {
@@ -2183,7 +2199,7 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
     } while(false);
     if (is_adaptor_new_disconnected) {
         performAcccharge(NO);
-        resetHoldRuntimeState();
+        resetHoldSessionState();
         nextPolicyState = @"battery";
         nextPolicyReason = @"adaptor_disconnected";
     }
@@ -2444,6 +2460,7 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
                 [Service.inst initLocalPush];
             }
         } else if ([key isEqualToString:@"adv_hold_enabled"]) {
+            resetHoldSessionState();
             refreshHoldMonitorTimer();
         } else if ([key isEqualToString:@"adv_hold_behavior"]) {
             refreshHoldMonitorTimer();
@@ -2452,6 +2469,8 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
         } else if ([key isEqualToString:@"adv_disable_inflow"]) {
             resetBatteryStatus();
         } else if ([key isEqualToString:@"charge_above"]) {
+            resetHoldSessionState();
+            refreshHoldMonitorTimer();
             if ([val intValue] >= 100) {
                 resetBatteryStatus();
             }
@@ -2498,22 +2517,23 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             data = [NSMutableDictionary dictionary];
         }
         int target = getLocalInt(@"charge_above", 100);
+        BOOL holdCapacityControlAvailable = (target < 100 && isHoldModeEnabled());
         data[@"PredictiveChargingInhibitActive"] = @([data[@"PredictiveChargingInhibit"] boolValue]);
         data[@"ChargeCommandEnabled"] = @(g_chargeCommandEnabled);
         data[@"PolicyState"] = g_policyState ?: @"battery";
         data[@"HoldActive"] = @([g_policyState hasPrefix:@"hold"]);
         data[@"HoldCharging"] = @([g_policyState isEqualToString:@"hold_recharge"]);
-        data[@"HoldTarget"] = @(target);
-        data[@"HoldRangeLower"] = @(getHoldModeLowerBound(target));
+        data[@"HoldTarget"] = holdCapacityControlAvailable ? @(target) : @0;
+        data[@"HoldRangeLower"] = holdCapacityControlAvailable ? @(getHoldModeLowerBound(target)) : @0;
         data[@"HoldBand"] = @(getHoldModeBand());
         data[@"HoldBehavior"] = getHoldModeBehavior() ?: @"balanced";
         data[@"HoldRuntimeBehavior"] = currentHoldRuntimeBehavior() ?: @"balanced";
         data[@"HoldAdaptiveLoadLevel"] = g_holdAdaptiveLoadLevel ?: @"fixed";
         data[@"HoldAdaptiveAverageCurrent"] = @(g_holdAdaptiveAverageCurrentmA);
         data[@"HoldDischargeStreak"] = @(g_holdDischargeStreak);
-        data[@"HoldMonitorIntervalSeconds"] = @((g_holdMonitorTimerIntervalSeconds > 0) ? g_holdMonitorTimerIntervalSeconds : getHoldStrategyMonitorIntervalSeconds());
-        data[@"HoldEarlyRechargeAssistEnabled"] = @(shouldUseHoldEarlyRechargeAssist());
-        data[@"HoldEarlyRechargeStreakRequired"] = @(getHoldEarlyRechargeDischargeStreakRequired());
+        data[@"HoldMonitorIntervalSeconds"] = holdCapacityControlAvailable ? @((g_holdMonitorTimerIntervalSeconds > 0) ? g_holdMonitorTimerIntervalSeconds : getHoldStrategyMonitorIntervalSeconds()) : @0;
+        data[@"HoldEarlyRechargeAssistEnabled"] = @(holdCapacityControlAvailable && shouldUseHoldEarlyRechargeAssist());
+        data[@"HoldEarlyRechargeStreakRequired"] = holdCapacityControlAvailable ? @(getHoldEarlyRechargeDischargeStreakRequired()) : @0;
         data[@"SmartChargeStatus"] = @(g_smartChargeStatus);
         data[@"SmartChargeManagedByDaemon"] = @(g_tempSmartChargeDisabledByCL);
         data[@"SmartChargeOriginalStatus"] = @(g_smartChargeCoordinationOriginalStatus);

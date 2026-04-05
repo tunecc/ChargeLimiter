@@ -4795,6 +4795,8 @@ static UIViewController *CLTopVisibleViewController(void) {
 - (void)setupSystemControlHintFloating;
 - (void)updateSystemControlHintForChargeAbove:(NSInteger)newValue;
 - (void)showSystemControlHint;
+- (void)showSystemControlHintWithText:(NSString *)text;
+- (BOOL)isHoldSuppressedBySystemCapacityControlForManager:(CLBatteryManager *)manager;
 @end
 
 @implementation CLSettingsViewController
@@ -5974,11 +5976,17 @@ static BOOL CLDisplayedPowerStateUsesExternalPower(CLBatteryManager *manager) {
     NSInteger oldValue = self.lastChargeAboveForHint;
     self.lastChargeAboveForHint = newValue;
     if (oldValue != 100 && newValue == 100) {
-        [self showSystemControlHint];
+        [self showSystemControlHintWithText:CLL(@"已切换为系统电量控制，温度控制仍生效，插电保持暂时停用")];
+    } else if (oldValue == 100 && newValue < 100) {
+        [self showSystemControlHintWithText:CLL(@"已恢复停充控制，插电保持设置已恢复可用")];
     }
 }
 
 - (void)showSystemControlHint {
+    [self showSystemControlHintWithText:CLL(@"已切换为系统电量控制，温度控制仍生效")];
+}
+
+- (void)showSystemControlHintWithText:(NSString *)text {
     if (!self.isViewLoaded) {
         return;
     }
@@ -5986,7 +5994,7 @@ static BOOL CLDisplayedPowerStateUsesExternalPower(CLBatteryManager *manager) {
         return;
     }
 
-    self.systemControlHintLabel.text = CLL(@"已切换为系统电量控制，温度控制仍生效");
+    self.systemControlHintLabel.text = text.length > 0 ? text : CLL(@"已切换为系统电量控制，温度控制仍生效");
     [self.systemControlHintTimer invalidate];
     self.systemControlHintView.hidden = NO;
     self.systemControlHintView.transform = CGAffineTransformMakeTranslation(0, -4);
@@ -6232,7 +6240,14 @@ static BOOL CLDisplayedPowerStateUsesExternalPower(CLBatteryManager *manager) {
     }
 }
 
+- (BOOL)isHoldSuppressedBySystemCapacityControlForManager:(CLBatteryManager *)manager {
+    return manager.chargeAbove >= 100;
+}
+
 - (NSString *)holdRangeLabelForManager:(CLBatteryManager *)manager {
+    if ([self isHoldSuppressedBySystemCapacityControlForManager:manager]) {
+        return CLL(@"系统控制");
+    }
     if (!manager.holdModeEnabled || manager.holdTarget <= 0) {
         return CLL(@"关闭");
     }
@@ -6254,6 +6269,9 @@ static BOOL CLDisplayedPowerStateUsesExternalPower(CLBatteryManager *manager) {
 }
 
 - (NSString *)holdBehaviorLabelForManager:(CLBatteryManager *)manager {
+    if ([self isHoldSuppressedBySystemCapacityControlForManager:manager]) {
+        return CLL(@"系统控制");
+    }
     if (manager.holdModeBehavior == CLHoldModeBehaviorAdaptive) {
         if (!manager.holdModeEnabled) {
             return [NSString stringWithFormat:@"%@ · %@", CLL(@"智能自适应"), CLL(@"未启用")];
@@ -6263,6 +6281,7 @@ static BOOL CLDisplayedPowerStateUsesExternalPower(CLBatteryManager *manager) {
     }
     return [self fixedHoldBehaviorLabel:manager.holdModeBehavior];
 }
+
 
 - (void)configDidUpdate {
     CLBatteryManager *manager = [CLBatteryManager shared];
