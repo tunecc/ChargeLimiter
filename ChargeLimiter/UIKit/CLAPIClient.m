@@ -84,27 +84,42 @@ static int CLStartDaemonBestEffort(void) {
     // 模拟电池数据，用于 UI 测试
     static NSInteger mockCapacity = 75;
     static BOOL mockCharging = YES;
+    static BOOL mockHoldArmed = NO;
     NSInteger now = (NSInteger)[[NSDate date] timeIntervalSince1970];
     NSDictionary *config = [self mockConfig][@"data"];
     NSInteger chargeAbove = [config[@"charge_above"] integerValue];
     NSInteger holdBand = MAX([config[@"adv_hold_band"] integerValue], 1);
     BOOL holdEnabled = [config[@"adv_hold_enabled"] boolValue];
+    BOOL holdCapacityControlAvailable = holdEnabled && chargeAbove < 100;
+    NSInteger holdLower = MAX(chargeAbove - holdBand, 5);
     NSString *configuredHoldBehavior = [config[@"adv_hold_behavior"] isKindOfClass:[NSString class]] ? config[@"adv_hold_behavior"] : @"balanced";
     
     // 模拟电量变化
+    if (!holdCapacityControlAvailable) {
+        mockHoldArmed = NO;
+    }
     if (mockCharging) {
         mockCapacity = MIN(mockCapacity + 1, 100);
-        if (mockCapacity >= 80) mockCharging = NO;
+        if (holdCapacityControlAvailable && mockCapacity >= chargeAbove) {
+            mockHoldArmed = YES;
+            mockCharging = NO;
+        } else if (!holdCapacityControlAvailable && mockCapacity >= 80) {
+            mockCharging = NO;
+        }
     } else {
         mockCapacity = MAX(mockCapacity - 1, 20);
-        if (mockCapacity <= 20) mockCharging = YES;
+        if (holdCapacityControlAvailable && mockHoldArmed && mockCapacity <= holdLower) {
+            mockCharging = YES;
+        } else if (!holdCapacityControlAvailable && mockCapacity <= 20) {
+            mockCharging = YES;
+        }
     }
 
     NSInteger simulatedAmperage = mockCharging ? (800 + arc4random_uniform(200)) : (-300 - arc4random_uniform(100));
     NSInteger simulatedInstantAmperage = mockCharging ? (850 + arc4random_uniform(150)) : (-280 - arc4random_uniform(80));
-    BOOL holdActive = holdEnabled && mockCapacity >= (chargeAbove - holdBand) && mockCapacity <= chargeAbove;
+    BOOL holdActive = holdCapacityControlAvailable && mockHoldArmed && mockCapacity >= holdLower && mockCapacity <= chargeAbove;
     BOOL holdCharging = holdActive && mockCharging && mockCapacity < chargeAbove;
-    BOOL predictiveInhibit = holdActive && !holdCharging;
+    BOOL predictiveInhibit = holdCapacityControlAvailable && mockHoldArmed && !holdCharging && mockCapacity >= holdLower && mockCapacity <= chargeAbove;
     BOOL smartChargeManaged = holdActive;
     NSString *policyState = holdCharging ? @"hold_recharge" : (predictiveInhibit ? @"hold" : (mockCharging ? @"charging" : @"battery"));
     NSString *policyReason = holdCharging ? @"hold_band_lower_reached" : (predictiveInhibit ? @"hold_target_reached" : (mockCharging ? @"charging_active" : @"battery_idle"));
@@ -215,8 +230,8 @@ static int CLStartDaemonBestEffort(void) {
             @"ChargeCommandEnabled": @(!predictiveInhibit),
             @"HoldActive": @(holdActive),
             @"HoldCharging": @(holdCharging),
-            @"HoldTarget": @(chargeAbove),
-            @"HoldRangeLower": @(MAX(chargeAbove - holdBand, 5)),
+            @"HoldTarget": @(holdCapacityControlAvailable ? chargeAbove : 0),
+            @"HoldRangeLower": @(holdCapacityControlAvailable ? holdLower : 0),
             @"HoldRuntimeBehavior": runtimeHoldBehavior,
             @"HoldAdaptiveLoadLevel": adaptiveLoadLevel,
             @"HoldAdaptiveAverageCurrent": @(adaptiveAverageCurrent),
@@ -234,9 +249,9 @@ static int CLStartDaemonBestEffort(void) {
             @"SmartChargeCoordinationSessionID": smartChargeManaged ? @"mock-smart-charge-session" : @"",
             @"SmartChargeCoordinationStartTime": @(smartChargeManaged ? (now - 180) : 0),
             @"HoldDischargeStreak": @(predictiveInhibit ? 2 : 0),
-            @"HoldMonitorIntervalSeconds": @(holdMonitorIntervalSeconds),
-            @"HoldEarlyRechargeAssistEnabled": @(holdEarlyRechargeAssistEnabled),
-            @"HoldEarlyRechargeStreakRequired": @(holdEarlyRechargeStreakRequired),
+            @"HoldMonitorIntervalSeconds": @(holdCapacityControlAvailable ? holdMonitorIntervalSeconds : 0),
+            @"HoldEarlyRechargeAssistEnabled": @(holdCapacityControlAvailable && holdEarlyRechargeAssistEnabled),
+            @"HoldEarlyRechargeStreakRequired": @(holdCapacityControlAvailable ? holdEarlyRechargeStreakRequired : 0),
             @"AdapterDetails": @{
                 @"Name": @"USB-C Power Adapter",
                 @"Description": @"usb host",
@@ -286,7 +301,7 @@ static int CLStartDaemonBestEffort(void) {
             @"full_charge_sched_interval_days": @7,
             @"full_charge_sched_start_minute": @120,
             @"full_charge_sched_duration_hours": @4,
-            @"ver": @"1.11.3",
+            @"ver": @"1.11.4",
             @"sysver": @"iOS 16.1.2",
             @"devmodel": @"iPhone14,2",
             @"sys_boot": @((NSInteger)[[NSDate date] timeIntervalSince1970] - 86400),
