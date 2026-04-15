@@ -4137,6 +4137,25 @@ static UIViewController *CLTopVisibleViewController(void) {
 
 #pragma mark - 软件设置页面
 
+static const NSInteger CLSoftwareNotificationSwitchTag = 4201;
+
+static NSString *CLDaemonLanguageValueForLocaleIdentifier(NSString *identifier) {
+    NSString *lang = [identifier isKindOfClass:[NSString class]] ? identifier.lowercaseString : @"";
+    if ([lang hasPrefix:@"zh-hans"] || [lang hasPrefix:@"zh-cn"] || [lang hasPrefix:@"zh-sg"]) {
+        return @"zh_CN";
+    }
+    if ([lang hasPrefix:@"zh-hant"] || [lang hasPrefix:@"zh-tw"] || [lang hasPrefix:@"zh-hk"] || [lang hasPrefix:@"zh-mo"]) {
+        return @"zh_TW";
+    }
+    if ([lang hasPrefix:@"ar"]) {
+        return @"ar";
+    }
+    if ([lang hasPrefix:@"vi"]) {
+        return @"vi";
+    }
+    return @"en";
+}
+
 @interface CLSoftwareSettingsViewController : UIViewController
 @end
 
@@ -4151,6 +4170,10 @@ static UIViewController *CLTopVisibleViewController(void) {
 @property (nonatomic, strong) UIImageView *hapticChevron;
 @property (nonatomic, strong) UISegmentedControl *hapticSegment;
 @property (nonatomic, assign) BOOL hapticExpanded;
+- (void)configDidUpdate;
+- (UISwitch *)switchInCard:(CLGlassCard *)card tag:(NSInteger)tag;
+- (NSString *)daemonLanguageValueForAppLanguage:(CLAppLanguage)language;
+- (void)syncDaemonLanguageWithAppLanguage:(CLAppLanguage)language;
 - (void)promptLegacyResidualCleanupWithPaths:(NSArray<NSString *> *)paths completion:(dispatch_block_t)completion;
 - (void)showLegacyResidualCleanupResult:(NSDictionary *)result;
 @end
@@ -4163,6 +4186,7 @@ static UIViewController *CLTopVisibleViewController(void) {
     self.title = CLL(@"软件设置");
     self.view.backgroundColor = [UIColor systemGroupedBackgroundColor];
     [self setupUI];
+    [self syncDaemonLanguageWithAppLanguage:CLGetAppLanguage()];
     
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(languageDidChange)
@@ -4171,6 +4195,10 @@ static UIViewController *CLTopVisibleViewController(void) {
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(updateCheckStatusDidChange)
                                                  name:CLUpdateCheckStatusDidChangeNotification
+                                               object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(configDidUpdate)
+                                                 name:CLConfigDidUpdateNotification
                                                object:nil];
 }
 
@@ -4221,6 +4249,10 @@ static UIViewController *CLTopVisibleViewController(void) {
     CLBatteryManager *manager = [CLBatteryManager shared];
     NSString *freqValue = [self frequencyString:manager.updateFrequency];
     
+    [self.settingsCard addSwitchRowWithIcon:@"bell.badge.fill" title:CLL(@"通知") isOn:manager.notificationEnabled color:[UIColor systemOrangeColor] tag:CLSoftwareNotificationSwitchTag onChange:^(BOOL isOn) {
+        [manager setNotificationEnabled:isOn];
+    }];
+    [self.settingsCard addSeparator];
     [self.settingsCard addNavigationRowWithIcon:@"clock.arrow.circlepath" title:CLL(@"刷新频率") value:freqValue color:[UIColor systemTealColor] target:self action:@selector(frequencyTapped)];
     [self.settingsCard addSeparator];
     [self.settingsCard addNavigationRowWithIcon:@"globe" title:CLL(@"语言") value:[self languageValueLabel] color:[UIColor systemBlueColor] target:self action:@selector(languageTapped)];
@@ -4312,12 +4344,15 @@ static UIViewController *CLTopVisibleViewController(void) {
 
     [alert addAction:[self checkedActionWithTitle:CLL(@"跟随系统") checked:(current == CLAppLanguageSystem) handler:^(UIAlertAction * _Nonnull action) {
         CLSetAppLanguage(CLAppLanguageSystem);
+        [self syncDaemonLanguageWithAppLanguage:CLAppLanguageSystem];
     }]];
     [alert addAction:[self checkedActionWithTitle:CLL(@"English") checked:(current == CLAppLanguageEnglish) handler:^(UIAlertAction * _Nonnull action) {
         CLSetAppLanguage(CLAppLanguageEnglish);
+        [self syncDaemonLanguageWithAppLanguage:CLAppLanguageEnglish];
     }]];
     [alert addAction:[self checkedActionWithTitle:CLL(@"简体中文") checked:(current == CLAppLanguageChineseSimplified) handler:^(UIAlertAction * _Nonnull action) {
         CLSetAppLanguage(CLAppLanguageChineseSimplified);
+        [self syncDaemonLanguageWithAppLanguage:CLAppLanguageChineseSimplified];
     }]];
     
     [alert addAction:[UIAlertAction actionWithTitle:CLL(@"取消") style:UIAlertActionStyleCancel handler:nil]];
@@ -4357,6 +4392,28 @@ static UIViewController *CLTopVisibleViewController(void) {
         [alert addAction:[UIAlertAction actionWithTitle:CLL(@"确定") style:UIAlertActionStyleDefault handler:nil]];
         [self presentViewController:alert animated:YES completion:nil];
     }
+}
+
+- (NSString *)daemonLanguageValueForAppLanguage:(CLAppLanguage)language {
+    switch (language) {
+        case CLAppLanguageEnglish:
+            return @"en";
+        case CLAppLanguageChineseSimplified:
+            return @"zh_CN";
+        case CLAppLanguageSystem:
+        default: {
+            NSString *preferred = NSLocale.preferredLanguages.firstObject ?: @"en";
+            return CLDaemonLanguageValueForLocaleIdentifier(preferred);
+        }
+    }
+}
+
+- (void)syncDaemonLanguageWithAppLanguage:(CLAppLanguage)language {
+    NSString *langValue = [self daemonLanguageValueForAppLanguage:language];
+    if (langValue.length == 0) {
+        return;
+    }
+    [[CLAPIClient shared] setConfigWithKey:@"lang" value:langValue completion:nil];
 }
 
 - (NSInteger)hapticStyleValue {
@@ -4743,6 +4800,31 @@ static UIViewController *CLTopVisibleViewController(void) {
 
 - (void)updateCheckStatusDidChange {
     [self updateCardValue:self.settingsCard title:CLL(@"检查更新") value:[self updateStatusValue]];
+}
+
+- (void)configDidUpdate {
+    UISwitch *switchControl = [self switchInCard:self.settingsCard tag:CLSoftwareNotificationSwitchTag];
+    if (!switchControl) {
+        return;
+    }
+    BOOL enabled = [CLBatteryManager shared].notificationEnabled;
+    [switchControl setOn:enabled animated:YES];
+    UIImageView *iconView = objc_getAssociatedObject(switchControl, "iconView");
+    UIColor *iconColor = objc_getAssociatedObject(switchControl, "iconColor");
+    if (iconView) {
+        iconView.tintColor = enabled ? (iconColor ?: [UIColor systemOrangeColor])
+                                     : [[UIColor secondaryLabelColor] colorWithAlphaComponent:0.7];
+    }
+}
+
+- (UISwitch *)switchInCard:(CLGlassCard *)card tag:(NSInteger)tag {
+    for (UIView *row in card.contentStack.arrangedSubviews) {
+        UISwitch *switchControl = [row viewWithTag:tag];
+        if ([switchControl isKindOfClass:[UISwitch class]]) {
+            return switchControl;
+        }
+    }
+    return nil;
 }
 
 - (void)dealloc {

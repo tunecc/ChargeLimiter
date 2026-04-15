@@ -101,6 +101,7 @@ extern NSNotificationName const CLDaemonStatusDidChangeNotification;
 @property(nonatomic, assign) BOOL enabled;              // 全局启用
 @property(nonatomic, assign) CLChargeMode chargeMode;   // 充电模式
 @property(nonatomic, assign) NSInteger updateFrequency; // 更新频率 (秒)
+@property(nonatomic, assign) BOOL notificationEnabled;  // 通知总开关
 @property(nonatomic, assign) NSInteger chargeBelow;     // 电量下限 %
 @property(nonatomic, assign) NSInteger chargeAbove;     // 电量上限 %
 @property(nonatomic, assign) BOOL tempControlEnabled;   // 温控开关

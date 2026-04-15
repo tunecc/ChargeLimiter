@@ -96,6 +96,7 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
     if (![data isKindOfClass:[NSDictionary class]]) return;
 
     _enabled = [data[@"enable"] boolValue];
+    _notificationEnabled = [data[@"action"] isKindOfClass:[NSString class]] && [data[@"action"] isEqualToString:@"noti"];
 
     NSString *mode = data[@"mode"];
     if ([mode isEqualToString:@"charge_on_plug"]) {
@@ -152,6 +153,7 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
     }
     NSMutableDictionary *m = [all mutableCopy];
     if (!m[@"enable"]) m[@"enable"] = @YES;
+    if (!m[@"action"]) m[@"action"] = @"";
     if (!m[@"mode"]) m[@"mode"] = @"charge_on_plug";
     if (!m[@"update_freq"]) m[@"update_freq"] = @1;
     if (!m[@"charge_below"]) m[@"charge_below"] = @20;
@@ -185,6 +187,7 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
     self = [super init];
     if (self) {
         _updateFrequency = 1;
+        _notificationEnabled = NO;
         _chargeBelow = 20;
         _chargeAbove = 80;
         _chargeTempBelow = 35;  // 降温恢复温度
@@ -457,6 +460,13 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
         if (self.refreshTimer) {
             [self startAutoRefresh];
         }
+    }
+}
+
+- (void)setNotificationEnabled:(BOOL)notificationEnabled {
+    if (_notificationEnabled != notificationEnabled) {
+        _notificationEnabled = notificationEnabled;
+        [self saveConfigKey:@"action" value:(notificationEnabled ? @"noti" : @"") completion:nil];
     }
 }
 
