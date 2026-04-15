@@ -52,6 +52,7 @@ ChargeLimiter 更像一个“充电策略调度器”，而不是“硬件电源
 仓库当前脚本会生成这几类发布产物：
 
 - TrollStore：`out/ChargeLimiter_<VERSION>_TrollStore.tipa`
+- rootful：`out/ChargeLimiter_<VERSION>_rootful_iphoneos-arm.deb`
 - rootless：`out/ChargeLimiter_<VERSION>_rootless_arm64.deb`
 - roothide：`out/ChargeLimiter_<VERSION>_roothide_arm64e.deb`
 

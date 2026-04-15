@@ -4,8 +4,10 @@ set -eu
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PROJECT="$ROOT_DIR/ChargeLimiter.xcodeproj"
 OUT_DIR="$ROOT_DIR/out"
+PKG_ROOTFUL_DIR="$ROOT_DIR/ChargeLimiter/Package"
 PKG_ROOTLESS_DIR="$ROOT_DIR/ChargeLimiter/Package_rootless"
 PKG_ROOTHIDE_DIR="$ROOT_DIR/ChargeLimiter/Package_roothide"
+BUILD_ROOTFUL="$ROOT_DIR/build_rootful"
 BUILD_ROOTLESS="$ROOT_DIR/build_rootless"
 BUILD_ROOTHIDE="$ROOT_DIR/build_roothide"
 PAYLOAD_DIR="$ROOT_DIR/Payload"
@@ -89,6 +91,7 @@ if [ -z "$VERSION" ]; then
     exit 1
 fi
 
+ROOTFUL_APP="$BUILD_ROOTFUL/Build/Products/Release-iphoneos/ChargeLimiter.app"
 ROOTLESS_APP="$BUILD_ROOTLESS/Build/Products/Release-iphoneos/ChargeLimiter.app"
 ROOTHIDE_APP="$BUILD_ROOTHIDE/Build/Products/Release-iphoneos/ChargeLimiter.app"
 APP_ENT_TS="$ROOT_DIR/ChargeLimiter/ChargeLimiter.app.entitlements"
@@ -96,19 +99,34 @@ APP_ENT_JB="$ROOT_DIR/ChargeLimiter/ChargeLimiter.app.jb.entitlements"
 DAEMON_ENT="$ROOT_DIR/ChargeLimiter/ChargeLimiter.entitlements"
 
 TIPA_OUT="$OUT_DIR/ChargeLimiter_${VERSION}_TrollStore.tipa"
+ROOTFUL_DEB_OUT="$OUT_DIR/ChargeLimiter_${VERSION}_rootful_iphoneos-arm.deb"
 ROOTLESS_DEB_OUT="$OUT_DIR/ChargeLimiter_${VERSION}_rootless_arm64.deb"
 ROOTHIDE_DEB_OUT="$OUT_DIR/ChargeLimiter_${VERSION}_roothide_arm64e.deb"
 TROLLSTORE_BANNED_ENTITLEMENTS_REGEX="com\\.apple\\.private\\.cs\\.debugger|dynamic-codesigning|com\\.apple\\.private\\.skip-library-validation"
 
+force_clean_dir "$BUILD_ROOTFUL"
 force_clean_dir "$BUILD_ROOTLESS"
 force_clean_dir "$BUILD_ROOTHIDE"
 force_clean_dir "$PAYLOAD_DIR"
 mkdir -p "$OUT_DIR" "$PAYLOAD_DIR"
 STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/chargelimiter-pack.XXXXXX")"
+STAGE_ROOTFUL_DIR="$STAGE_DIR/rootful"
 STAGE_ROOTLESS_DIR="$STAGE_DIR/rootless"
 STAGE_ROOTHIDE_DIR="$STAGE_DIR/roothide"
 
-echo "[1/8] Build rootless app (arm64)..."
+echo "[1/10] Build rootful app (arm64)..."
+xcodebuild \
+  -project "$PROJECT" \
+  -scheme "ChargeLimiter" \
+  -destination "generic/platform=iOS" \
+  -configuration Release \
+  -derivedDataPath "$BUILD_ROOTFUL" \
+  CODE_SIGNING_ALLOWED=NO \
+  ARCHS=arm64 \
+  MonkeyDevInstallOnAnyBuild=NO \
+  MonkeyDevBuildPackageOnAnyBuild=NO >/dev/null
+
+echo "[2/10] Build rootless app (arm64)..."
 xcodebuild \
   -project "$PROJECT" \
   -scheme "ChargeLimiter rootless" \
@@ -120,10 +138,10 @@ xcodebuild \
   MonkeyDevInstallOnAnyBuild=NO \
   MonkeyDevBuildPackageOnAnyBuild=NO >/dev/null
 
-echo "[2/8] Build roothide app (arm64e)..."
+echo "[3/10] Build roothide app (arm64e via rootless target)..."
 xcodebuild \
   -project "$PROJECT" \
-  -scheme "ChargeLimiter roothide" \
+  -scheme "ChargeLimiter rootless" \
   -destination "generic/platform=iOS" \
   -configuration Release \
   -derivedDataPath "$BUILD_ROOTHIDE" \
@@ -132,7 +150,7 @@ xcodebuild \
   MonkeyDevInstallOnAnyBuild=NO \
   MonkeyDevBuildPackageOnAnyBuild=NO >/dev/null
 
-if [ ! -d "$ROOTLESS_APP" ] || [ ! -d "$ROOTHIDE_APP" ]; then
+if [ ! -d "$ROOTFUL_APP" ] || [ ! -d "$ROOTLESS_APP" ] || [ ! -d "$ROOTHIDE_APP" ]; then
     echo "[ERR] Build output app not found." >&2
     exit 1
 fi
@@ -156,30 +174,37 @@ strip_app() {
   xcrun strip -S -x "$APP_PATH/ChargeLimiterDaemon"
 }
 
-echo "[3/8] Strip app binaries..."
+echo "[4/10] Strip app binaries..."
+strip_app "$ROOTFUL_APP"
 strip_app "$ROOTLESS_APP"
 strip_app "$ROOTHIDE_APP"
 
-echo "[4/8] Sign app binaries..."
+echo "[5/10] Sign app binaries..."
+sign_app "$ROOTFUL_APP" "$APP_ENT_JB"
 sign_app "$ROOTLESS_APP" "$APP_ENT_JB"
 sign_app "$ROOTHIDE_APP" "$APP_ENT_JB"
 
-echo "[5/8] Prepare package trees..."
+echo "[6/10] Prepare package trees..."
+cp -a "$PKG_ROOTFUL_DIR" "$STAGE_ROOTFUL_DIR"
 cp -a "$PKG_ROOTLESS_DIR" "$STAGE_ROOTLESS_DIR"
 cp -a "$PKG_ROOTHIDE_DIR" "$STAGE_ROOTHIDE_DIR"
+rm -rf "$STAGE_ROOTFUL_DIR/Applications/ChargeLimiter.app"
 rm -rf "$STAGE_ROOTLESS_DIR/Applications" "$STAGE_ROOTHIDE_DIR/Applications"
 rm -rf "$STAGE_ROOTLESS_DIR/var/jb/Applications/ChargeLimiter.app"
 rm -rf "$STAGE_ROOTHIDE_DIR/var/jb/Applications/ChargeLimiter.app"
+cp -a "$ROOTFUL_APP" "$STAGE_ROOTFUL_DIR/Applications/ChargeLimiter.app"
 cp -a "$ROOTLESS_APP" "$STAGE_ROOTLESS_DIR/var/jb/Applications/ChargeLimiter.app"
 cp -a "$ROOTHIDE_APP" "$STAGE_ROOTHIDE_DIR/var/jb/Applications/ChargeLimiter.app"
 
+find "$STAGE_ROOTFUL_DIR" -name .DS_Store -delete
 find "$STAGE_ROOTLESS_DIR" -name .DS_Store -delete
 find "$STAGE_ROOTHIDE_DIR" -name .DS_Store -delete
-chmod 755 "$STAGE_ROOTLESS_DIR/DEBIAN"/* "$STAGE_ROOTHIDE_DIR/DEBIAN"/*
+chmod 755 "$STAGE_ROOTFUL_DIR/DEBIAN"/* "$STAGE_ROOTLESS_DIR/DEBIAN"/* "$STAGE_ROOTHIDE_DIR/DEBIAN"/*
+set_control_version "$STAGE_ROOTFUL_DIR/DEBIAN/control"
 set_control_version "$STAGE_ROOTLESS_DIR/DEBIAN/control"
 set_control_version "$STAGE_ROOTHIDE_DIR/DEBIAN/control"
 
-echo "[6/8] Build TrollStore package..."
+echo "[7/10] Build TrollStore package..."
 cp -a "$ROOTLESS_APP" "$PAYLOAD_DIR/ChargeLimiter.app"
 sign_app "$PAYLOAD_DIR/ChargeLimiter.app" "$APP_ENT_TS"
 find "$PAYLOAD_DIR" -name .DS_Store -delete
@@ -190,8 +215,9 @@ find "$PAYLOAD_DIR" -name .DS_Store -delete
 )
 rm -rf "$PAYLOAD_DIR"
 
-echo "[7/8] Build deb packages..."
-rm -f "$ROOTLESS_DEB_OUT" "$ROOTHIDE_DEB_OUT"
+echo "[8/10] Build deb packages..."
+rm -f "$ROOTFUL_DEB_OUT" "$ROOTLESS_DEB_OUT" "$ROOTHIDE_DEB_OUT"
+dpkg-deb -Zxz -b "$STAGE_ROOTFUL_DIR" "$ROOTFUL_DEB_OUT" >/dev/null
 dpkg-deb -Zxz -b "$STAGE_ROOTLESS_DIR" "$ROOTLESS_DEB_OUT" >/dev/null
 dpkg-deb -Zxz -b "$STAGE_ROOTHIDE_DIR" "$ROOTHIDE_DEB_OUT" >/dev/null
 
@@ -245,11 +271,14 @@ check_app() {
   check_binary "$APP_PATH/ChargeLimiterDaemon" "$EXPECTED_ARCH" "$BID"
 }
 
-echo "[8/8] Verify package contents..."
+echo "[9/10] Verify package contents..."
+check_app "$ROOTFUL_APP" "arm64"
 check_app "$ROOTLESS_APP" "arm64"
 check_app "$ROOTHIDE_APP" "arm64e"
 
+echo "[10/10] Finalize outputs..."
 echo "[OK] Done"
 echo "[OUT] $TIPA_OUT"
+echo "[OUT] $ROOTFUL_DEB_OUT"
 echo "[OUT] $ROOTLESS_DEB_OUT"
 echo "[OUT] $ROOTHIDE_DEB_OUT"
