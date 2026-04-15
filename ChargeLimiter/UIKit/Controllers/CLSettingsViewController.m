@@ -4786,6 +4786,7 @@ static UIViewController *CLTopVisibleViewController(void) {
 @property (nonatomic, strong) UILabel *systemControlHintLabel;
 @property (nonatomic, strong) NSTimer *systemControlHintTimer;
 @property (nonatomic, assign) NSInteger lastChargeAboveForHint;
+@property (nonatomic, assign) BOOL lastSystemCapacityControlActiveForHint;
 @property (nonatomic, assign) BOOL didCheckLegacyMigrationPrompt;
 @property (nonatomic, assign) BOOL tempControlsShouldBeVisible;
 - (void)promptLegacyMigrationIfNeeded;
@@ -4796,6 +4797,7 @@ static UIViewController *CLTopVisibleViewController(void) {
 - (void)updateSystemControlHintForChargeAbove:(NSInteger)newValue;
 - (void)showSystemControlHint;
 - (void)showSystemControlHintWithText:(NSString *)text;
+- (BOOL)usesSystemCapacityControlForManager:(CLBatteryManager *)manager chargeAbove:(NSInteger)chargeAbove;
 - (BOOL)isHoldSuppressedBySystemCapacityControlForManager:(CLBatteryManager *)manager;
 @end
 
@@ -4810,6 +4812,7 @@ static UIViewController *CLTopVisibleViewController(void) {
     self.chargeBelow = 20;
     self.chargeAbove = 80;
     self.lastChargeAboveForHint = self.chargeAbove;
+    self.lastSystemCapacityControlActiveForHint = NO;
     self.chargeTempBelow = 35;  // 降温恢复温度
     self.chargeTempAbove = 40;  // 高温停充温度
     
@@ -5973,11 +5976,14 @@ static BOOL CLDisplayedPowerStateUsesExternalPower(CLBatteryManager *manager) {
 }
 
 - (void)updateSystemControlHintForChargeAbove:(NSInteger)newValue {
-    NSInteger oldValue = self.lastChargeAboveForHint;
+    CLBatteryManager *manager = [CLBatteryManager shared];
+    BOOL oldSystemControlActive = self.lastSystemCapacityControlActiveForHint;
+    BOOL newSystemControlActive = [self usesSystemCapacityControlForManager:manager chargeAbove:newValue];
     self.lastChargeAboveForHint = newValue;
-    if (oldValue != 100 && newValue == 100) {
+    self.lastSystemCapacityControlActiveForHint = newSystemControlActive;
+    if (!oldSystemControlActive && newSystemControlActive) {
         [self showSystemControlHintWithText:CLL(@"已切换为系统电量控制，温度控制仍生效，插电保持暂时停用")];
-    } else if (oldValue == 100 && newValue < 100) {
+    } else if (oldSystemControlActive && !newSystemControlActive) {
         [self showSystemControlHintWithText:CLL(@"已恢复停充控制，插电保持设置已恢复可用")];
     }
 }
@@ -6240,8 +6246,12 @@ static BOOL CLDisplayedPowerStateUsesExternalPower(CLBatteryManager *manager) {
     }
 }
 
+- (BOOL)usesSystemCapacityControlForManager:(CLBatteryManager *)manager chargeAbove:(NSInteger)chargeAbove {
+    return chargeAbove >= 100 && manager.systemCapacityControlAt100Enabled;
+}
+
 - (BOOL)isHoldSuppressedBySystemCapacityControlForManager:(CLBatteryManager *)manager {
-    return manager.chargeAbove >= 100;
+    return [self usesSystemCapacityControlForManager:manager chargeAbove:manager.chargeAbove];
 }
 
 - (NSString *)holdRangeLabelForManager:(CLBatteryManager *)manager {
@@ -6311,6 +6321,7 @@ static BOOL CLDisplayedPowerStateUsesExternalPower(CLBatteryManager *manager) {
     self.chargeBelow = chargeBelow;
     self.chargeAbove = chargeAbove;
     self.lastChargeAboveForHint = chargeAbove;
+    self.lastSystemCapacityControlActiveForHint = [self usesSystemCapacityControlForManager:manager chargeAbove:chargeAbove];
     [self updateSliderValue:self.chargeBelowRow value:chargeBelow];
     [self updateSliderValue:self.chargeAboveRow value:chargeAbove];
     [self updateSliderLabel:self.chargeBelowRow value:chargeBelow suffix:@"%"];

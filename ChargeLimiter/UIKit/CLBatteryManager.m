@@ -119,6 +119,8 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
     _accChargeLPM = [data[@"acc_charge_lpm"] boolValue];
 
     _predictiveInhibitCharge = [data[@"adv_predictive_inhibit_charge"] boolValue];
+    id systemCapacityControlAt100Value = data[@"adv_system_capacity_control_at_100"];
+    _systemCapacityControlAt100Enabled = systemCapacityControlAt100Value == nil ? YES : [systemCapacityControlAt100Value boolValue];
     _disableSmartCharge = [data[@"disable_smart_charge"] boolValue];
     _disableInflow = [data[@"adv_disable_inflow"] boolValue];
     _holdModeEnabled = [data[@"adv_hold_enabled"] boolValue];
@@ -158,6 +160,7 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
     if (!m[@"charge_temp_below"]) m[@"charge_temp_below"] = @35;
     if (!m[@"charge_temp_above"]) m[@"charge_temp_above"] = @40;
     if (!m[@"disable_smart_charge"]) m[@"disable_smart_charge"] = @NO;
+    if (!m[@"adv_system_capacity_control_at_100"]) m[@"adv_system_capacity_control_at_100"] = @YES;
     if (!m[@"adv_hold_enabled"]) m[@"adv_hold_enabled"] = @NO;
     if (!m[@"adv_hold_band"]) m[@"adv_hold_band"] = @2;
     if (!m[@"adv_hold_behavior"]) m[@"adv_hold_behavior"] = @"balanced";
@@ -187,6 +190,7 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
         _chargeTempBelow = 35;  // 降温恢复温度
         _chargeTempAbove = 40;  // 高温停充温度
         _chargeMode = CLChargeModePlugAndCharge;
+        _systemCapacityControlAt100Enabled = YES;
         _holdModeBand = 2;
         _holdModeBehavior = CLHoldModeBehaviorBalanced;
         _holdRuntimeBehavior = CLHoldModeBehaviorBalanced;
@@ -467,6 +471,13 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
     if (_chargeAbove != chargeAbove) {
         _chargeAbove = chargeAbove;
         [self saveConfigKey:@"charge_above" value:@(chargeAbove) completion:nil];
+    }
+}
+
+- (void)setSystemCapacityControlAt100Enabled:(BOOL)systemCapacityControlAt100Enabled {
+    if (_systemCapacityControlAt100Enabled != systemCapacityControlAt100Enabled) {
+        _systemCapacityControlAt100Enabled = systemCapacityControlAt100Enabled;
+        [self saveConfigKey:@"adv_system_capacity_control_at_100" value:@(systemCapacityControlAt100Enabled) completion:nil];
     }
 }
 
