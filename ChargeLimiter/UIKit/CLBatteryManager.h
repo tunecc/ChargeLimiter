@@ -115,6 +115,7 @@ extern NSNotificationName const CLDaemonStatusDidChangeNotification;
 
 #pragma mark - 高级选项
 @property(nonatomic, assign) BOOL predictiveInhibitCharge; // 智能停充
+@property(nonatomic, assign) BOOL systemCapacityControlAt100Enabled; // 100% 时交由系统控制
 @property(nonatomic, assign) BOOL disableSmartCharge;      // 永久停用系统优化充电
 @property(nonatomic, assign) BOOL disableInflow;           // 禁流
 @property(nonatomic, assign) BOOL holdModeEnabled;         // 插电保持

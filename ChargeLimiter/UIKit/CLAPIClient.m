@@ -90,7 +90,10 @@ static int CLStartDaemonBestEffort(void) {
     NSInteger chargeAbove = [config[@"charge_above"] integerValue];
     NSInteger holdBand = MAX([config[@"adv_hold_band"] integerValue], 1);
     BOOL holdEnabled = [config[@"adv_hold_enabled"] boolValue];
-    BOOL holdCapacityControlAvailable = holdEnabled && chargeAbove < 100;
+    id systemCapacityControlAt100Value = config[@"adv_system_capacity_control_at_100"];
+    BOOL systemCapacityControlAt100Enabled = systemCapacityControlAt100Value == nil ? YES : [systemCapacityControlAt100Value boolValue];
+    BOOL handOverCapacityControl = (chargeAbove >= 100 && systemCapacityControlAt100Enabled);
+    BOOL holdCapacityControlAvailable = holdEnabled && !handOverCapacityControl;
     NSInteger holdLower = MAX(chargeAbove - holdBand, 5);
     NSString *configuredHoldBehavior = [config[@"adv_hold_behavior"] isKindOfClass:[NSString class]] ? config[@"adv_hold_behavior"] : @"balanced";
     
@@ -287,6 +290,7 @@ static int CLStartDaemonBestEffort(void) {
             @"acc_charge_lpm": @YES,
             @"use_smart": @YES,
             @"adv_predictive_inhibit_charge": @NO,
+            @"adv_system_capacity_control_at_100": @YES,
             @"disable_smart_charge": @NO,
             @"adv_disable_inflow": @NO,
             @"adv_hold_enabled": @NO,

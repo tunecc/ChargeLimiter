@@ -25,6 +25,8 @@
 "停止充电 (电量 ≥)" = "Stop Charging (≥)";
 "设为当前" = "Set Current";
 "已切换为系统电量控制，温度控制仍生效" = "Switched to system capacity control. Temperature control is still active.";
+"已切换为系统电量控制，温度控制仍生效，插电保持暂时停用" = "Switched to system capacity control. Temperature control is still active, and Power Hold is temporarily unavailable.";
+"已恢复停充控制，插电保持设置已恢复可用" = "Stop-charge control is active again, and the previous Power Hold settings are available.";
 "温度控制" = "Temperature Control";
 "高温停充 (温度 ≥)" = "Stop Charging (Temp ≥)";
 "降温恢复 (温度 ≤)" = "Resume Charging (Temp ≤)";
@@ -153,11 +155,15 @@
 "停充控制" = "Stop Charge";
 "智能停充" = "Smart Stop";
 "使用 SmartBattery API 进行停充" = "Use SmartBattery API to stop charging";
+"停止电量=100% 时交由系统控制" = "Hand 100% Stop Target to System";
+"开启后由系统接管电量上限；软件仅保留温度停充。关闭后，100% 仍由本工具继续控制。" = "When enabled, the system takes over the capacity limit and ChargeLimiter only keeps temperature-based stop charging. When disabled, ChargeLimiter still controls the 100% target.";
 "停充时启用禁流" = "Disable Inflow on Stop";
 "禁止电流流入设备，电池放电供电" = "Block inflow; battery powers device";
 "插电保持" = "Power Hold";
 "围绕“停止充电”目标小范围补电，更接近电脑保电量体验" = "Keep topping up around the stop target for a more computer-like plugged-in experience";
 "保持带宽" = "Hold Band";
+"停止电量=100% 且交由系统控制时停用" = "Disabled when the stop target is 100% and capacity control is handed to the system";
+"当前“停止充电”已设为 100%，且选择由系统接管，插电保持暂时停用并置灰；当关闭系统接管或把上限调回 100% 以下时，会自动恢复到你之前的 hold 设置。" = "The stop target is currently 100% and handed to the system, so Power Hold is temporarily disabled. If you turn off system takeover or lower the stop target below 100%, the previous hold settings will become available again.";
 "平衡" = "Balanced";
 "偏向外接供电" = "Prefer External Power";
 "偏向减少循环" = "Prefer Less Cycling";

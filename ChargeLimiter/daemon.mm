@@ -209,6 +209,7 @@ static BOOL shouldRefreshBatteryPolicyForConfigKey(NSString* key) {
         @"charge_temp_below",
         @"charge_temp_above",
         @"adv_predictive_inhibit_charge",
+        @"adv_system_capacity_control_at_100",
         @"adv_disable_inflow",
         @"adv_hold_enabled",
         @"adv_hold_band",
@@ -236,6 +237,18 @@ static int getFullChargeScheduleDurationHours() {
 
 static BOOL isHoldModeEnabled() {
     return getLocalBool(@"adv_hold_enabled", NO);
+}
+
+static BOOL shouldHandOverCapacityControlAt100() {
+    return getLocalBool(@"adv_system_capacity_control_at_100", YES);
+}
+
+static BOOL shouldDisableCapacityControlForTarget(int chargeAbove) {
+    return chargeAbove >= 100 && shouldHandOverCapacityControlAt100();
+}
+
+static BOOL isHoldCapacityControlAvailableForConfiguredTarget() {
+    return isHoldModeEnabled() && !shouldDisableCapacityControlForTarget(getLocalInt(@"charge_above", 100));
 }
 
 static int getHoldModeBand() {
@@ -881,7 +894,7 @@ static void refreshFullChargeScheduleTimer(time_t nextBoundaryTs) {
 }
 
 static void refreshHoldMonitorTimer(void) {
-    BOOL shouldRun = (g_enable && isHoldModeEnabled() && getLocalInt(@"charge_above", 100) < 100);
+    BOOL shouldRun = (g_enable && isHoldCapacityControlAvailableForConfiguredTarget());
     if (!shouldRun) {
         if (g_holdMonitorTimer != nil) {
             [g_holdMonitorTimer invalidate];
@@ -1588,6 +1601,7 @@ static void initConfKeySets() {
             @"floatwnd_auto",
             @"adv_prefer_smart",
             @"adv_predictive_inhibit_charge",
+            @"adv_system_capacity_control_at_100",
             @"adv_disable_inflow",
             @"adv_hold_enabled",
             @"adv_hold_temp_disable_smart_charge",
@@ -1950,9 +1964,9 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
         // 满充计划窗口内只解除电量上限，温控逻辑仍然保留。
         charge_above = 100;
     }
-    // charge_above >= 100 means "hand over capacity control to system";
-    // keep only temperature-based protection logic.
-    BOOL disable_capacity_control = (charge_above >= 100);
+    // 只有在显式选择“100% 交由系统控制”或满充计划临时放开上限时，
+    // 才旁路容量控制；否则 100% 也继续由软件参与策略控制。
+    BOOL disable_capacity_control = full_charge_window_active || shouldDisableCapacityControlForTarget(charge_above);
     BOOL enable_temp = getLocalBool(@"enable_temp", NO);
     NSNumber* capacity = safeInfo[@"CurrentCapacity"];
     BOOL is_charging = [safeInfo[@"IsCharging"] boolValue];
@@ -2276,6 +2290,7 @@ static void initConf(BOOL reset) {
         @"acc_charge_lpm": @YES,
         @"adv_prefer_smart": @NO, // iPhone8+ iOS13+
         @"adv_predictive_inhibit_charge": @(predictive_inhibit_charge_avail), // iPhone8+ iOS13+
+        @"adv_system_capacity_control_at_100": @YES,
         @"adv_disable_inflow": @NO, // all (iPhone8+ iOS13+会改变系统充电图标)
         @"adv_hold_enabled": @NO,
         @"adv_hold_band": @2,
@@ -2301,7 +2316,7 @@ static void initConf(BOOL reset) {
             id valDef = def_dic[key];
             id val = getAllKV()[key];
             if (![valDef isEqual:val]) {
-                if ([@[@"adv_predictive_inhibit_charge", @"adv_disable_inflow"] containsObject:key]) {
+                if ([@[@"adv_predictive_inhibit_charge", @"adv_system_capacity_control_at_100", @"adv_disable_inflow"] containsObject:key]) {
                     resetBattery = YES;
                 }
                 if ([key isEqualToString:@"adv_prefer_smart"]) {
@@ -2466,6 +2481,12 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             refreshHoldMonitorTimer();
         } else if ([key isEqualToString:@"adv_predictive_inhibit_charge"]) {
             resetBatteryStatus();
+        } else if ([key isEqualToString:@"adv_system_capacity_control_at_100"]) {
+            resetHoldSessionState();
+            refreshHoldMonitorTimer();
+            if (getLocalInt(@"charge_above", 100) >= 100) {
+                resetBatteryStatus();
+            }
         } else if ([key isEqualToString:@"adv_disable_inflow"]) {
             resetBatteryStatus();
         } else if ([key isEqualToString:@"charge_above"]) {
@@ -2517,7 +2538,7 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             data = [NSMutableDictionary dictionary];
         }
         int target = getLocalInt(@"charge_above", 100);
-        BOOL holdCapacityControlAvailable = (target < 100 && isHoldModeEnabled());
+        BOOL holdCapacityControlAvailable = (isHoldModeEnabled() && !shouldDisableCapacityControlForTarget(target));
         data[@"PredictiveChargingInhibitActive"] = @([data[@"PredictiveChargingInhibit"] boolValue]);
         data[@"ChargeCommandEnabled"] = @(g_chargeCommandEnabled);
         data[@"PolicyState"] = g_policyState ?: @"battery";

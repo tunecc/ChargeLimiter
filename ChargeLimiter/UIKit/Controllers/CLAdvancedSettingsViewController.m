@@ -359,12 +359,12 @@ static NSString *CLDebugValueWithRaw(NSString *label, NSString *raw) {
 }
 
 static BOOL CLHoldSuppressedBySystemCapacityControl(CLBatteryManager *manager) {
-    return manager.chargeAbove >= 100;
+    return manager.chargeAbove >= 100 && manager.systemCapacityControlAt100Enabled;
 }
 
 static NSString *CLHoldUnavailableReason(CLBatteryManager *manager) {
     if (CLHoldSuppressedBySystemCapacityControl(manager)) {
-        return CLL(@"停止电量=100% 时停用");
+        return CLL(@"停止电量=100% 且交由系统控制时停用");
     }
     if (!manager.holdModeEnabled) {
         return CLL(@"未启用");
@@ -578,6 +578,7 @@ static NSString *CLYesNoLabel(BOOL value) {
 
 static const NSInteger CLAdvDisableInflowTag = 301;
 static const NSInteger CLAdvHoldModeTag = 302;
+static const NSInteger CLAdvSystemCapacityControlAt100Tag = 315;
 static const NSInteger CLAdvHoldTempDisableSmartChargeTag = 312;
 static const NSInteger CLAdvDisableSmartChargeTag = 311;
 static const NSInteger CLAdvHoldModeBandTag = 305;
@@ -1549,6 +1550,8 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
     [stopChargeCard addSectionHeader:CLL(@"停充控制")];
     [stopChargeCard addSwitchRowWithIcon:@"bolt.slash.fill" title:CLL(@"智能停充") subtitle:CLL(@"使用 SmartBattery API 进行停充") isOn:manager.predictiveInhibitCharge color:[UIColor systemRedColor] tag:300 target:self action:@selector(smartChargeChanged:)];
     [stopChargeCard addSeparator];
+    [stopChargeCard addSwitchRowWithIcon:@"battery.100.circle" title:CLL(@"停止电量=100% 时交由系统控制") subtitle:CLL(@"开启后由系统接管电量上限；软件仅保留温度停充。关闭后，100% 仍由本工具继续控制。") isOn:manager.systemCapacityControlAt100Enabled color:[UIColor systemBlueColor] tag:CLAdvSystemCapacityControlAt100Tag target:self action:@selector(systemCapacityControlAt100Changed:)];
+    [stopChargeCard addSeparator];
     [stopChargeCard addSwitchRowWithIcon:@"xmark.circle.fill" title:CLL(@"停充时启用禁流") subtitle:CLL(@"禁止电流流入设备，电池放电供电") isOn:disableInflowEnabled color:[UIColor systemRedColor] tag:CLAdvDisableInflowTag target:self action:@selector(disableInflowChanged:)];
     [stopChargeCard addSeparator];
     [stopChargeCard addSwitchRowWithIcon:@"battery.100" title:CLL(@"插电保持") subtitle:CLL(@"围绕“停止充电”目标小范围补电，更接近电脑保电量体验") isOn:holdModeEnabled color:[UIColor systemIndigoColor] tag:CLAdvHoldModeTag target:self action:@selector(holdModeChanged:)];
@@ -1559,7 +1562,7 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
     [self addTipRowToCard:stopChargeCard text:CLL(@"开启后会以“停止充电”作为目标电量，并在目标下方缓冲范围内自动补电；开启禁流会自动关闭插电保持。")];
     [self addTipRowToCard:stopChargeCard text:CLL(@"保持策略只影响插电保持模式，不会变成真正硬件旁路。")];
     if ([self isHoldSuppressedBySystemCapacityControlForManager:manager]) {
-        [self addTipRowToCard:stopChargeCard text:CLL(@"当前“停止充电”已设为 100%，插电保持暂时停用并置灰；当上限调回 100% 以下时，会自动恢复到你之前的 hold 设置。")];
+        [self addTipRowToCard:stopChargeCard text:CLL(@"当前“停止充电”已设为 100%，且选择由系统接管，插电保持暂时停用并置灰；当关闭系统接管或把上限调回 100% 以下时，会自动恢复到你之前的 hold 设置。")];
     }
     [self updateDisableInflowInterlockStateInCard:stopChargeCard manager:manager];
     [self updateHoldOptionInterlockStateInCard:stopChargeCard manager:manager];
@@ -1750,6 +1753,11 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
         [[CLAPIClient shared] setConfigWithKey:@"adv_disable_inflow" value:@NO completion:nil];
     }
     [[CLAPIClient shared] setConfigWithKey:@"adv_predictive_inhibit_charge" value:@(sender.on) completion:nil];
+    [self reloadContentRows];
+}
+
+- (void)systemCapacityControlAt100Changed:(UISwitch *)sender {
+    [CLBatteryManager shared].systemCapacityControlAt100Enabled = sender.on;
     [self reloadContentRows];
 }
 
