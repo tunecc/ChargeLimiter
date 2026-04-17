@@ -183,7 +183,7 @@ static void appendSmartChargeCoordinationEvent(NSString* reason, int fromStatus,
 - (instancetype)init;
 - (void)serve;
 - (void)initLocalPush;
-- (void)localPush:(NSString*)title msg:(NSString*)msg;
+- (void)localPush:(NSString*)title msg:(NSString*)msg identifier:(NSString*)identifier;
 - (void)systemTimeContextDidChange:(NSNotification*)note;
 @end
 
@@ -603,7 +603,14 @@ static void appendPolicyEventHistory(NSString* eventType,
     insertPolicyEventDBData(item);
 }
 
-static void notifyForChargeCommandTransition(BOOL previousEnabled, BOOL currentEnabled, NSString* reason);
+static void notifyForChargeCommandTransition(BOOL previousExternalConnected,
+                                             BOOL currentExternalConnected,
+                                             BOOL previousEnabled,
+                                             BOOL currentEnabled,
+                                             NSString* previousState,
+                                             NSString* currentState,
+                                             NSString* previousReason,
+                                             NSString* reason);
 
 static NSString* policyEventTypeForTransition(NSString* nextPolicyState, NSString* reason) {
     NSString* safeState = nextPolicyState ?: @"";
@@ -1195,7 +1202,72 @@ static BOOL notificationsEnabled() {
     return [getLocalString(@"action", @"") isEqualToString:@"noti"];
 }
 
-static NSString* notificationMessageIDForChargeCommandTransition(BOOL previousEnabled, BOOL currentEnabled, NSString* reason) {
+static NSString* notificationKeyForMessageID(NSString* msgid) {
+    if ([msgid isEqualToString:@"noti_start_charge"]) {
+        return @"start_charge";
+    }
+    if ([msgid isEqualToString:@"noti_stop_charge_capacity"]) {
+        return @"stop_charge_capacity";
+    }
+    if ([msgid isEqualToString:@"noti_stop_charge_temperature"]) {
+        return @"stop_charge_temperature";
+    }
+    if ([msgid isEqualToString:@"noti_resume_charge_temperature"]) {
+        return @"resume_charge_temperature";
+    }
+    return nil;
+}
+
+static NSString* identifierForNotificationKey(NSString* key) {
+    if (key.length == 0) {
+        return nil;
+    }
+    return [NSString stringWithFormat:@"com.chargelimiter.noti.%@", key];
+}
+
+static BOOL shouldSendNotificationForKey(NSString* key) {
+    static NSMutableDictionary<NSString*, NSNumber*>* lastSentTsByKey = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        lastSentTsByKey = [NSMutableDictionary dictionary];
+    });
+
+    if (key.length == 0) {
+        return NO;
+    }
+
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    NSTimeInterval cooldown = 5.0;
+    NSNumber* lastSent = lastSentTsByKey[key];
+    if (lastSent != nil && (now - lastSent.doubleValue) < cooldown) {
+        return NO;
+    }
+    lastSentTsByKey[key] = @(now);
+    return YES;
+}
+
+static NSString* notificationMessageIDForChargeCommandTransition(BOOL previousExternalConnected,
+                                                                 BOOL currentExternalConnected,
+                                                                 BOOL previousEnabled,
+                                                                 BOOL currentEnabled,
+                                                                 NSString* previousState,
+                                                                 NSString* currentState,
+                                                                 NSString* previousReason,
+                                                                 NSString* reason) {
+    BOOL freshPlug = (!previousExternalConnected && currentExternalConnected);
+    BOOL stillPlugged = (previousExternalConnected && currentExternalConnected);
+
+    if (freshPlug) {
+        if ([currentState isEqualToString:@"charging"]) {
+            return @"noti_start_charge";
+        }
+        return nil;
+    }
+
+    if (!stillPlugged) {
+        return nil;
+    }
+
     if (previousEnabled == currentEnabled) {
         return nil;
     }
@@ -1204,27 +1276,47 @@ static NSString* notificationMessageIDForChargeCommandTransition(BOOL previousEn
         if ([reason isEqualToString:@"temperature_high"]) {
             return @"noti_stop_charge_temperature";
         }
-        if ([@[@"capacity_high", @"hold_target_reached", @"edge_mode_stop"] containsObject:reason]) {
+        if ([@[@"capacity_high", @"hold_target_reached"] containsObject:reason]) {
             return @"noti_stop_charge_capacity";
         }
         return nil;
     }
 
-    if ([reason isEqualToString:@"temperature_recovered"]) {
+    BOOL resumedFromTempPause = [previousReason isEqualToString:@"temperature_high"] ||
+                                [previousState isEqualToString:@"temp_paused"];
+    if ([reason isEqualToString:@"temperature_recovered"] && resumedFromTempPause) {
         return @"noti_resume_charge_temperature";
     }
-    if ([@[@"capacity_low", @"plug_mode_start", @"hold_band_lower_reached", @"hold_discharge_trend", @"critical_low_battery", @"full_charge_window"] containsObject:reason]) {
+    if ([@[@"capacity_low", @"critical_low_battery", @"full_charge_window"] containsObject:reason]) {
         return @"noti_start_charge";
     }
     return nil;
 }
 
-static void notifyForChargeCommandTransition(BOOL previousEnabled, BOOL currentEnabled, NSString* reason) {
+static void notifyForChargeCommandTransition(BOOL previousExternalConnected,
+                                             BOOL currentExternalConnected,
+                                             BOOL previousEnabled,
+                                             BOOL currentEnabled,
+                                             NSString* previousState,
+                                             NSString* currentState,
+                                             NSString* previousReason,
+                                             NSString* reason) {
     if (!notificationsEnabled()) {
         return;
     }
-    NSString* msgid = notificationMessageIDForChargeCommandTransition(previousEnabled, currentEnabled, reason);
+    NSString* msgid = notificationMessageIDForChargeCommandTransition(previousExternalConnected,
+                                                                      currentExternalConnected,
+                                                                      previousEnabled,
+                                                                      currentEnabled,
+                                                                      previousState,
+                                                                      currentState,
+                                                                      previousReason,
+                                                                      reason);
     if (msgid.length == 0) {
+        return;
+    }
+    NSString* notificationKey = notificationKeyForMessageID(msgid);
+    if (!shouldSendNotificationForKey(notificationKey)) {
         return;
     }
     NSString* lang = getLocalString(@"lang", @"en");
@@ -1232,7 +1324,7 @@ static void notifyForChargeCommandTransition(BOOL previousEnabled, BOOL currentE
     if (msg.length == 0) {
         return;
     }
-    [Service.inst localPush:@PRODUCT msg:msg];
+    [Service.inst localPush:@PRODUCT msg:msg identifier:identifierForNotificationKey(notificationKey)];
 }
 
 static sqlite3* db = NULL;
@@ -1994,7 +2086,10 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
     NSDictionary* safeInfo = info ?: @{};
     NSDictionary* safeOld = oldInfo ?: safeInfo;
     time_t now = time(0);
+    BOOL previousExternalConnected = isAdaptorConnect(safeOld, @(getLocalBool(@"adv_disable_inflow", NO)));
     BOOL previousChargeCommandEnabled = g_chargeCommandEnabled;
+    NSString* previousPolicyState = g_policyState ?: @"battery";
+    NSString* previousPolicyReason = g_policyReason ?: @"battery_idle";
     NSString* raw_mode = getLocalString(@"mode", @"charge_on_plug");
     int mode = 0;
     if ([raw_mode isEqualToString:@"charge_on_plug"]) {
@@ -2263,7 +2358,14 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
         nextPolicyReason = @"adaptor_disconnected";
     }
     updatePolicyRuntimeState(nextPolicyState, nextPolicyReason, safeInfo, now);
-    notifyForChargeCommandTransition(previousChargeCommandEnabled, g_chargeCommandEnabled, nextPolicyReason);
+    notifyForChargeCommandTransition(previousExternalConnected,
+                                     is_adaptor_connected,
+                                     previousChargeCommandEnabled,
+                                     g_chargeCommandEnabled,
+                                     previousPolicyState,
+                                     nextPolicyState,
+                                     previousPolicyReason,
+                                     nextPolicyReason);
     syncSmartChargeCoordination(safeInfo, is_adaptor_connected);
 }
 
@@ -2938,18 +3040,16 @@ void detectUPSBattery() {
     [center requestAuthorizationWithOptions:UNAuthorizationOptionAlert | UNAuthorizationOptionSound | UNAuthorizationOptionBadge completionHandler:^(BOOL granted, NSError* error) {
     }];
 }
-- (void)localPush:(NSString*)title msg:(NSString*)msg {
+- (void)localPush:(NSString*)title msg:(NSString*)msg identifier:(NSString*)identifier {
     UNUserNotificationCenter* center = [UNUserNotificationCenter currentNotificationCenter];
     UNMutableNotificationContent* content = [[UNMutableNotificationContent alloc] init];
     content.title = title;
     content.body = msg;
     content.sound = UNNotificationSound.defaultSound;
-    NSTimeInterval timeInterval = [[NSDate dateWithTimeIntervalSinceNow:1] timeIntervalSinceNow];
-    UNTimeIntervalNotificationTrigger* trigger = [UNTimeIntervalNotificationTrigger triggerWithTimeInterval:timeInterval repeats:NO];
-    NSString* identifier = [NSString stringWithFormat:@"%@-%llu",
-                            title ?: @"ChargeLimiter",
-                            (unsigned long long)llround([[NSDate date] timeIntervalSince1970] * 1000.0)];
-    UNNotificationRequest* request = [UNNotificationRequest requestWithIdentifier:identifier content:content trigger:trigger];
+    NSString* stableIdentifier = identifier.length > 0 ? identifier : @"com.chargelimiter.noti.generic";
+    [center removePendingNotificationRequestsWithIdentifiers:@[stableIdentifier]];
+    [center removeDeliveredNotificationsWithIdentifiers:@[stableIdentifier]];
+    UNNotificationRequest* request = [UNNotificationRequest requestWithIdentifier:stableIdentifier content:content trigger:nil];
     [center addNotificationRequest:request withCompletionHandler:nil];
 }
 - (void)systemTimeContextDidChange:(NSNotification*)note {
