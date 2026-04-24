@@ -141,6 +141,7 @@ static NSString* g_holdAdaptiveLoadLevel = @"fixed";
 static int g_holdAdaptiveAverageCurrentmA = 0;
 static time_t g_lastHoldRuntimeBehaviorChangeTs = 0;
 static NSMutableArray<NSNumber*>* g_holdCurrentSamples = nil;
+static BOOL g_predictiveInhibitFallbackActive = NO;
 
 static const int kHoldMonitorIntervalPowerFirstSeconds = 10;
 static const int kHoldMonitorIntervalBalancedSeconds = 15;
@@ -157,6 +158,7 @@ static const int kHoldAdaptiveHighLoadEnterCurrentmA = -450;
 static const int kHoldAdaptiveHighLoadExitCurrentmA = -260;
 static const int kDisableInflowRetryMaxAttempts = 3;
 static const NSTimeInterval kDisableInflowRetryDelaySeconds = 0.6;
+static const NSTimeInterval kPredictiveInhibitFallbackVerifyDelaySeconds = 8.0;
 
 static BOOL isInflowRuntimeLikelyDisabled(BOOL advDisableInflow, BOOL inflowEnabledSnapshot, NSString* previousPolicyState) {
     if (!advDisableInflow || inflowEnabledSnapshot) {
@@ -209,6 +211,7 @@ static void cancelDisableInflowRetry(void);
 static void armDisableInflowRetryIfNeeded(NSDictionary* info, NSString* policyState, BOOL allowStart);
 static void syncSmartChargeCoordination(NSDictionary* info, BOOL isAdaptorConnected);
 static int getEffectiveBatteryCurrent(NSDictionary* info);
+static void appendPolicyEventHistory(NSString* eventType, NSString* fromState, NSString* toState, NSString* reason, NSDictionary* info, NSDictionary* extras, time_t now);
 static void insertPolicyEventDBData(NSDictionary* event);
 static void migrateStoredPolicyEventsToDBIfNeeded(NSArray* history);
 static NSString* policyEventTypeForTransition(NSString* nextPolicyState, NSString* reason);
@@ -586,6 +589,7 @@ static NSDictionary* policyEventSnapshot(NSDictionary* info) {
     snapshot[@"is_charging"] = @([safeInfo[@"IsCharging"] boolValue]);
     snapshot[@"external_connected"] = @([safeInfo[@"ExternalConnected"] boolValue]);
     snapshot[@"predictive_inhibit_active"] = @([safeInfo[@"PredictiveChargingInhibit"] boolValue]);
+    snapshot[@"predictive_inhibit_fallback_active"] = @(g_predictiveInhibitFallbackActive);
     snapshot[@"charge_command_enabled"] = @(g_chargeCommandEnabled);
     snapshot[@"smart_charge_status"] = @(g_smartChargeStatus);
     snapshot[@"smart_charge_managed"] = @(g_tempSmartChargeDisabledByCL);
@@ -1145,21 +1149,78 @@ static BOOL isAdaptorNewDisconnect(NSDictionary* oldInfo, NSDictionary* info, NS
     return isAdaptorConnect(oldInfo, disableInflow) && !isAdaptorConnect(info, disableInflow);
 }
 
+static void clearPredictiveInhibitFallbackRuntimeState(void) {
+    g_predictiveInhibitFallbackActive = NO;
+}
+
+static BOOL shouldUsePredictiveInhibitChargePath(void) {
+    if (g_predictiveInhibitFallbackActive) {
+        return NO;
+    }
+    return getLocalBool(@"adv_predictive_inhibit_charge", NO);
+}
+
+static kern_return_t writeChargeStatus(io_service_t serv, BOOL flag, BOOL usePredictiveInhibit) {
+    NSMutableDictionary* props = [NSMutableDictionary new];
+    if (usePredictiveInhibit) { // 目前测试PredictiveChargingInhibit在iOS>=13生效
+        props[@"IsCharging"] = @YES;
+        props[@"PredictiveChargingInhibit"] = @(!flag);
+    } else { // 传统停充路径
+        props[@"IsCharging"] = @(flag);
+        props[@"PredictiveChargingInhibit"] = @NO; // PredictiveChargingInhibit为IsCharging总开关
+    }
+    return IORegistryEntrySetCFProperties(serv, (__bridge CFTypeRef)props);
+}
+
+static void markPredictiveInhibitFallbackActive(NSString* reason, NSDictionary* info, NSDictionary* extras, time_t now) {
+    if (g_predictiveInhibitFallbackActive) {
+        return;
+    }
+    g_predictiveInhibitFallbackActive = YES;
+    appendPolicyEventHistory(@"charge_path_event",
+                             g_policyState ?: @"",
+                             g_policyState ?: @"",
+                             reason ?: @"predictive_inhibit_fallback",
+                             info ?: bat_info,
+                             extras,
+                             now > 0 ? now : time(0));
+}
+
+static BOOL shouldFallbackFromPredictiveInhibitStop(BOOL isAdaptorConnected,
+                                                    BOOL isCharging,
+                                                    BOOL currentLooksCharging,
+                                                    BOOL predictiveInhibitActive,
+                                                    time_t now) {
+    if (!shouldUsePredictiveInhibitChargePath()) {
+        return NO;
+    }
+    if (g_chargeCommandEnabled || !isAdaptorConnected || predictiveInhibitActive) {
+        return NO;
+    }
+    if (!(isCharging || currentLooksCharging) || g_lastChargeCommandTs <= 0) {
+        return NO;
+    }
+    return (now - g_lastChargeCommandTs) >= kPredictiveInhibitFallbackVerifyDelaySeconds;
+}
+
 static int setChargeStatus(BOOL flag) {
-    BOOL adv_predictive_inhibit_charge = getLocalBool(@"adv_predictive_inhibit_charge", NO);
     io_service_t serv = getIOPMPSServ();
     if (serv == IO_OBJECT_NULL) {
         return -1;
     }
-    NSMutableDictionary* props = [NSMutableDictionary new];
-    if (adv_predictive_inhibit_charge) { // 目前测试PredictiveChargingInhibit在iOS>=13生效
-        props[@"IsCharging"] = @YES;
-        props[@"PredictiveChargingInhibit"] = @(!flag);
-    } else { // iOS<=12
-        props[@"IsCharging"] = @(flag);
-        props[@"PredictiveChargingInhibit"] = @NO; // PredictiveChargingInhibit为IsCharging总开关
+    BOOL usePredictiveInhibit = shouldUsePredictiveInhibitChargePath();
+    kern_return_t ret = writeChargeStatus(serv, flag, usePredictiveInhibit);
+    if (ret != 0 && usePredictiveInhibit) {
+        time_t now = time(0);
+        NSDictionary* extras = @{
+            @"charge_flag": @(flag),
+            @"fallback_reason": @"write_failed",
+            @"io_return": @(ret),
+        };
+        NSFileLog(@"predictive inhibit write failed ret=%d flag=%d, fallback to legacy stop path", ret, flag);
+        markPredictiveInhibitFallbackActive(@"predictive_inhibit_write_failed", bat_info, extras, now);
+        ret = writeChargeStatus(serv, flag, NO);
     }
-    kern_return_t ret = IORegistryEntrySetCFProperties(serv, (__bridge CFTypeRef)props);
     if (ret != 0) {
         return -2;
     }
@@ -2248,6 +2309,23 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
     BOOL current_looks_charging = currentLooksCharging(effective_current);
     BOOL current_looks_discharging = currentLooksDischarging(effective_current);
     BOOL predictive_inhibit_active = [safeInfo[@"PredictiveChargingInhibit"] boolValue];
+    if (shouldFallbackFromPredictiveInhibitStop(is_adaptor_connected,
+                                                is_charging,
+                                                current_looks_charging,
+                                                predictive_inhibit_active,
+                                                now)) {
+        NSDictionary* extras = @{
+            @"charge_flag": @NO,
+            @"fallback_reason": @"stop_not_reflected",
+            @"verify_delay_seconds": @(kPredictiveInhibitFallbackVerifyDelaySeconds),
+            @"is_charging": @(is_charging),
+            @"current_looks_charging": @(current_looks_charging),
+        };
+        NSFileLog(@"predictive inhibit stop not reflected after %.1fs, fallback to legacy stop path",
+                  kPredictiveInhibitFallbackVerifyDelaySeconds);
+        markPredictiveInhibitFallbackActive(@"predictive_inhibit_stop_unconfirmed", safeInfo, extras, now);
+        setBatteryStatus(NO);
+    }
     NSString* previousRuntimeHoldBehavior = currentHoldRuntimeBehavior();
     BOOL holdRuntimeBehaviorChanged = NO;
     NSString* runtimeHoldBehavior = updateHoldRuntimeBehavior(safeInfo,
@@ -2546,9 +2624,8 @@ static void onBatteryEvent(io_service_t serv) {
 }
 
 static void initConf(BOOL reset) {
-    BOOL predictive_inhibit_charge_avail = NO;
-    if (@available(iOS 13.0, *)) {
-        predictive_inhibit_charge_avail = YES;
+    if (reset) {
+        clearPredictiveInhibitFallbackRuntimeState();
     }
     BOOL adv_thermal_avail = getThermalData() != nil;
     NSDictionary* def_dic = @{
@@ -2565,7 +2642,7 @@ static void initConf(BOOL reset) {
         @"acc_charge_bright": @NO,
         @"acc_charge_lpm": @YES,
         @"adv_prefer_smart": @NO, // iPhone8+ iOS13+
-        @"adv_predictive_inhibit_charge": @(predictive_inhibit_charge_avail), // iPhone8+ iOS13+
+        @"adv_predictive_inhibit_charge": @NO, // 默认关闭，仍可在支持设备上手动开启
         @"adv_system_capacity_control_at_100": @YES,
         @"adv_disable_inflow": @NO, // all (iPhone8+ iOS13+会改变系统充电图标)
         @"adv_hold_enabled": @NO,
@@ -2756,6 +2833,7 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
         } else if ([key isEqualToString:@"adv_hold_behavior"]) {
             refreshHoldMonitorTimer();
         } else if ([key isEqualToString:@"adv_predictive_inhibit_charge"]) {
+            clearPredictiveInhibitFallbackRuntimeState();
             resetBatteryStatus();
         } else if ([key isEqualToString:@"adv_system_capacity_control_at_100"]) {
             resetHoldSessionState();
@@ -2783,6 +2861,7 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             refreshFullChargeScheduleTimer(0);
             evaluateFullChargeSchedule(YES);
         } else if ([key isEqualToString:@"adv_prefer_smart"]) {
+            clearPredictiveInhibitFallbackRuntimeState();
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC), dispatch_get_global_queue(0, 0), ^{
                 exit(0);
             });
@@ -2818,6 +2897,7 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
         int target = getLocalInt(@"charge_above", 100);
         BOOL holdCapacityControlAvailable = (isHoldModeEnabled() && !shouldDisableCapacityControlForTarget(target));
         data[@"PredictiveChargingInhibitActive"] = @([data[@"PredictiveChargingInhibit"] boolValue]);
+        data[@"PredictiveInhibitFallbackActive"] = @(g_predictiveInhibitFallbackActive);
         data[@"ChargeCommandEnabled"] = @(g_chargeCommandEnabled);
         data[@"PolicyState"] = g_policyState ?: @"battery";
         data[@"HoldActive"] = @([g_policyState hasPrefix:@"hold"]);

@@ -168,14 +168,15 @@ Apple 明确说明：高温会永久缩短电池寿命；设备过热时，系�
 
 #### `智能停充`
 
-- 作用：优先走系统的 `PredictiveChargingInhibit` 路径来参与停充控制，而不是只改一个简单的 `IsCharging`
+- 作用：优先走系统的 `SmartBattery API / PredictiveChargingInhibit` 路径来参与停充控制，而不是只改一个简单的 `IsCharging`
 - 更接近系统层的停充方式
 - 项目里当前把它作为支持 `iOS 13+` 的优先路径
+- 如果系统拒绝写入，或停充命令发出后一段时间仍未进入抑制态，daemon 会自动回退到传统 `IsCharging` 停充路径
 
 适合：
 
-- 希望停充行为更贴近系统接口
-- 设备与系统版本对 SmartBattery 路径支持较好
+- 希望停充行为更贴近系统 SmartBattery API 的充电抑制语义
+- 设备与系统版本对 `PredictiveChargingInhibit` 路径支持较好
 
 资源开销：
 
