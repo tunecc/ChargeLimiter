@@ -266,7 +266,7 @@
     [self.stackView addArrangedSubview:[[CLHelpSectionHeader alloc] initWithTitle:@"🔧 高级功能"]];
     
     CLHelpCardView *advancedCard = [[CLHelpCardView alloc] initWithTitle:nil 
-        content:@"• 智能停充：使用系统 SmartBattery API\n• 禁流：禁止电流流入设备，适用于不支持停充的电池\n• 限流：通过高温模拟限制充电电流\n• 加速充电：临时关闭部分功能以加快充电"];
+        content:@"• 智能停充：优先使用 SmartBattery API 的充电抑制路径（PredictiveChargingInhibit），失败时自动回退到传统停充\n• 禁流：禁止电流流入设备，适用于不支持停充的电池\n• 限流：通过高温模拟限制充电电流\n• 加速充电：临时关闭部分功能以加快充电"];
     [self.stackView addArrangedSubview:advancedCard];
     
     // 提示

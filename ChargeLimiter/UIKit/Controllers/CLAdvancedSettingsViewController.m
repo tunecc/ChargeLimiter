@@ -1548,7 +1548,7 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
     // 停充控制
     CLAdvSettingsCard *stopChargeCard = [[CLAdvSettingsCard alloc] init];
     [stopChargeCard addSectionHeader:CLL(@"停充控制")];
-    [stopChargeCard addSwitchRowWithIcon:@"bolt.slash.fill" title:CLL(@"智能停充") subtitle:CLL(@"使用 SmartBattery API 进行停充") isOn:manager.predictiveInhibitCharge color:[UIColor systemRedColor] tag:300 target:self action:@selector(smartChargeChanged:)];
+    [stopChargeCard addSwitchRowWithIcon:@"bolt.slash.fill" title:CLL(@"智能停充") subtitle:CLL(@"尝试使用 SmartBattery API 停充，失败自动回退") isOn:manager.predictiveInhibitCharge color:[UIColor systemRedColor] tag:300 target:self action:@selector(smartChargeChanged:)];
     [stopChargeCard addSeparator];
     [stopChargeCard addSwitchRowWithIcon:@"battery.100.circle" title:CLL(@"停止电量=100% 时交由系统控制") subtitle:CLL(@"开启后由系统接管电量上限；软件仅保留温度停充。关闭后，100% 仍由本工具继续控制。") isOn:manager.systemCapacityControlAt100Enabled color:[UIColor systemBlueColor] tag:CLAdvSystemCapacityControlAt100Tag target:self action:@selector(systemCapacityControlAt100Changed:)];
     [stopChargeCard addSeparator];

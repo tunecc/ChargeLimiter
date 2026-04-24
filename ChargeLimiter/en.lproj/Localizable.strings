@@ -155,7 +155,7 @@
 "关闭部分功能以减少耗电，加快充电速度" = "Disable some features to reduce power usage and charge faster.";
 "停充控制" = "Stop Charge";
 "智能停充" = "Smart Stop";
-"使用 SmartBattery API 进行停充" = "Use SmartBattery API to stop charging";
+"尝试使用 SmartBattery API 停充，失败自动回退" = "Try SmartBattery API stop charging, then fall back automatically on failure";
 "停止电量=100% 时交由系统控制" = "Hand 100% Stop Target to System";
 "开启后由系统接管电量上限；软件仅保留温度停充。关闭后，100% 仍由本工具继续控制。" = "When enabled, the system takes over the capacity limit and ChargeLimiter only keeps temperature-based stop charging. When disabled, ChargeLimiter still controls the 100% target.";
 "停充时启用禁流" = "Disable Inflow on Stop";
