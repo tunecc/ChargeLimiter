@@ -118,6 +118,8 @@ static NSTimer* g_fullChargeScheduleTimer = nil;
 static time_t g_fullChargeScheduleBoundaryTs = 0;
 static NSTimer* g_holdMonitorTimer = nil;
 static int g_holdMonitorTimerIntervalSeconds = 0;
+static NSTimer* g_disableInflowRetryTimer = nil;
+static int g_disableInflowRetryAttemptsRemaining = 0;
 static BOOL g_chargeCommandEnabled = YES;
 static NSString* g_policyState = @"battery";
 static NSString* g_policyReason = @"daemon_boot";
@@ -153,6 +155,36 @@ static const NSUInteger kHoldAdaptiveSampleWindow = 5;
 static const int kHoldAdaptiveBehaviorMinStaySeconds = 60;
 static const int kHoldAdaptiveHighLoadEnterCurrentmA = -450;
 static const int kHoldAdaptiveHighLoadExitCurrentmA = -260;
+static const int kDisableInflowRetryMaxAttempts = 3;
+static const NSTimeInterval kDisableInflowRetryDelaySeconds = 0.6;
+
+static BOOL isInflowRuntimeLikelyDisabled(BOOL advDisableInflow, BOOL inflowEnabledSnapshot, NSString* previousPolicyState) {
+    if (!advDisableInflow || inflowEnabledSnapshot) {
+        return NO;
+    }
+    // 禁流模式下 ExternalConnected 可能滞后，用上一轮 runtime policy 辅助判断当前是否已真正处于禁流态。
+    return [previousPolicyState isEqualToString:@"no_inflow"];
+}
+
+static BOOL shouldIssueDisableInflowCommand(BOOL advDisableInflow, BOOL inflowEnabledSnapshot, NSString* previousPolicyState) {
+    if (!advDisableInflow) {
+        return NO;
+    }
+    if (inflowEnabledSnapshot) {
+        return YES;
+    }
+    return ![previousPolicyState isEqualToString:@"no_inflow"];
+}
+
+static BOOL shouldIssueEnableInflowCommand(BOOL advDisableInflow, BOOL inflowEnabledSnapshot, NSString* previousPolicyState) {
+    if (!advDisableInflow) {
+        return NO;
+    }
+    if (!inflowEnabledSnapshot) {
+        return YES;
+    }
+    return [previousPolicyState isEqualToString:@"no_inflow"];
+}
 static const int kHoldAdaptiveMediumLoadEnterCurrentmA = -180;
 static const int kHoldAdaptiveMediumLoadExitCurrentmA = -100;
 static const int kHoldAdaptiveMinPowerFirstWatts = 12;
@@ -171,6 +203,10 @@ static void updateStatistics(void);
 static void evaluateFullChargeSchedule(BOOL forceApply);
 static void refreshBatteryStateAndApplyPolicy(void);
 static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info);
+static BOOL hasPotentialExternalPowerSignal(NSDictionary* info);
+static BOOL isDisableInflowRetryEligible(NSDictionary* info, NSString* policyState);
+static void cancelDisableInflowRetry(void);
+static void armDisableInflowRetryIfNeeded(NSDictionary* info, NSString* policyState, BOOL allowStart);
 static void syncSmartChargeCoordination(NSDictionary* info, BOOL isAdaptorConnected);
 static int getEffectiveBatteryCurrent(NSDictionary* info);
 static void insertPolicyEventDBData(NSDictionary* event);
@@ -929,6 +965,55 @@ static void refreshHoldMonitorTimer(void) {
     [[NSRunLoop mainRunLoop] addTimer:g_holdMonitorTimer forMode:NSRunLoopCommonModes];
 }
 
+static void cancelDisableInflowRetry(void) {
+    if (g_disableInflowRetryTimer != nil) {
+        [g_disableInflowRetryTimer invalidate];
+        g_disableInflowRetryTimer = nil;
+    }
+    g_disableInflowRetryAttemptsRemaining = 0;
+}
+
+static void scheduleNextDisableInflowRetryAttempt(void) {
+    if (g_disableInflowRetryTimer != nil || g_disableInflowRetryAttemptsRemaining <= 0) {
+        return;
+    }
+    g_disableInflowRetryTimer = [NSTimer scheduledTimerWithTimeInterval:kDisableInflowRetryDelaySeconds repeats:NO block:^(NSTimer* timer) {
+        @synchronized (Service.inst) {
+            g_disableInflowRetryTimer = nil;
+            if (g_disableInflowRetryAttemptsRemaining <= 0) {
+                return;
+            }
+            if (!isDisableInflowRetryEligible(bat_info, g_policyState)) {
+                cancelDisableInflowRetry();
+                return;
+            }
+            g_disableInflowRetryAttemptsRemaining = MAX(g_disableInflowRetryAttemptsRemaining - 1, 0);
+            int attemptIndex = kDisableInflowRetryMaxAttempts - g_disableInflowRetryAttemptsRemaining;
+            NSFileLog(@"retry disable inflow policy evaluation attempt %d/%d", attemptIndex, kDisableInflowRetryMaxAttempts);
+            refreshBatteryStateAndApplyPolicy();
+            if (!isDisableInflowRetryEligible(bat_info, g_policyState) || g_disableInflowRetryAttemptsRemaining <= 0) {
+                cancelDisableInflowRetry();
+                return;
+            }
+            scheduleNextDisableInflowRetryAttempt();
+        }
+    }];
+    [[NSRunLoop mainRunLoop] addTimer:g_disableInflowRetryTimer forMode:NSRunLoopCommonModes];
+}
+
+static void armDisableInflowRetryIfNeeded(NSDictionary* info, NSString* policyState, BOOL allowStart) {
+    if (!isDisableInflowRetryEligible(info, policyState)) {
+        cancelDisableInflowRetry();
+        return;
+    }
+    if (!allowStart || g_disableInflowRetryTimer != nil || g_disableInflowRetryAttemptsRemaining > 0) {
+        return;
+    }
+    g_disableInflowRetryAttemptsRemaining = kDisableInflowRetryMaxAttempts;
+    NSFileLog(@"arm disable inflow policy reevaluation attempts=%d", g_disableInflowRetryAttemptsRemaining);
+    scheduleNextDisableInflowRetryAttempt();
+}
+
 
 static io_service_t getIOPMPSServ() {
     static io_service_t serv = IO_OBJECT_NULL;
@@ -1104,6 +1189,7 @@ static void resetBatteryStatus() {
     if (serv == IO_OBJECT_NULL) {
         return;
     }
+    cancelDisableInflowRetry();
     time_t now = time(0);
     NSMutableDictionary* props = [NSMutableDictionary new];
     props[@"IsCharging"] = @YES;
@@ -1848,6 +1934,42 @@ static BOOL currentLooksDischarging(int current) {
     return current < kHoldCurrentDischargeThresholdmA;
 }
 
+static BOOL hasPotentialExternalPowerSignal(NSDictionary* info) {
+    NSDictionary* safeInfo = info ?: @{};
+    if ([safeInfo[@"ExternalConnected"] boolValue] ||
+        [safeInfo[@"ExternalChargeCapable"] boolValue] ||
+        safeInfo[@"AdapterDetails"] != nil ||
+        [safeInfo[@"IsCharging"] boolValue]) {
+        return YES;
+    }
+    return currentLooksCharging(getEffectiveBatteryCurrent(safeInfo));
+}
+
+static BOOL isDisableInflowRetryEligible(NSDictionary* info, NSString* policyState) {
+    if (!g_enable || !getLocalBool(@"adv_disable_inflow", NO)) {
+        return NO;
+    }
+    NSDictionary* safeInfo = info ?: @{};
+    NSNumber* capacity = safeInfo[@"CurrentCapacity"];
+    if (![capacity respondsToSelector:@selector(intValue)]) {
+        return NO;
+    }
+    time_t now = time(0);
+    int chargeAbove = getLocalInt(@"charge_above", 100);
+    BOOL fullChargeWindowActive = isFullChargeWindowActive(now, nil, nil);
+    if (fullChargeWindowActive) {
+        chargeAbove = 100;
+    }
+    if (fullChargeWindowActive || shouldDisableCapacityControlForTarget(chargeAbove)) {
+        return NO;
+    }
+    if (capacity.intValue < chargeAbove) {
+        return NO;
+    }
+    NSString* safePolicyState = policyState ?: g_policyState ?: @"";
+    return ![safePolicyState isEqualToString:@"no_inflow"];
+}
+
 static int getHoldModeLowerBound(int target) {
     return MAX(5, target - getHoldModeBand());
 }
@@ -2110,12 +2232,14 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
     BOOL enable_temp = getLocalBool(@"enable_temp", NO);
     NSNumber* capacity = safeInfo[@"CurrentCapacity"];
     BOOL is_charging = [safeInfo[@"IsCharging"] boolValue];
-    NSNumber* is_inflow_enabled = safeInfo[@"ExternalConnected"];
+    BOOL inflow_enabled_snapshot = [safeInfo[@"ExternalConnected"] boolValue];
     BOOL adv_disable_inflow = getLocalBool(@"adv_disable_inflow", NO);
     BOOL adv_hold_enabled = (isHoldModeEnabled() && !adv_disable_inflow);
     BOOL is_adaptor_connected = isAdaptorConnect(safeInfo, @(adv_disable_inflow));
     BOOL is_adaptor_new_connected = isAdaptorNewConnect(safeOld, safeInfo, @(adv_disable_inflow));
     BOOL is_adaptor_new_disconnected = isAdaptorNewDisconnect(safeOld, safeInfo, @(adv_disable_inflow));
+    BOOL inflow_runtime_disabled = isInflowRuntimeLikelyDisabled(adv_disable_inflow, inflow_enabled_snapshot, previousPolicyState);
+    BOOL has_raw_external_power_signal = hasPotentialExternalPowerSignal(safeInfo);
     NSNumber* temperature_ = safeInfo[@"Temperature"];
     float charge_temp_above = getTempAsC(@"charge_temp_above");
     float charge_temp_below = getTempAsC(@"charge_temp_below");
@@ -2164,7 +2288,7 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
     NSString* nextPolicyState = @"battery";
     NSString* nextPolicyReason = @"battery_idle";
     if (is_adaptor_connected) {
-        if (adv_disable_inflow && !is_inflow_enabled.boolValue) {
+        if (inflow_runtime_disabled) {
             nextPolicyState = @"no_inflow";
             nextPolicyReason = @"no_inflow_active";
         } else if (!g_chargeCommandEnabled || predictive_inhibit_active) {
@@ -2204,7 +2328,7 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
                 performAction(@"stop_charge");
                 performAcccharge(NO);
             }
-            if (adv_disable_inflow && is_inflow_enabled.boolValue) {
+            if (shouldIssueDisableInflowCommand(adv_disable_inflow, inflow_enabled_snapshot, previousPolicyState)) {
                 NSFileLog(@"disable inflow for high temperature %lf >= %lf", temperature, charge_temp_above);
                 setInflowStatus(NO);
             }
@@ -2214,7 +2338,7 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
         }
         if (is_adaptor_connected && full_charge_window_active) { // 满充计划窗口内，只跳过电量上限控制
             if (is_adaptor_connected && (!g_chargeCommandEnabled || !is_charging || predictive_inhibit_active) && capacity.intValue < 100) {
-                if (adv_disable_inflow && !is_inflow_enabled.boolValue) {
+                if (shouldIssueEnableInflowCommand(adv_disable_inflow, inflow_enabled_snapshot, previousPolicyState)) {
                     NSFileLog(@"enable inflow for scheduled full-charge window");
                     setInflowStatus(YES);
                 }
@@ -2278,7 +2402,7 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
                 performAction(@"stop_charge");
                 performAcccharge(NO);
             }
-            if (adv_disable_inflow && is_inflow_enabled.boolValue) {
+            if (shouldIssueDisableInflowCommand(adv_disable_inflow, inflow_enabled_snapshot, previousPolicyState)) {
                 NSFileLog(@"disable inflow for high capacity %@ >= %d", capacity, charge_above);
                 setInflowStatus(NO);
             }
@@ -2292,7 +2416,7 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
             // 温度已降到安全范围，可以恢复充电
             // 但需要确保电量也在合理范围内（低于上限）
             if (is_adaptor_connected && capacity.intValue < charge_above) {
-                if (adv_disable_inflow && !is_inflow_enabled.boolValue) {
+                if (shouldIssueEnableInflowCommand(adv_disable_inflow, inflow_enabled_snapshot, previousPolicyState)) {
                     NSFileLog(@"enable inflow for low temperature %lf <= %lf", temperature, charge_temp_below);
                     setInflowStatus(YES);
                 }
@@ -2308,7 +2432,7 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
         if (is_adaptor_connected && !disable_capacity_control && capacity.intValue <= charge_below) { // 充电-电量低,优先级=5
             // 禁流模式下电量下降后恢复充电
             if (is_adaptor_connected) {
-                if (adv_disable_inflow && !is_inflow_enabled.boolValue) {
+                if (shouldIssueEnableInflowCommand(adv_disable_inflow, inflow_enabled_snapshot, previousPolicyState)) {
                     NSFileLog(@"enable inflow for low capacity %@ <= %d", capacity, charge_below);
                     setInflowStatus(YES);
                 }
@@ -2324,7 +2448,7 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
         if (is_adaptor_connected && !disable_capacity_control) {
             if (mode == CL_MODE_PLUG) {
                 if (is_adaptor_new_connected) { // 充电-插电,优先级=6
-                    if (adv_disable_inflow && !is_inflow_enabled.boolValue) {
+                    if (shouldIssueEnableInflowCommand(adv_disable_inflow, inflow_enabled_snapshot, previousPolicyState)) {
                         NSFileLog(@"enable inflow for plug in");
                         setInflowStatus(YES);
                     }
@@ -2340,7 +2464,7 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
                 if (is_adaptor_new_connected) {
                     NSFileLog(@"stop charging for plug in");
                     setBatteryStatus(NO);
-                    if (adv_disable_inflow && is_inflow_enabled.boolValue) {
+                    if (shouldIssueDisableInflowCommand(adv_disable_inflow, inflow_enabled_snapshot, previousPolicyState)) {
                         NSFileLog(@"disable inflow for plug in");
                         setInflowStatus(NO);
                     }
@@ -2366,6 +2490,10 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
                                      nextPolicyState,
                                      previousPolicyReason,
                                      nextPolicyReason);
+    BOOL shouldStartDisableInflowRetry = (has_raw_external_power_signal &&
+                                          !is_adaptor_new_disconnected &&
+                                          isDisableInflowRetryEligible(safeInfo, nextPolicyState));
+    armDisableInflowRetryIfNeeded(safeInfo, nextPolicyState, shouldStartDisableInflowRetry);
     syncSmartChargeCoordination(safeInfo, is_adaptor_connected);
 }
 
@@ -2637,6 +2765,8 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             }
         } else if ([key isEqualToString:@"adv_disable_inflow"]) {
             resetBatteryStatus();
+            refreshBatteryStateAndApplyPolicy();
+            armDisableInflowRetryIfNeeded(bat_info, g_policyState, hasPotentialExternalPowerSignal(bat_info));
         } else if ([key isEqualToString:@"charge_above"]) {
             resetHoldSessionState();
             refreshHoldMonitorTimer();
@@ -3168,6 +3298,10 @@ int main(int argc, char** argv) { // daemon_main
                 if (g_fullChargeScheduleTimer != nil) {
                     [g_fullChargeScheduleTimer invalidate];
                     g_fullChargeScheduleTimer = nil;
+                }
+                if (g_disableInflowRetryTimer != nil) {
+                    [g_disableInflowRetryTimer invalidate];
+                    g_disableInflowRetryTimer = nil;
                 }
                 resetBatteryStatus();
                 if (iopmpsNoti != IO_OBJECT_NULL) {
