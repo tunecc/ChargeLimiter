@@ -109,6 +109,7 @@ NSString* getConfPath();
 NSString* getDbPath();
 NSString* getConfDirPath();
 void setAppDocumentsPathOverride(NSString* docsPath);
+extern "C" int cleanupAppDataContainer_C(void);
 extern "C" NSString* getConfPath_C(void);
 extern "C" NSString* getConfDirPath_C(void);
 extern "C" void setlocalKV_C(NSString* key, id val);

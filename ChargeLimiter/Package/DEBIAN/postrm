@@ -3,59 +3,8 @@
 APP_DIR="/Applications/ChargeLimiter.app"
 CACHE="/var/mobile/Library/Preferences/com.chargelimiter.mod.containerpath"
 
-read_container_path() {
-    cache_file="$1"
-    [ -f "$cache_file" ] || return 1
-
-    path_line="$(grep -m1 '^CONTAINER_PATH=' "$cache_file" 2>/dev/null)"
-    if [ -n "$path_line" ]; then
-        printf '%s' "${path_line#CONTAINER_PATH=}"
-        return 0
-    fi
-
-    legacy_path="$(cat "$cache_file" 2>/dev/null | head -n 1)"
-    if [ -n "$legacy_path" ]; then
-        printf '%s' "$legacy_path"
-        return 0
-    fi
-
-    return 1
-}
-
-remove_container_path() {
-    container_path="$1"
-    [ -n "$container_path" ] || return 1
-    case "$container_path" in
-        /var/mobile/Containers/Data/Application/*|/private/var/mobile/Containers/Data/Application/*)
-            rm -rf "$container_path"
-            [ ! -e "$container_path" ] || return 1
-            return 0
-            ;;
-    esac
-    return 1
-}
-
-should_cleanup_data() {
-    action="$1"
-    reason="${2:-}"
-    case "$action" in
-        purge)
-            return 0
-            ;;
-        remove)
-            [ -z "$reason" ] && return 0
-            return 1
-            ;;
-    esac
-    return 1
-}
-
 case "$1" in
     remove|purge)
-        if should_cleanup_data "$1" "${2:-}"; then
-            container_path="$(read_container_path "$CACHE" 2>/dev/null || true)"
-            remove_container_path "$container_path" || true
-        fi
         rm -f "$CACHE"
         ;;
 esac

@@ -2,10 +2,12 @@
 
 APP_DIR="/Applications/ChargeLimiter.app"
 DAEMON_PLIST="/Library/LaunchDaemons/com.chargelimiter.mod.plist"
+CACHE="/var/mobile/Library/Preferences/com.chargelimiter.mod.containerpath"
 
 chown -R root:wheel "$APP_DIR"
 chmod +s "$APP_DIR/ChargeLimiterDaemon"
 killall -9 ChargeLimiter ChargeLimiterDaemon 2>/dev/null
+rm -f "$CACHE"
 
 chown root:wheel "$DAEMON_PLIST"
 launchctl bootout system "$DAEMON_PLIST" 2>/dev/null

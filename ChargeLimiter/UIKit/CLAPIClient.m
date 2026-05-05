@@ -293,7 +293,7 @@ static int CLStartDaemonBestEffort(void) {
             @"adv_system_capacity_control_at_100": @YES,
             @"disable_smart_charge": @NO,
             @"adv_disable_inflow": @NO,
-            @"adv_hold_enabled": @NO,
+            @"adv_hold_enabled": @YES,
             @"adv_hold_band": @2,
             @"adv_hold_behavior": @"balanced",
             @"adv_hold_temp_disable_smart_charge": @YES,
