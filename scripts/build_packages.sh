@@ -6,11 +6,10 @@ PROJECT="$ROOT_DIR/ChargeLimiter.xcodeproj"
 OUT_DIR="$ROOT_DIR/out"
 PKG_ROOTFUL_DIR="$ROOT_DIR/ChargeLimiter/Package"
 PKG_ROOTLESS_DIR="$ROOT_DIR/ChargeLimiter/Package_rootless"
-PKG_ROOTHIDE_DIR="$ROOT_DIR/ChargeLimiter/Package_roothide"
 BUILD_ROOTFUL="$ROOT_DIR/build_rootful"
 BUILD_ROOTLESS="$ROOT_DIR/build_rootless"
-BUILD_ROOTHIDE="$ROOT_DIR/build_roothide"
 PAYLOAD_DIR="$ROOT_DIR/Payload"
+ROOTHIDE_MERGE_ENT="$ROOT_DIR/scripts/roothide.entitlements"
 STAGE_DIR=""
 
 require_cmd() {
@@ -29,6 +28,7 @@ require_cmd xcrun
 require_cmd ar
 require_cmd tar
 require_cmd rg
+require_cmd file
 
 force_clean_dir() {
   dir="$1"
@@ -53,6 +53,14 @@ force_clean_dir() {
   fi
 }
 
+copy_tree_contents() {
+  src_dir="$1"
+  dst_dir="$2"
+  [ -d "$src_dir" ] || return 0
+  mkdir -p "$dst_dir"
+  cp -a "$src_dir"/. "$dst_dir"/
+}
+
 set_control_version() {
   control_file="$1"
   tmp_file="${control_file}.tmp.$$"
@@ -63,6 +71,198 @@ set_control_version() {
     END { if (!done) print "Version: " ver }
   ' "$control_file" > "$tmp_file"
   mv "$tmp_file" "$control_file"
+}
+
+set_roothide_control_arch() {
+  control_file="$1"
+  tmp_file="${control_file}.tmp.$$"
+  awk '
+    BEGIN { done = 0 }
+    /^Architecture:[[:space:]]*/ { print "Architecture: iphoneos-arm64e"; done = 1; next }
+    NF { print }
+    END { if (!done) print "Architecture: iphoneos-arm64e" }
+  ' "$control_file" > "$tmp_file"
+  mv "$tmp_file" "$control_file"
+}
+
+sign_app() {
+  APP_PATH="$1"
+  APP_ENT="$2"
+  [ -f "$APP_PATH/ChargeLimiter" ] || { echo "[ERR] Missing binary: $APP_PATH/ChargeLimiter" >&2; exit 1; }
+  [ -f "$APP_PATH/ChargeLimiterDaemon" ] || { echo "[ERR] Missing binary: $APP_PATH/ChargeLimiterDaemon" >&2; exit 1; }
+  # Align with common TrollStore packaging flow: sign app bundle entry.
+  ldid -S"$APP_ENT" "$APP_PATH"
+  # Keep dedicated entitlements for each executable.
+  ldid -S"$APP_ENT" "$APP_PATH/ChargeLimiter"
+  ldid -S"$DAEMON_ENT" "$APP_PATH/ChargeLimiterDaemon"
+  rm -rf "$APP_PATH/_CodeSignature"
+}
+
+strip_app() {
+  APP_PATH="$1"
+  xcrun strip -S -x "$APP_PATH/ChargeLimiter"
+  xcrun strip -S -x "$APP_PATH/ChargeLimiterDaemon"
+}
+
+copy_rootless_stage_to_roothide_layout() {
+  src_stage="$1"
+  dst_stage="$2"
+
+  rm -rf "$dst_stage"
+  mkdir -p "$dst_stage"
+
+  cp -a "$src_stage/DEBIAN" "$dst_stage/DEBIAN"
+
+  if [ -d "$src_stage/var/jb" ]; then
+    copy_tree_contents "$src_stage/var/jb" "$dst_stage"
+  fi
+
+  find "$src_stage" -mindepth 1 -maxdepth 1 | while IFS= read -r entry; do
+    base_name="$(basename "$entry")"
+    case "$base_name" in
+      DEBIAN)
+        ;;
+      var)
+        if [ -d "$entry" ]; then
+          find "$entry" -mindepth 1 -maxdepth 1 | while IFS= read -r var_entry; do
+            [ "$(basename "$var_entry")" = "jb" ] && continue
+            mkdir -p "$dst_stage/rootfs/var"
+            cp -a "$var_entry" "$dst_stage/rootfs/var/"
+          done
+        else
+          mkdir -p "$dst_stage/rootfs"
+          cp -a "$entry" "$dst_stage/rootfs/"
+        fi
+        ;;
+      *)
+        mkdir -p "$dst_stage/rootfs"
+        cp -a "$entry" "$dst_stage/rootfs/"
+        ;;
+    esac
+  done
+}
+
+list_rpaths() {
+  xcrun otool -l "$1" |
+  awk '
+    /^[^ ]/ { in_rpath = 0 }
+    $1 == "cmd" && $2 == "LC_RPATH" { in_rpath = 1; next }
+    in_rpath && $1 == "path" { print $2; in_rpath = 0 }
+  '
+}
+
+change_macho_rpath() {
+  target_file="$1"
+  old_path="$2"
+  new_path="$3"
+  if ! xcrun install_name_tool -rpath "$old_path" "$new_path" "$target_file"; then
+    ldid -s "$target_file"
+    xcrun install_name_tool -rpath "$old_path" "$new_path" "$target_file"
+  fi
+}
+
+change_macho_load_path() {
+  target_file="$1"
+  old_path="$2"
+  new_path="$3"
+  if ! xcrun install_name_tool -change "$old_path" "$new_path" "$target_file"; then
+    ldid -s "$target_file"
+    xcrun install_name_tool -change "$old_path" "$new_path" "$target_file"
+  fi
+}
+
+rewrite_macho_for_roothide() {
+  target_file="$1"
+
+  list_rpaths "$target_file" | while IFS= read -r rpath; do
+    case "$rpath" in
+      /var/jb/*)
+        new_rpath="$(printf '%s\n' "$rpath" | sed 's|^/var/jb/|@loader_path/.jbroot/|')"
+        change_macho_rpath "$target_file" "$rpath" "$new_rpath"
+        ;;
+    esac
+  done
+
+  xcrun otool -L "$target_file" | awk 'NR > 1 { print $1 }' | while IFS= read -r dep; do
+    case "$dep" in
+      /var/jb/*)
+        new_dep="$(printf '%s\n' "$dep" | sed 's|^/var/jb/|@loader_path/.jbroot/|')"
+        change_macho_load_path "$target_file" "$dep" "$new_dep"
+        ;;
+    esac
+  done
+
+  file_type="$(file -b "$target_file")"
+  if printf '%s\n' "$file_type" | grep -q "executable"; then
+    # Match RootHidePatcher behavior: merge roothide-specific runtime entitlements
+    # into the executable's existing entitlement set instead of replacing it.
+    ldid -M "-S$ROOTHIDE_MERGE_ENT" "$target_file"
+  else
+    ldid -S "$target_file"
+  fi
+}
+
+rewrite_roothide_maintainer_script() {
+  target_file="$1"
+  tmp_file="${target_file}.tmp.$$"
+  sed \
+    -e 's|iphoneos-arm64|iphoneos-arm64e|g' \
+    -e 's|/var/jb/|/-var/jb/-|g' \
+    -e 's|/var/jb|/-var/jb-|g' \
+    -e 's| /Applications/| /rootfs/Applications/|g' \
+    -e 's| /Library/| /rootfs/Library/|g' \
+    -e 's| /private/| /rootfs/private/|g' \
+    -e 's| /System/| /rootfs/System/|g' \
+    -e 's| /sbin/| /rootfs/sbin/|g' \
+    -e 's| /bin/| /rootfs/bin/|g' \
+    -e 's| /etc/| /rootfs/etc/|g' \
+    -e 's| /lib/| /rootfs/lib/|g' \
+    -e 's| /usr/| /rootfs/usr/|g' \
+    -e 's| /var/| /rootfs/var/|g' \
+    -e 's|DIR="/Library/|DIR="/rootfs/Library/|g' \
+    -e '1s|^#![[:space:]]*/rootfs/|#! /|' \
+    -e 's|/-var/jb/-|/|g' \
+    -e 's|/-var/jb-|/var/jb|g' \
+    "$target_file" > "$tmp_file"
+  mv "$tmp_file" "$target_file"
+  chmod 755 "$target_file"
+}
+
+rewrite_roothide_launchdaemon_plist() {
+  target_file="$1"
+  tmp_file="${target_file}.tmp.$$"
+  plutil -convert xml1 "$target_file" >/dev/null 2>&1 || true
+  sed 's|/var/jb/|/|g' "$target_file" > "$tmp_file"
+  mv "$tmp_file" "$target_file"
+}
+
+convert_rootless_stage_to_roothide() {
+  src_stage="$1"
+  dst_stage="$2"
+
+  copy_rootless_stage_to_roothide_layout "$src_stage" "$dst_stage"
+
+  find "$dst_stage" -type f | while IFS= read -r file_path; do
+    case "$(basename "$file_path")" in
+      preinst|prerm|postinst|postrm|extrainst_*)
+        rewrite_roothide_maintainer_script "$file_path"
+        ;;
+    esac
+
+    case "$file_path" in
+      */Library/LaunchDaemons/*.plist)
+        rewrite_roothide_launchdaemon_plist "$file_path"
+        ;;
+    esac
+
+    if file -b "$file_path" | grep -q "Mach-O"; then
+      rewrite_macho_for_roothide "$file_path"
+    fi
+  done
+
+  find "$dst_stage" -name .DS_Store -delete
+  chmod 755 "$dst_stage/DEBIAN"/*
+  set_roothide_control_arch "$dst_stage/DEBIAN/control"
 }
 
 cleanup() {
@@ -91,9 +291,13 @@ if [ -z "$VERSION" ]; then
     exit 1
 fi
 
+[ -f "$ROOTHIDE_MERGE_ENT" ] || {
+  echo "[ERR] Missing roothide entitlements: $ROOTHIDE_MERGE_ENT" >&2
+  exit 1
+}
+
 ROOTFUL_APP="$BUILD_ROOTFUL/Build/Products/Release-iphoneos/ChargeLimiter.app"
 ROOTLESS_APP="$BUILD_ROOTLESS/Build/Products/Release-iphoneos/ChargeLimiter.app"
-ROOTHIDE_APP="$BUILD_ROOTHIDE/Build/Products/Release-iphoneos/ChargeLimiter.app"
 APP_ENT_TS="$ROOT_DIR/ChargeLimiter/ChargeLimiter.app.entitlements"
 APP_ENT_JB="$ROOT_DIR/ChargeLimiter/ChargeLimiter.app.jb.entitlements"
 DAEMON_ENT="$ROOT_DIR/ChargeLimiter/ChargeLimiter.entitlements"
@@ -106,7 +310,6 @@ TROLLSTORE_BANNED_ENTITLEMENTS_REGEX="com\\.apple\\.private\\.cs\\.debugger|dyna
 
 force_clean_dir "$BUILD_ROOTFUL"
 force_clean_dir "$BUILD_ROOTLESS"
-force_clean_dir "$BUILD_ROOTHIDE"
 force_clean_dir "$PAYLOAD_DIR"
 mkdir -p "$OUT_DIR" "$PAYLOAD_DIR"
 STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/chargelimiter-pack.XXXXXX")"
@@ -138,71 +341,36 @@ xcodebuild \
   MonkeyDevInstallOnAnyBuild=NO \
   MonkeyDevBuildPackageOnAnyBuild=NO >/dev/null
 
-echo "[3/10] Build roothide app (arm64e via rootless target)..."
-xcodebuild \
-  -project "$PROJECT" \
-  -scheme "ChargeLimiter rootless" \
-  -destination "generic/platform=iOS" \
-  -configuration Release \
-  -derivedDataPath "$BUILD_ROOTHIDE" \
-  CODE_SIGNING_ALLOWED=NO \
-  ARCHS=arm64e \
-  MonkeyDevInstallOnAnyBuild=NO \
-  MonkeyDevBuildPackageOnAnyBuild=NO >/dev/null
-
-if [ ! -d "$ROOTFUL_APP" ] || [ ! -d "$ROOTLESS_APP" ] || [ ! -d "$ROOTHIDE_APP" ]; then
+if [ ! -d "$ROOTFUL_APP" ] || [ ! -d "$ROOTLESS_APP" ]; then
     echo "[ERR] Build output app not found." >&2
     exit 1
 fi
 
-sign_app() {
-  APP_PATH="$1"
-  APP_ENT="$2"
-  [ -f "$APP_PATH/ChargeLimiter" ] || { echo "[ERR] Missing binary: $APP_PATH/ChargeLimiter" >&2; exit 1; }
-  [ -f "$APP_PATH/ChargeLimiterDaemon" ] || { echo "[ERR] Missing binary: $APP_PATH/ChargeLimiterDaemon" >&2; exit 1; }
-  # Align with common TrollStore packaging flow: sign app bundle entry.
-  ldid -S"$APP_ENT" "$APP_PATH"
-  # Keep dedicated entitlements for each executable.
-  ldid -S"$APP_ENT" "$APP_PATH/ChargeLimiter"
-  ldid -S"$DAEMON_ENT" "$APP_PATH/ChargeLimiterDaemon"
-  rm -rf "$APP_PATH/_CodeSignature"
-}
-
-strip_app() {
-  APP_PATH="$1"
-  xcrun strip -S -x "$APP_PATH/ChargeLimiter"
-  xcrun strip -S -x "$APP_PATH/ChargeLimiterDaemon"
-}
-
-echo "[4/10] Strip app binaries..."
+echo "[3/10] Strip app binaries..."
 strip_app "$ROOTFUL_APP"
 strip_app "$ROOTLESS_APP"
-strip_app "$ROOTHIDE_APP"
 
-echo "[5/10] Sign app binaries..."
+echo "[4/10] Sign app binaries..."
 sign_app "$ROOTFUL_APP" "$APP_ENT_JB"
 sign_app "$ROOTLESS_APP" "$APP_ENT_JB"
-sign_app "$ROOTHIDE_APP" "$APP_ENT_JB"
 
-echo "[6/10] Prepare package trees..."
+echo "[5/10] Prepare package trees..."
 cp -a "$PKG_ROOTFUL_DIR" "$STAGE_ROOTFUL_DIR"
 cp -a "$PKG_ROOTLESS_DIR" "$STAGE_ROOTLESS_DIR"
-cp -a "$PKG_ROOTHIDE_DIR" "$STAGE_ROOTHIDE_DIR"
 rm -rf "$STAGE_ROOTFUL_DIR/Applications/ChargeLimiter.app"
-rm -rf "$STAGE_ROOTLESS_DIR/Applications" "$STAGE_ROOTHIDE_DIR/Applications"
+rm -rf "$STAGE_ROOTLESS_DIR/Applications"
 rm -rf "$STAGE_ROOTLESS_DIR/var/jb/Applications/ChargeLimiter.app"
-rm -rf "$STAGE_ROOTHIDE_DIR/var/jb/Applications/ChargeLimiter.app"
 cp -a "$ROOTFUL_APP" "$STAGE_ROOTFUL_DIR/Applications/ChargeLimiter.app"
 cp -a "$ROOTLESS_APP" "$STAGE_ROOTLESS_DIR/var/jb/Applications/ChargeLimiter.app"
-cp -a "$ROOTHIDE_APP" "$STAGE_ROOTHIDE_DIR/var/jb/Applications/ChargeLimiter.app"
 
 find "$STAGE_ROOTFUL_DIR" -name .DS_Store -delete
 find "$STAGE_ROOTLESS_DIR" -name .DS_Store -delete
-find "$STAGE_ROOTHIDE_DIR" -name .DS_Store -delete
-chmod 755 "$STAGE_ROOTFUL_DIR/DEBIAN"/* "$STAGE_ROOTLESS_DIR/DEBIAN"/* "$STAGE_ROOTHIDE_DIR/DEBIAN"/*
+chmod 755 "$STAGE_ROOTFUL_DIR/DEBIAN"/* "$STAGE_ROOTLESS_DIR/DEBIAN"/*
 set_control_version "$STAGE_ROOTFUL_DIR/DEBIAN/control"
 set_control_version "$STAGE_ROOTLESS_DIR/DEBIAN/control"
-set_control_version "$STAGE_ROOTHIDE_DIR/DEBIAN/control"
+
+echo "[6/10] Convert rootless package tree to roothide layout..."
+convert_rootless_stage_to_roothide "$STAGE_ROOTLESS_DIR" "$STAGE_ROOTHIDE_DIR"
 
 echo "[7/10] Build TrollStore package..."
 cp -a "$ROOTLESS_APP" "$PAYLOAD_DIR/ChargeLimiter.app"
@@ -271,10 +439,58 @@ check_app() {
   check_binary "$APP_PATH/ChargeLimiterDaemon" "$EXPECTED_ARCH" "$BID"
 }
 
+check_roothide_stage() {
+  STAGE_PATH="$1"
+  APP_PATH="$STAGE_PATH/Applications/ChargeLimiter.app"
+  PLIST_PATH="$STAGE_PATH/Library/LaunchDaemons/com.chargelimiter.mod.plist"
+  POSTINST_PATH="$STAGE_PATH/DEBIAN/postinst"
+
+  [ -d "$APP_PATH" ] || {
+    echo "[ERR] Missing roothide app bundle: $APP_PATH" >&2
+    exit 1
+  }
+
+  [ -f "$PLIST_PATH" ] || {
+    echo "[ERR] Missing roothide launch daemon plist: $PLIST_PATH" >&2
+    exit 1
+  }
+
+  [ ! -e "$STAGE_PATH/var/jb/Applications/ChargeLimiter.app" ] || {
+    echo "[ERR] Found unexpected rootless app path in roothide stage." >&2
+    exit 1
+  }
+
+  CONTROL_ARCH="$(awk -F': ' '/^Architecture:/{print $2; exit}' "$STAGE_PATH/DEBIAN/control")"
+  if [ "$CONTROL_ARCH" != "iphoneos-arm64e" ]; then
+    echo "[ERR] Unexpected roothide control architecture: $CONTROL_ARCH" >&2
+    exit 1
+  fi
+
+  PLIST_PROGRAM="$(plutil -extract Program raw -o - "$PLIST_PATH")"
+  if [ "$PLIST_PROGRAM" != "/Applications/ChargeLimiter.app/ChargeLimiterDaemon" ]; then
+    echo "[ERR] Unexpected roothide launch daemon program path: $PLIST_PROGRAM" >&2
+    exit 1
+  fi
+
+  rg -F -q 'APP_DIR="/Applications/ChargeLimiter.app"' "$POSTINST_PATH" || {
+    echo "[ERR] roothide postinst APP_DIR was not rewritten." >&2
+    exit 1
+  }
+
+  rg -F -q 'DAEMON_PLIST="/Library/LaunchDaemons/com.chargelimiter.mod.plist"' "$POSTINST_PATH" || {
+    echo "[ERR] roothide postinst DAEMON_PLIST was not rewritten." >&2
+    exit 1
+  }
+
+  # RootHidePatcher standard conversion keeps the rootless Mach-O slices and
+  # rewrites the package/runtime layout around them instead of rebuilding arm64e.
+  check_app "$APP_PATH" "arm64"
+}
+
 echo "[9/10] Verify package contents..."
 check_app "$ROOTFUL_APP" "arm64"
 check_app "$ROOTLESS_APP" "arm64"
-check_app "$ROOTHIDE_APP" "arm64e"
+check_roothide_stage "$STAGE_ROOTHIDE_DIR"
 
 echo "[10/10] Finalize outputs..."
 echo "[OK] Done"
