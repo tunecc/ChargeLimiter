@@ -131,6 +131,14 @@
 "使用电池" = "On Battery";
 "允许充电" = "Charging Allowed";
 "保持停止" = "Hold Stop";
+"预设" = "Preset";
+"未设置" = "Not Set";
+"停充预设" = "Stop Preset";
+"设置停充预设" = "Set Stop Preset";
+"输入 15 到 100 的预设电量。保存后，主页按钮会显示该电量，并可一键应用。" = "Enter a preset stop target from 15 to 100. After saving, the Home button will show it and apply it in one tap.";
+"输入 15 到 100 的预设电量。主页按钮点击即可一键应用，长按可再次调整。" = "Enter a preset stop target from 15 to 100. Tap the Home button to apply it instantly, or long-press to adjust it again.";
+"清除预设" = "Clear Preset";
+"保存" = "Save";
 "未启用" = "Inactive";
 "已关闭" = "Disabled";
 "已启用" = "Enabled";
