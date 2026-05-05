@@ -4156,6 +4156,112 @@ static NSString *CLDaemonLanguageValueForLocaleIdentifier(NSString *identifier) 
     return @"en";
 }
 
+static NSString * const CLStopChargePresetDefaultsKey = @"StopChargePresetValue";
+
+static NSInteger CLNormalizedStopChargePresetValue(NSInteger value) {
+    if (value <= 0) {
+        return 0;
+    }
+    if (value < 15) {
+        return 15;
+    }
+    if (value > 100) {
+        return 100;
+    }
+    return value;
+}
+
+static NSInteger CLStoredStopChargePresetValue(void) {
+    return CLNormalizedStopChargePresetValue([[NSUserDefaults standardUserDefaults] integerForKey:CLStopChargePresetDefaultsKey]);
+}
+
+static void CLStoreStopChargePresetValue(NSInteger value) {
+    [[NSUserDefaults standardUserDefaults] setInteger:CLNormalizedStopChargePresetValue(value) forKey:CLStopChargePresetDefaultsKey];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
+static NSString *CLStopChargePresetSettingsText(NSInteger value) {
+    NSInteger normalized = CLNormalizedStopChargePresetValue(value);
+    if (normalized <= 0) {
+        return CLL(@"未设置");
+    }
+    return [NSString stringWithFormat:@"%ld%%", (long)normalized];
+}
+
+static NSString *CLStopChargePresetButtonTitle(NSInteger value) {
+    NSInteger normalized = CLNormalizedStopChargePresetValue(value);
+    if (normalized <= 0) {
+        return CLL(@"预设");
+    }
+    return [NSString stringWithFormat:@"%ld", (long)normalized];
+}
+
+static UIColor *CLStopChargePresetAccentColor(void) {
+    UIColor *lightColor = [UIColor colorWithRed:0.64 green:0.79 blue:0.20 alpha:1.0];
+    if (@available(iOS 13.0, *)) {
+        return [UIColor colorWithDynamicProvider:^UIColor * _Nonnull(UITraitCollection * _Nonnull traitCollection) {
+            if (traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark) {
+                return [UIColor colorWithRed:0.76 green:0.90 blue:0.34 alpha:1.0];
+            }
+            return lightColor;
+        }];
+    }
+    return lightColor;
+}
+
+static void CLPresentStopChargePresetEditor(UIViewController *presenter,
+                                            NSInteger currentPreset,
+                                            NSInteger suggestedValue,
+                                            void (^saveHandler)(NSInteger value),
+                                            dispatch_block_t clearHandler) {
+    NSInteger normalizedPreset = CLNormalizedStopChargePresetValue(currentPreset);
+    NSInteger normalizedSuggested = CLNormalizedStopChargePresetValue(suggestedValue);
+    if (normalizedSuggested <= 0) {
+        normalizedSuggested = 80;
+    }
+
+    NSString *message = normalizedPreset > 0
+        ? CLL(@"输入 15 到 100 的预设电量。主页按钮点击即可一键应用，长按可再次调整。")
+        : CLL(@"输入 15 到 100 的预设电量。保存后，主页按钮会显示该电量，并可一键应用。");
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"设置停充预设")
+                                                                   message:message
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
+        textField.keyboardType = UIKeyboardTypeNumberPad;
+        textField.placeholder = @"15-100";
+        NSInteger initialValue = normalizedPreset > 0 ? normalizedPreset : normalizedSuggested;
+        textField.text = [NSString stringWithFormat:@"%ld", (long)initialValue];
+        textField.clearButtonMode = UITextFieldViewModeWhileEditing;
+    }];
+
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"取消")
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+
+    if (normalizedPreset > 0 && clearHandler) {
+        [alert addAction:[UIAlertAction actionWithTitle:CLL(@"清除预设")
+                                                  style:UIAlertActionStyleDestructive
+                                                handler:^(UIAlertAction * _Nonnull action) {
+            clearHandler();
+        }]];
+    }
+
+    if (saveHandler) {
+        [alert addAction:[UIAlertAction actionWithTitle:CLL(@"保存")
+                                                  style:UIAlertActionStyleDefault
+                                                handler:^(UIAlertAction * _Nonnull action) {
+            UITextField *textField = alert.textFields.firstObject;
+            NSInteger inputValue = CLNormalizedStopChargePresetValue(textField.text.integerValue);
+            if (inputValue <= 0) {
+                inputValue = normalizedSuggested;
+            }
+            saveHandler(inputValue);
+        }]];
+    }
+
+    [presenter presentViewController:alert animated:YES completion:nil];
+}
+
 @interface CLSoftwareSettingsViewController : UIViewController
 @end
 
@@ -4259,6 +4365,8 @@ static NSString *CLDaemonLanguageValueForLocaleIdentifier(NSString *identifier) 
     [self.settingsCard addSeparator];
     [self.settingsCard addNavigationRowWithIcon:@"moon.fill" title:CLL(@"深色模式") value:[self appearanceValueLabel] color:[UIColor systemGrayColor] target:self action:@selector(darkModeTapped)];
     [self.settingsCard addSeparator];
+    [self.settingsCard addNavigationRowWithIcon:@"tag.fill" title:CLL(@"停充预设") value:[self chargeAbovePresetValueLabel] color:CLStopChargePresetAccentColor() target:self action:@selector(stopChargePresetTapped)];
+    [self.settingsCard addSeparator];
     [self.settingsCard.contentStack addArrangedSubview:[self buildHapticRow]];
     [self.settingsCard addSeparator];
     [self.settingsCard.contentStack addArrangedSubview:[self buildHapticDetailRow]];
@@ -4283,6 +4391,10 @@ static NSString *CLDaemonLanguageValueForLocaleIdentifier(NSString *identifier) 
     if (freq <= 20) return CLL(@"20 秒");
     if (freq <= 60) return CLL(@"1 分钟");
     return CLL(@"10 分钟");
+}
+
+- (NSString *)chargeAbovePresetValueLabel {
+    return CLStopChargePresetSettingsText(CLStoredStopChargePresetValue());
 }
 
 - (void)updateCardValue:(CLGlassCard *)card title:(NSString *)title value:(NSString *)value {
@@ -4392,6 +4504,23 @@ static NSString *CLDaemonLanguageValueForLocaleIdentifier(NSString *identifier) 
         [alert addAction:[UIAlertAction actionWithTitle:CLL(@"确定") style:UIAlertActionStyleDefault handler:nil]];
         [self presentViewController:alert animated:YES completion:nil];
     }
+}
+
+- (void)stopChargePresetTapped {
+    CLBatteryManager *manager = [CLBatteryManager shared];
+    NSInteger currentPreset = CLStoredStopChargePresetValue();
+    NSInteger suggestedValue = currentPreset > 0 ? currentPreset : manager.chargeAbove;
+    __weak typeof(self) weakSelf = self;
+    CLPresentStopChargePresetEditor(self,
+                                    currentPreset,
+                                    suggestedValue,
+                                    ^(NSInteger value) {
+        CLStoreStopChargePresetValue(value);
+        [weakSelf updateCardValue:weakSelf.settingsCard title:CLL(@"停充预设") value:[weakSelf chargeAbovePresetValueLabel]];
+    }, ^{
+        CLStoreStopChargePresetValue(0);
+        [weakSelf updateCardValue:weakSelf.settingsCard title:CLL(@"停充预设") value:[weakSelf chargeAbovePresetValueLabel]];
+    });
 }
 
 - (NSString *)daemonLanguageValueForAppLanguage:(CLAppLanguage)language {
@@ -4815,6 +4944,7 @@ static NSString *CLDaemonLanguageValueForLocaleIdentifier(NSString *identifier) 
         iconView.tintColor = enabled ? (iconColor ?: [UIColor systemOrangeColor])
                                      : [[UIColor secondaryLabelColor] colorWithAlphaComponent:0.7];
     }
+    [self updateCardValue:self.settingsCard title:CLL(@"停充预设") value:[self chargeAbovePresetValueLabel]];
 }
 
 - (UISwitch *)switchInCard:(CLGlassCard *)card tag:(NSInteger)tag {
@@ -4856,6 +4986,7 @@ static NSString *CLDaemonLanguageValueForLocaleIdentifier(NSString *identifier) 
 @property (nonatomic, assign) NSInteger currentChargeMode; // 0=插电即充, 1=边缘触发
 @property (nonatomic, strong) UIView *chargeBelowRow;
 @property (nonatomic, strong) UIView *chargeAboveRow;      // 停止充电行
+@property (nonatomic, strong) UIButton *chargeAbovePresetButton;
 @property (nonatomic, strong) UIButton *setChargeAboveCurrentButton;
 @property (nonatomic, strong) UIView *chargeBelowSeparator;
 @property (nonatomic, strong) UIView *tempBelowRow;        // 温度下限行
@@ -4930,6 +5061,7 @@ static NSString *CLDaemonLanguageValueForLocaleIdentifier(NSString *identifier) 
     [super viewWillAppear:animated];
     self.navigationController.navigationBarHidden = YES;
     [[CLBatteryManager shared] startAutoRefresh];
+    [self updateChargeAbovePresetButtonAppearance];
     if (!self.didCheckLegacyMigrationPrompt) {
         self.didCheckLegacyMigrationPrompt = YES;
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -5402,7 +5534,7 @@ static NSString *CLDaemonLanguageValueForLocaleIdentifier(NSString *identifier) 
 }
 
 - (void)attachSetCurrentButtonToChargeAboveRow {
-    if (!self.chargeAboveRow || self.setChargeAboveCurrentButton) {
+    if (!self.chargeAboveRow || self.setChargeAboveCurrentButton || self.chargeAbovePresetButton) {
         return;
     }
 
@@ -5418,6 +5550,28 @@ static NSString *CLDaemonLanguageValueForLocaleIdentifier(NSString *identifier) 
             break;
         }
     }
+
+    UIButton *presetButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    presetButton.translatesAutoresizingMaskIntoConstraints = NO;
+    presetButton.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
+    presetButton.titleLabel.adjustsFontSizeToFitWidth = YES;
+    presetButton.titleLabel.minimumScaleFactor = 0.85;
+    presetButton.semanticContentAttribute = UISemanticContentAttributeForceLeftToRight;
+    presetButton.contentEdgeInsets = UIEdgeInsetsMake(4, 10, 4, 10);
+    presetButton.layer.cornerRadius = 11;
+    if (@available(iOS 13.0, *)) {
+        presetButton.layer.cornerCurve = kCACornerCurveContinuous;
+    }
+    [presetButton setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    [presetButton setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    [presetButton addTarget:self action:@selector(chargeAbovePresetTapped) forControlEvents:UIControlEventTouchUpInside];
+    presetButton.accessibilityLabel = CLL(@"预设");
+    [self applyPressEffectToControl:presetButton];
+    UILongPressGestureRecognizer *longPress = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(chargeAbovePresetLongPressed:)];
+    longPress.minimumPressDuration = 0.45;
+    longPress.cancelsTouchesInView = YES;
+    [presetButton addGestureRecognizer:longPress];
+    [self.chargeAboveRow addSubview:presetButton];
 
     UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
     button.translatesAutoresizingMaskIntoConstraints = NO;
@@ -5442,15 +5596,37 @@ static NSString *CLDaemonLanguageValueForLocaleIdentifier(NSString *identifier) 
     NSMutableArray<NSLayoutConstraint *> *constraints = [NSMutableArray arrayWithArray:@[
         [button.trailingAnchor constraintEqualToAnchor:valueLabel.leadingAnchor constant:-8],
         [button.centerYAnchor constraintEqualToAnchor:valueLabel.centerYAnchor],
-        [button.heightAnchor constraintGreaterThanOrEqualToConstant:22]
+        [button.heightAnchor constraintGreaterThanOrEqualToConstant:22],
+        [presetButton.trailingAnchor constraintEqualToAnchor:button.leadingAnchor constant:-8],
+        [presetButton.centerYAnchor constraintEqualToAnchor:button.centerYAnchor],
+        [presetButton.heightAnchor constraintGreaterThanOrEqualToConstant:22]
     ]];
     if (titleLabel) {
-        [constraints addObject:[button.leadingAnchor constraintGreaterThanOrEqualToAnchor:titleLabel.trailingAnchor constant:12]];
+        [constraints addObject:[presetButton.leadingAnchor constraintGreaterThanOrEqualToAnchor:titleLabel.trailingAnchor constant:12]];
     }
     [NSLayoutConstraint activateConstraints:constraints];
 
+    self.chargeAbovePresetButton = presetButton;
     self.setChargeAboveCurrentButton = button;
+    [self updateChargeAbovePresetButtonAppearance];
     [self updateSetChargeAboveCurrentButtonState];
+}
+
+- (void)updateChargeAbovePresetButtonAppearance {
+    if (!self.chargeAbovePresetButton) {
+        return;
+    }
+
+    NSInteger presetValue = CLStoredStopChargePresetValue();
+    NSString *title = CLStopChargePresetButtonTitle(presetValue);
+    UIColor *tintColor = CLStopChargePresetAccentColor();
+    self.chargeAbovePresetButton.tintColor = tintColor;
+    self.chargeAbovePresetButton.backgroundColor = [tintColor colorWithAlphaComponent:(presetValue > 0 ? 0.18 : 0.12)];
+    [self.chargeAbovePresetButton setImage:nil forState:UIControlStateNormal];
+    [self.chargeAbovePresetButton setTitle:title forState:UIControlStateNormal];
+    self.chargeAbovePresetButton.accessibilityLabel = (presetValue > 0)
+        ? [NSString stringWithFormat:@"%@ %@", CLL(@"预设"), CLStopChargePresetSettingsText(presetValue)]
+        : CLL(@"预设");
 }
 
 - (void)updateSetChargeAboveCurrentButtonState {
@@ -5461,6 +5637,69 @@ static NSString *CLDaemonLanguageValueForLocaleIdentifier(NSString *identifier) 
     BOOL enabled = manager.batteryInstalled && manager.currentCapacity > 0;
     self.setChargeAboveCurrentButton.enabled = enabled;
     self.setChargeAboveCurrentButton.alpha = enabled ? 1.0 : 0.45;
+}
+
+- (void)applyChargeAboveValue:(NSInteger)value emitFeedback:(BOOL)emitFeedback {
+    self.chargeAbove = value;
+    self.batteryStatus.chargeAbove = value;
+    [CLBatteryManager shared].chargeAbove = value;
+
+    [self updateSliderValue:self.chargeAboveRow value:value];
+    [self updateSliderLabel:self.chargeAboveRow value:value suffix:@"%"];
+    [self updateSystemControlHintForChargeAbove:value];
+
+    if (emitFeedback) {
+        if (@available(iOS 10.0, *)) {
+            UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+            [feedback impactOccurred];
+        }
+    }
+}
+
+- (void)saveChargeAbovePresetValue:(NSInteger)value {
+    CLStoreStopChargePresetValue(value);
+    [self updateChargeAbovePresetButtonAppearance];
+    if (@available(iOS 10.0, *)) {
+        UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+        [feedback impactOccurred];
+    }
+}
+
+- (void)presentChargeAbovePresetEditor {
+    NSInteger currentPreset = CLStoredStopChargePresetValue();
+    NSInteger suggestedValue = currentPreset > 0 ? currentPreset : self.chargeAbove;
+    __weak typeof(self) weakSelf = self;
+    CLPresentStopChargePresetEditor(self,
+                                    currentPreset,
+                                    suggestedValue,
+                                    ^(NSInteger value) {
+        [weakSelf saveChargeAbovePresetValue:value];
+    }, ^{
+        CLStoreStopChargePresetValue(0);
+        [weakSelf updateChargeAbovePresetButtonAppearance];
+    });
+}
+
+- (void)chargeAbovePresetTapped {
+    NSInteger presetValue = CLStoredStopChargePresetValue();
+    if (presetValue <= 0) {
+        [self presentChargeAbovePresetEditor];
+        return;
+    }
+
+    UISlider *slider = [self sliderForTag:201];
+    if (!slider) {
+        return;
+    }
+    NSInteger adjustedValue = [self normalizedChargeValueForSlider:slider value:presetValue];
+    [self applyChargeAboveValue:adjustedValue emitFeedback:YES];
+}
+
+- (void)chargeAbovePresetLongPressed:(UILongPressGestureRecognizer *)gesture {
+    if (gesture.state != UIGestureRecognizerStateBegan) {
+        return;
+    }
+    [self presentChargeAbovePresetEditor];
 }
 
 - (void)setChargeAboveToCurrentTapped {
@@ -5474,19 +5713,7 @@ static NSString *CLDaemonLanguageValueForLocaleIdentifier(NSString *identifier) 
     NSInteger maxValue = (NSInteger)roundf(slider.maximumValue);
     NSInteger clampedValue = MIN(MAX(manager.currentCapacity, minValue), maxValue);
     NSInteger adjustedValue = [self normalizedChargeValueForSlider:slider value:clampedValue];
-
-    self.chargeAbove = adjustedValue;
-    self.batteryStatus.chargeAbove = adjustedValue;
-    manager.chargeAbove = adjustedValue;
-
-    [self updateSliderValue:self.chargeAboveRow value:adjustedValue];
-    [self updateSliderLabel:self.chargeAboveRow value:adjustedValue suffix:@"%"];
-    [self updateSystemControlHintForChargeAbove:adjustedValue];
-
-    if (@available(iOS 10.0, *)) {
-        UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
-        [feedback impactOccurred];
-    }
+    [self applyChargeAboveValue:adjustedValue emitFeedback:YES];
 }
 
 - (void)setupTempCard {
@@ -6404,6 +6631,7 @@ static BOOL CLDisplayedPowerStateUsesExternalPower(CLBatteryManager *manager) {
     self.chargeAbove = chargeAbove;
     self.lastChargeAboveForHint = chargeAbove;
     self.lastSystemCapacityControlActiveForHint = [self usesSystemCapacityControlForManager:manager chargeAbove:chargeAbove];
+    [self updateChargeAbovePresetButtonAppearance];
     [self updateSliderValue:self.chargeBelowRow value:chargeBelow];
     [self updateSliderValue:self.chargeAboveRow value:chargeAbove];
     [self updateSliderLabel:self.chargeBelowRow value:chargeBelow suffix:@"%"];
