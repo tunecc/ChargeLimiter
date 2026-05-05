@@ -12,10 +12,8 @@ static NSString* g_logPath = nil;
 static NSString* g_confPath = nil;
 static NSString* g_dbPath = nil;
 static NSString* g_appDocumentsPathOverride = nil;
-static NSString* const kContainerCacheFileName = @"com.chargelimiter.mod.containerpath";
+static NSString* const kLegacyContainerCacheFileName = @"com.chargelimiter.mod.containerpath";
 typedef const char* (*jbroot_fn_t)(const char* path);
-static NSArray<NSString*>* availableContainerCachePaths(void);
-static NSString* resolveDocumentsByContainerCache(void);
 
 static BOOL isValidAppDocumentsPath(NSString* path) {
     if (path.length == 0) {
@@ -36,6 +34,49 @@ static BOOL isValidAppDocumentsPath(NSString* path) {
         return YES;
     }
     return NO;
+}
+
+static BOOL isValidAppContainerRoot(NSString* path) {
+    if (path.length == 0) {
+        return NO;
+    }
+    NSString* lower = path.lowercaseString;
+    if (![lower hasPrefix:@"/"]) {
+        return NO;
+    }
+    if (![lower containsString:@"/containers/data/"]) {
+        return NO;
+    }
+    if ([lower hasPrefix:@"/var/mobile/"] ||
+        [lower hasPrefix:@"/private/var/mobile/"] ||
+        [lower hasPrefix:@"/var/jb/var/mobile/"] ||
+        [lower hasPrefix:@"/private/var/jb/var/mobile/"] ||
+        [lower hasPrefix:@"/var/jb/private/var/mobile/"]) {
+        return YES;
+    }
+    return NO;
+}
+
+static NSString* validatedDocumentsPath(NSString* path) {
+    if (path.length == 0) {
+        return nil;
+    }
+    NSString* fixed = [path stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (!isValidAppDocumentsPath(fixed)) {
+        return nil;
+    }
+    return fixed;
+}
+
+static NSString* validatedContainerRoot(NSString* path) {
+    if (path.length == 0) {
+        return nil;
+    }
+    NSString* fixed = [path stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (!isValidAppContainerRoot(fixed)) {
+        return nil;
+    }
+    return fixed;
 }
 
 static NSURL* getContainerURLFromMCM(id container) {
@@ -84,7 +125,7 @@ static NSURL* resolveMCMContainerURL(NSString* bid, BOOL allowCreate) {
     return nil;
 }
 
-static NSString* resolveDocumentsByScanning(NSString* bid) {
+static NSString* resolveContainerRootByScanning(NSString* bid) {
     if (bid.length == 0) {
         return nil;
     }
@@ -117,7 +158,7 @@ static NSString* resolveDocumentsByScanning(NSString* bid) {
             NSString* idB = meta[@"MCMMetadataBundleIdentifier"];
             NSString* idC = meta[@"MCMMetadataBundleID"];
             if ([idA isEqualToString:bid] || [idB isEqualToString:bid] || [idC isEqualToString:bid]) {
-                return [containerPath stringByAppendingPathComponent:@"Documents"];
+                return containerPath;
             }
         }
     }
@@ -139,34 +180,41 @@ static NSString* resolveAppBundleIdentifier() {
 }
 
 static NSString* ensureValidDocumentsPath(NSString* docsPath) {
-    if (!isValidAppDocumentsPath(docsPath)) {
+    NSString* fixed = validatedDocumentsPath(docsPath);
+    if (fixed.length == 0) {
         return nil;
     }
-    [[NSFileManager defaultManager] createDirectoryAtPath:docsPath withIntermediateDirectories:YES attributes:nil error:nil];
-    return docsPath;
+    [[NSFileManager defaultManager] createDirectoryAtPath:fixed withIntermediateDirectories:YES attributes:nil error:nil];
+    return fixed;
 }
 
-static NSString* documentsPathFromContainerRoot(NSString* rootPath) {
-    if (rootPath.length == 0) {
+static NSString* resolveExistingDataContainerRoot(NSString* bid) {
+    if (bid.length == 0) {
         return nil;
     }
-    NSString* root = [rootPath stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    if (root.length == 0) {
-        return nil;
-    }
-    if (([root hasPrefix:@"\""] && [root hasSuffix:@"\""]) || ([root hasPrefix:@"'"] && [root hasSuffix:@"'"])) {
-        if (root.length <= 2) {
-            return nil;
+
+    Class proxyCls = objc_getClass("LSApplicationProxy");
+    if (proxyCls && [proxyCls respondsToSelector:@selector(applicationProxyForIdentifier:)]) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+        id proxy = [proxyCls performSelector:@selector(applicationProxyForIdentifier:) withObject:bid];
+#pragma clang diagnostic pop
+        if (proxy && [proxy respondsToSelector:@selector(dataContainerURL)]) {
+            NSURL* url = ((LSApplicationProxy*)proxy).dataContainerURL;
+            NSString* root = validatedContainerRoot(url.path);
+            if (root.length > 0) {
+                return root;
+            }
         }
-        root = [root substringWithRange:NSMakeRange(1, root.length - 2)];
     }
-    NSString* docsPath = nil;
-    if ([[root lastPathComponent] isEqualToString:@"Documents"]) {
-        docsPath = root;
-    } else {
-        docsPath = [root stringByAppendingPathComponent:@"Documents"];
+
+    NSURL* mcmURL = resolveMCMContainerURL(bid, NO);
+    NSString* root = validatedContainerRoot(mcmURL.path);
+    if (root.length > 0) {
+        return root;
     }
-    return ensureValidDocumentsPath(docsPath);
+
+    return validatedContainerRoot(resolveContainerRootByScanning(bid));
 }
 
 static NSString* resolveAppDocumentsPath() {
@@ -186,44 +234,15 @@ static NSString* resolveAppDocumentsPath() {
     }
 
     NSString* bid = resolveAppBundleIdentifier();
-    if (bid.length > 0) {
-        Class proxyCls = objc_getClass("LSApplicationProxy");
-        if (proxyCls && [proxyCls respondsToSelector:@selector(applicationProxyForIdentifier:)]) {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-            id proxy = [proxyCls performSelector:@selector(applicationProxyForIdentifier:) withObject:bid];
-#pragma clang diagnostic pop
-            if (proxy && [proxy respondsToSelector:@selector(dataContainerURL)]) {
-                NSURL* url = ((LSApplicationProxy*)proxy).dataContainerURL;
-                if (url.path.length > 0) {
-                    docPath = ensureValidDocumentsPath([url.path stringByAppendingPathComponent:@"Documents"]);
-                    if (docPath.length > 0) {
-                        return docPath;
-                    }
-                }
-            }
-        }
-    }
-
-    NSURL* mcmURL = resolveMCMContainerURL(bid, NO);
-    if (mcmURL.path.length > 0) {
-        docPath = ensureValidDocumentsPath([mcmURL.path stringByAppendingPathComponent:@"Documents"]);
+    NSString* containerRoot = resolveExistingDataContainerRoot(bid);
+    if (containerRoot.length > 0) {
+        docPath = ensureValidDocumentsPath([containerRoot stringByAppendingPathComponent:@"Documents"]);
         if (docPath.length > 0) {
             return docPath;
         }
     }
 
-    NSString* scanPath = ensureValidDocumentsPath(resolveDocumentsByScanning(bid));
-    if (scanPath.length > 0) {
-        return scanPath;
-    }
-
-    NSString* cachedPath = resolveDocumentsByContainerCache();
-    if (cachedPath.length > 0) {
-        return cachedPath;
-    }
-
-    mcmURL = resolveMCMContainerURL(bid, YES);
+    NSURL* mcmURL = resolveMCMContainerURL(bid, YES);
     if (mcmURL.path.length > 0) {
         docPath = ensureValidDocumentsPath([mcmURL.path stringByAppendingPathComponent:@"Documents"]);
         if (docPath.length > 0) {
@@ -258,17 +277,6 @@ void setAppDocumentsPathOverride(NSString* docsPath) {
     NSLog2(@"[CL] app documents override set: %@", fixed);
 }
 
-static NSString* containerRootFromDocuments(NSString* documentsPath) {
-    if (documentsPath.length == 0) {
-        return nil;
-    }
-    NSString* last = documentsPath.lastPathComponent;
-    if ([last isEqualToString:@"Documents"]) {
-        return [documentsPath stringByDeletingLastPathComponent];
-    }
-    return nil;
-}
-
 static NSString* resolveJbRootFromSelfExe() {
     NSString* exe = getSelfExePath();
     if (exe.length == 0) {
@@ -286,7 +294,7 @@ static NSString* resolveJbRootFromSelfExe() {
     return [exe substringToIndex:tail.location];
 }
 
-static NSString* resolveRoothideCachePathByAPI() {
+static NSString* resolveRoothidePreferencesDirByAPI() {
     if (getJBType() != JBTYPE_ROOTHIDE) {
         return nil;
     }
@@ -318,154 +326,74 @@ static NSString* resolveRoothideCachePathByAPI() {
         return nil;
     }
 
-    NSString* virtualPath = [@"/var/mobile/Library/Preferences" stringByAppendingPathComponent:kContainerCacheFileName];
-    const char* rooted = jbrootPtr(virtualPath.UTF8String);
+    const char* rooted = jbrootPtr("/var/mobile/Library/Preferences");
     if (!rooted || rooted[0] != '/') {
         return nil;
     }
     return @(rooted);
 }
 
-static NSArray<NSString*>* availableContainerCachePaths() {
-    NSMutableArray<NSString*>* paths = [NSMutableArray new];
-    int jbType = getJBType();
+static NSArray<NSString*>* legacyContainerCachePaths() {
+    NSMutableArray<NSString*>* paths = [NSMutableArray arrayWithObjects:
+                                        [@"/var/mobile/Library/Preferences" stringByAppendingPathComponent:kLegacyContainerCacheFileName],
+                                        [@"/private/var/mobile/Library/Preferences" stringByAppendingPathComponent:kLegacyContainerCacheFileName],
+                                        [@"/var/jb/var/mobile/Library/Preferences" stringByAppendingPathComponent:kLegacyContainerCacheFileName],
+                                        [@"/private/var/jb/var/mobile/Library/Preferences" stringByAppendingPathComponent:kLegacyContainerCacheFileName],
+                                        [@"/var/jb/private/var/mobile/Library/Preferences" stringByAppendingPathComponent:kLegacyContainerCacheFileName],
+                                        nil];
 
-    // roothide preferred: use official jbroot() API first.
-    if (jbType == JBTYPE_ROOTHIDE) {
-        NSString* roothidePath = resolveRoothideCachePathByAPI();
-        if (roothidePath.length > 0) {
-            [paths addObject:roothidePath];
-        } else {
-            // fallback: infer jbroot from executable path.
-            NSString* jbroot = resolveJbRootFromSelfExe();
-            if (jbroot.length > 0) {
-                NSString* fallbackRoothidePath = [[jbroot stringByAppendingPathComponent:@"var/mobile/Library/Preferences"] stringByAppendingPathComponent:kContainerCacheFileName];
-                if (fallbackRoothidePath.length > 0) {
-                    [paths addObject:fallbackRoothidePath];
-                }
-            }
-        }
-        // Do not fallback to /var/jb path for roothide. If both jbroot methods fail,
-        // keep empty and let caller warn user.
-    } else if (jbType == JBTYPE_ROOTLESS) {
-        // No hardcoded /var/jb write path.
-        // Use mobile preferences path as stable write location.
-        NSString* rootfulPath = [@"/var/mobile/Library/Preferences" stringByAppendingPathComponent:kContainerCacheFileName];
-        if (rootfulPath.length > 0) {
-            [paths addObject:rootfulPath];
-        }
-    } else {
-        // Rootful/default fallback path.
-        NSString* rootfulPath = [@"/var/mobile/Library/Preferences" stringByAppendingPathComponent:kContainerCacheFileName];
-        if (rootfulPath.length > 0) {
-            [paths addObject:rootfulPath];
-        }
+    NSString* roothidePrefsDir = resolveRoothidePreferencesDirByAPI();
+    if (roothidePrefsDir.length > 0) {
+        [paths addObject:[roothidePrefsDir stringByAppendingPathComponent:kLegacyContainerCacheFileName]];
     }
 
-    // Dedupe while preserving order.
+    NSString* jbroot = resolveJbRootFromSelfExe();
+    if (jbroot.length > 0) {
+        [paths addObject:[[jbroot stringByAppendingPathComponent:@"var/mobile/Library/Preferences"] stringByAppendingPathComponent:kLegacyContainerCacheFileName]];
+    }
+
     NSMutableArray<NSString*>* dedup = [NSMutableArray new];
     NSMutableSet<NSString*>* seen = [NSMutableSet new];
-    for (NSString* p in paths) {
-        if (p.length == 0 || [seen containsObject:p]) {
+    for (NSString* path in paths) {
+        if (path.length == 0 || [seen containsObject:path]) {
             continue;
         }
-        [seen addObject:p];
-        [dedup addObject:p];
+        [seen addObject:path];
+        [dedup addObject:path];
     }
-
     return dedup;
 }
 
-static NSString* parseContainerRootFromCacheFile(NSString* cachePath) {
-    if (cachePath.length == 0) {
-        return nil;
-    }
-    NSError* readError = nil;
-    NSString* content = [NSString stringWithContentsOfFile:cachePath encoding:NSUTF8StringEncoding error:&readError];
-    if (content.length == 0) {
-        return nil;
-    }
+static void cleanupLegacyContainerCacheFilesIfNeeded() {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSFileManager* fm = [NSFileManager defaultManager];
+        for (NSString* cachePath in legacyContainerCachePaths()) {
+            BOOL isDirectory = NO;
+            if (![fm fileExistsAtPath:cachePath isDirectory:&isDirectory] || isDirectory) {
+                continue;
+            }
 
-    NSArray<NSString*>* lines = [content componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
-    for (NSString* line in lines) {
-        NSString* trimmed = [line stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-        if (![trimmed hasPrefix:@"CONTAINER_PATH="]) {
-            continue;
+            NSError* removeError = nil;
+            if ([fm removeItemAtPath:cachePath error:&removeError]) {
+                NSLog2(@"[CL] removed legacy container cache %@", cachePath);
+                continue;
+            }
+
+            int rc = 0;
+            if (getJBType() != JBTYPE_TROLLSTORE) {
+                rc = spawn(@[@"/bin/rm", @"-f", cachePath], nil, nil, nil, SPAWN_FLAG_ROOT, nil);
+            } else {
+                rc = spawn(@[@"/bin/rm", @"-f", cachePath], nil, nil, nil, 0, nil);
+            }
+            if (rc == 0 && ![fm fileExistsAtPath:cachePath]) {
+                NSLog2(@"[CL] removed legacy container cache via rm %@", cachePath);
+                continue;
+            }
+
+            NSLog2(@"[CL] failed to remove legacy container cache %@ err=%@ rc=%d", cachePath, removeError, rc);
         }
-        NSString* value = [trimmed substringFromIndex:[@"CONTAINER_PATH=" length]];
-        value = [value stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-        if (value.length > 0) {
-            return value;
-        }
-    }
-    return nil;
-}
-
-static NSString* resolveDocumentsByContainerCache() {
-    NSMutableArray<NSString*>* candidates = [NSMutableArray arrayWithArray:availableContainerCachePaths()];
-    [candidates addObject:[@"/var/mobile/Library/Preferences" stringByAppendingPathComponent:kContainerCacheFileName]];
-    [candidates addObject:[@"/private/var/mobile/Library/Preferences" stringByAppendingPathComponent:kContainerCacheFileName]];
-    [candidates addObject:[@"/var/jb/var/mobile/Library/Preferences" stringByAppendingPathComponent:kContainerCacheFileName]];
-    [candidates addObject:[@"/private/var/jb/var/mobile/Library/Preferences" stringByAppendingPathComponent:kContainerCacheFileName]];
-    [candidates addObject:[@"/var/jb/private/var/mobile/Library/Preferences" stringByAppendingPathComponent:kContainerCacheFileName]];
-
-    NSString* roothidePath = resolveRoothideCachePathByAPI();
-    if (roothidePath.length > 0) {
-        [candidates addObject:roothidePath];
-    }
-    NSString* jbroot = resolveJbRootFromSelfExe();
-    if (jbroot.length > 0) {
-        NSString* inferred = [[jbroot stringByAppendingPathComponent:@"var/mobile/Library/Preferences"] stringByAppendingPathComponent:kContainerCacheFileName];
-        [candidates addObject:inferred];
-    }
-
-    NSMutableSet<NSString*>* seen = [NSMutableSet new];
-    for (NSString* cachePath in candidates) {
-        if (cachePath.length == 0 || [seen containsObject:cachePath]) {
-            continue;
-        }
-        [seen addObject:cachePath];
-        NSString* containerRoot = parseContainerRootFromCacheFile(cachePath);
-        NSString* docsPath = documentsPathFromContainerRoot(containerRoot);
-        if (docsPath.length > 0) {
-            return docsPath;
-        }
-    }
-    return nil;
-}
-
-static void updateContainerPathCache(NSString* documentsPath) {
-    NSString* containerRoot = containerRootFromDocuments(documentsPath);
-    if (containerRoot.length == 0) {
-        return;
-    }
-    NSArray<NSString*>* cachePaths = availableContainerCachePaths();
-    NSString* cacheContent = [NSString stringWithFormat:
-                              @"# ChargeLimiter container path cache\n"
-                              "# 用途(中文): 记录当前应用数据容器根目录，供卸载脚本快速删除数据目录。\n"
-                              "# Purpose(English): Stores current app data container root path for fast uninstall cleanup.\n"
-                              "CONTAINER_PATH=%@\n", containerRoot];
-    BOOL wroteAny = NO;
-    for (NSString* cachePath in cachePaths) {
-        NSError* mkdirError = nil;
-        NSString* parent = [cachePath stringByDeletingLastPathComponent];
-        if (parent.length > 0) {
-            [[NSFileManager defaultManager] createDirectoryAtPath:parent withIntermediateDirectories:YES attributes:nil error:&mkdirError];
-        }
-
-        NSError* writeError = nil;
-        BOOL ok = [cacheContent writeToFile:cachePath atomically:YES encoding:NSUTF8StringEncoding error:&writeError];
-        if (ok) {
-            wroteAny = YES;
-            NSLog2(@"[CL] container cache written: %@", cachePath);
-        } else {
-            NSLog2(@"[CL] container cache write failed: %@ mkdirErr=%@ writeErr=%@", cachePath, mkdirError, writeError);
-        }
-    }
-
-    if (!wroteAny) {
-        NSLog2(@"[CL] container cache not written. jbType=%d, docs=%@, candidates=%@", getJBType(), documentsPath, cachePaths);
-    }
+    });
 }
 
 static void ensureAppPaths() {
@@ -491,7 +419,7 @@ static void ensureAppPaths() {
         g_logPath = [targetDir stringByAppendingPathComponent:@LOG_FILENAME];
         g_confPath = [targetDir stringByAppendingPathComponent:@CONF_FILENAME];
         g_dbPath = [targetDir stringByAppendingPathComponent:@DB_FILENAME];
-        updateContainerPathCache(targetDir);
+        cleanupLegacyContainerCacheFilesIfNeeded();
     }
 }
 
@@ -535,6 +463,35 @@ extern "C" NSString* getConfDirPath_C(void) {
     return getConfDirPath();
 }
 
+extern "C" int cleanupAppDataContainer_C(void) {
+    NSString* bid = resolveAppBundleIdentifier();
+    NSString* containerRoot = resolveExistingDataContainerRoot(bid);
+    if (containerRoot.length == 0) {
+        NSLog2(@"[CL] cleanup_data_container skipped: no container found for %@", bid ?: @"");
+        return 0;
+    }
+
+    NSFileManager* fm = [NSFileManager defaultManager];
+    BOOL isDirectory = NO;
+    if (![fm fileExistsAtPath:containerRoot isDirectory:&isDirectory]) {
+        NSLog2(@"[CL] cleanup_data_container skipped: missing %@", containerRoot);
+        return 0;
+    }
+    if (!isDirectory) {
+        NSLog2(@"[CL] cleanup_data_container invalid target: %@", containerRoot);
+        return -1;
+    }
+
+    NSError* removeError = nil;
+    if ([fm removeItemAtPath:containerRoot error:&removeError]) {
+        NSLog2(@"[CL] cleanup_data_container removed %@", containerRoot);
+        return 0;
+    }
+
+    NSLog2(@"[CL] cleanup_data_container failed: %@ err=%@", containerRoot, removeError);
+    return -1;
+}
+
 static NSArray<NSString*>* legacyConfigFileNames() {
     return @[@CONF_FILENAME, @DB_FILENAME, @LOG_FILENAME];
 }
@@ -572,9 +529,9 @@ static NSArray<NSString*>* legacyConfigCandidateDirs() {
     [dirs addObject:@"/var/mobile/Library/Preferences"];
     [dirs addObject:@"/var/jb/var/mobile/Library/Preferences"];
 
-    NSString* roothideCachePath = resolveRoothideCachePathByAPI();
-    if (roothideCachePath.length > 0) {
-        [dirs addObject:[roothideCachePath stringByDeletingLastPathComponent]];
+    NSString* roothidePrefsDir = resolveRoothidePreferencesDirByAPI();
+    if (roothidePrefsDir.length > 0) {
+        [dirs addObject:roothidePrefsDir];
     }
 
     NSString* inferredJbRoot = resolveJbRootFromSelfExe();

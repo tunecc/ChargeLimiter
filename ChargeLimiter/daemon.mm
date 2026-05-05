@@ -275,7 +275,7 @@ static int getFullChargeScheduleDurationHours() {
 }
 
 static BOOL isHoldModeEnabled() {
-    return getLocalBool(@"adv_hold_enabled", NO);
+    return getLocalBool(@"adv_hold_enabled", YES);
 }
 
 static BOOL shouldHandOverCapacityControlAt100() {
@@ -2645,7 +2645,7 @@ static void initConf(BOOL reset) {
         @"adv_predictive_inhibit_charge": @NO, // 默认关闭，仍可在支持设备上手动开启
         @"adv_system_capacity_control_at_100": @YES,
         @"adv_disable_inflow": @NO, // all (iPhone8+ iOS13+会改变系统充电图标)
-        @"adv_hold_enabled": @NO,
+        @"adv_hold_enabled": @YES, // 默认开启插电保持
         @"adv_hold_band": @2,
         @"adv_hold_behavior": @"balanced",
         @"adv_hold_temp_disable_smart_charge": @YES,
@@ -3405,6 +3405,8 @@ int main(int argc, char** argv) { // daemon_main
             if (0 == strcmp(argv[argIndex], "reset")) { // 越狱下卸载前重置
                 resetBatteryStatus();
                 return 0;
+            } else if (0 == strcmp(argv[argIndex], "cleanup_data_container")) {
+                return cleanupAppDataContainer_C();
             } else if (0 == strcmp(argv[argIndex], "watch_bat_info")) {
                 BOOL slim = (argc - argIndex) >= 2;
                 while (true) {

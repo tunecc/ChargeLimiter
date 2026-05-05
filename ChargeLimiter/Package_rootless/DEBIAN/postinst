@@ -2,10 +2,47 @@
 
 APP_DIR="/var/jb/Applications/ChargeLimiter.app"
 DAEMON_PLIST="/var/jb/Library/LaunchDaemons/com.chargelimiter.mod.plist"
+CACHE1="/var/jb/var/mobile/Library/Preferences/com.chargelimiter.mod.containerpath"
+CACHE2="/var/mobile/Library/Preferences/com.chargelimiter.mod.containerpath"
+
+resolve_jbroot() {
+    for cmd in /usr/bin/jbroot /var/jb/usr/bin/jbroot jbroot; do
+        if command -v "$cmd" >/dev/null 2>&1; then
+            rooted="$($cmd /var/mobile/Library/Preferences 2>/dev/null)"
+            if [ -n "$rooted" ] && [ "${rooted#/}" != "$rooted" ]; then
+                printf '%s' "$rooted"
+                return 0
+            fi
+        elif [ -x "$cmd" ]; then
+            rooted="$($cmd /var/mobile/Library/Preferences 2>/dev/null)"
+            if [ -n "$rooted" ] && [ "${rooted#/}" != "$rooted" ]; then
+                printf '%s' "$rooted"
+                return 0
+            fi
+        fi
+    done
+
+    if [ -d /var/jb ]; then
+        rooted="$(cd /var/jb 2>/dev/null && pwd -P)"
+        if [ -n "$rooted" ] && [ "${rooted#/}" != "$rooted" ]; then
+            printf '%s' "$rooted/var/mobile/Library/Preferences"
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+CACHE3=""
+if JB_PREFS_DIR="$(resolve_jbroot)"; then
+    CACHE3="$JB_PREFS_DIR/com.chargelimiter.mod.containerpath"
+fi
 
 chown -R root:wheel "$APP_DIR"
 chmod +s "$APP_DIR/ChargeLimiterDaemon"
 killall -9 ChargeLimiter ChargeLimiterDaemon 2>/dev/null
+rm -f "$CACHE1" "$CACHE2"
+[ -n "$CACHE3" ] && rm -f "$CACHE3"
 
 chown root:wheel "$DAEMON_PLIST"
 launchctl bootout system "$DAEMON_PLIST" 2>/dev/null
