@@ -57,7 +57,7 @@ warn_manual_cleanup() {
     printf '\033[31m[ChargeLimiter] Failed to remove app data container automatically. Please remove it manually from your file manager.\033[0m\n' >&2
 }
 
-"$APP_DIR/ChargeLimiterDaemon" reset 2>/dev/null
+"$APP_DIR/ChargeLimiterDaemon" reset_and_exit 2>/dev/null
 launchctl bootout system "$DAEMON_PLIST" 2>/dev/null || launchctl unload "$DAEMON_PLIST" 2>/dev/null
 killall -9 ChargeLimiter ChargeLimiterDaemon 2>/dev/null
 if should_cleanup_data "$1" "${2:-}"; then

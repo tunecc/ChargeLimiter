@@ -66,6 +66,9 @@ static AppDelegate* _app = nil;
                 NSString* nn = [cmd substringFromIndex:4];
                 n = [nn intValue];
             }
+            if (g_jbtype == JBTYPE_TROLLSTORE) {
+                daemonRun(@[@"reset_and_exit"]);
+            }
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, n * NSEC_PER_SEC), dispatch_get_global_queue(0, 0), ^{
                 exit(0);
             });

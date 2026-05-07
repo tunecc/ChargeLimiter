@@ -16,6 +16,7 @@ int main(int argc, char** argv) {
 #include <sqlite3.h>
 #import <Foundation/Foundation.h>
 #import <UserNotifications/UserNotifications.h>
+#include <notify.h>
 
 // 如果定义了 CL_USE_GCDWEBSERVER 则使用 GCDWebServers，否则使用自己的简易 HTTP 服务器
 #ifndef CL_USE_GCDWEBSERVER
@@ -119,6 +120,7 @@ static time_t g_fullChargeScheduleBoundaryTs = 0;
 static NSTimer* g_holdMonitorTimer = nil;
 static int g_holdMonitorTimerIntervalSeconds = 0;
 static NSTimer* g_disableInflowRetryTimer = nil;
+static NSTimer* g_trollStoreBundleCheckTimer = nil;
 static int g_disableInflowRetryAttemptsRemaining = 0;
 static BOOL g_chargeCommandEnabled = YES;
 static NSString* g_policyState = @"battery";
@@ -159,6 +161,7 @@ static const int kHoldAdaptiveHighLoadExitCurrentmA = -260;
 static const int kDisableInflowRetryMaxAttempts = 3;
 static const NSTimeInterval kDisableInflowRetryDelaySeconds = 0.6;
 static const NSTimeInterval kPredictiveInhibitFallbackVerifyDelaySeconds = 8.0;
+static NSString* const kDaemonResetAndExitNotifyName = @"com.chargelimiter.mod.daemon.reset_and_exit";
 
 static BOOL isInflowRuntimeLikelyDisabled(BOOL advDisableInflow, BOOL inflowEnabledSnapshot, NSString* previousPolicyState) {
     if (!advDisableInflow || inflowEnabledSnapshot) {
@@ -198,6 +201,7 @@ static NSString* const kPolicyEventDBTableName = @"policy_events";
 static IONotificationPortRef gNotifyPort = NULL;
 static io_object_t iopmpsNoti = IO_OBJECT_NULL;
 static UPSDataSlim* gUPSPS = nil;
+static int gDaemonResetAndExitNotifyToken = 0;
 
 NSDictionary* handleReq(NSDictionary* nsreq);
 static void onBatteryEventEnd(void);
@@ -216,6 +220,14 @@ static void insertPolicyEventDBData(NSDictionary* event);
 static void migrateStoredPolicyEventsToDBIfNeeded(NSArray* history);
 static NSString* policyEventTypeForTransition(NSString* nextPolicyState, NSString* reason);
 static void appendSmartChargeCoordinationEvent(NSString* reason, int fromStatus, int toStatus, NSDictionary* info, NSDictionary* extras, time_t now);
+static void loadSmartChargeCoordinationRuntimeState(void);
+static void tryRestoreSmartChargeAfterCoordination(NSString* reason);
+static void performAcccharge(BOOL flag);
+static void restoreSmartChargeForReset(NSString* reason);
+static void restoreThermalSimulationForReset(void);
+static void restoreAcceleratedChargeStateForReset(void);
+static void resetBatteryStatusWithContext(BOOL restoreRuntimeSideEffects, NSString* reason);
+static void refreshTrollStoreBundleCheckTimer(void);
 
 @interface Service: NSObject<UNUserNotificationCenterDelegate>
 + (instancetype)inst;
@@ -1018,6 +1030,69 @@ static void armDisableInflowRetryIfNeeded(NSDictionary* info, NSString* policySt
     scheduleNextDisableInflowRetryAttempt();
 }
 
+static void requestDaemonResetAndExit(void) {
+    NSFileLog(@"received reset-and-exit request");
+    dispatch_async(dispatch_get_main_queue(), ^{
+        resetBatteryStatusWithContext(YES, @"daemon_reset_and_exit");
+        exit(0);
+    });
+}
+
+static void registerDaemonResetAndExitSignal(void) {
+    if (gDaemonResetAndExitNotifyToken != 0) {
+        return;
+    }
+    notify_register_dispatch(kDaemonResetAndExitNotifyName.UTF8String,
+                             &gDaemonResetAndExitNotifyToken,
+                             dispatch_get_main_queue(),
+                             ^(int token) {
+        requestDaemonResetAndExit();
+    });
+}
+
+static void unregisterDaemonResetAndExitSignal(void) {
+    if (gDaemonResetAndExitNotifyToken == 0) {
+        return;
+    }
+    notify_cancel(gDaemonResetAndExitNotifyToken);
+    gDaemonResetAndExitNotifyToken = 0;
+}
+
+static void verifyBundleStillInstalledForCurrentMode(void) {
+    if (g_jbtype != JBTYPE_TROLLSTORE) {
+        return;
+    }
+    NSString* bundlePath = [getSelfExePath() stringByDeletingLastPathComponent];
+    if (bundlePath.length == 0) {
+        return;
+    }
+    if ([[NSFileManager defaultManager] fileExistsAtPath:bundlePath]) {
+        return;
+    }
+    NSFileLog(@"bundle missing for TrollStore path, restore and exit bundle=%@", bundlePath);
+    resetBatteryStatusWithContext(YES, @"bundle_missing");
+    exit(0);
+}
+
+static void refreshTrollStoreBundleCheckTimer(void) {
+    if (g_jbtype != JBTYPE_TROLLSTORE) {
+        if (g_trollStoreBundleCheckTimer != nil) {
+            [g_trollStoreBundleCheckTimer invalidate];
+            g_trollStoreBundleCheckTimer = nil;
+        }
+        return;
+    }
+    if (g_trollStoreBundleCheckTimer != nil) {
+        return;
+    }
+    g_trollStoreBundleCheckTimer = [NSTimer scheduledTimerWithTimeInterval:5.0 repeats:YES block:^(NSTimer* timer) {
+        @synchronized (Service.inst) {
+            verifyBundleStillInstalledForCurrentMode();
+        }
+    }];
+    [[NSRunLoop mainRunLoop] addTimer:g_trollStoreBundleCheckTimer forMode:NSRunLoopCommonModes];
+}
+
 
 static io_service_t getIOPMPSServ() {
     static io_service_t serv = IO_OBJECT_NULL;
@@ -1246,21 +1321,62 @@ static int setBatteryStatus(BOOL flag) {
 }
 
 static void resetBatteryStatus() {
-    io_service_t serv = getIOPMPSServ();
-    if (serv == IO_OBJECT_NULL) {
+    resetBatteryStatusWithContext(NO, @"legacy_reset");
+}
+
+static void restoreSmartChargeForReset(NSString* reason) {
+    loadSmartChargeCoordinationRuntimeState();
+    tryRestoreSmartChargeAfterCoordination(reason ?: @"reset");
+
+    BOOL permanentlyDisableSmartCharge = getLocalBool(@"disable_smart_charge", NO);
+    if (!permanentlyDisableSmartCharge) {
         return;
     }
+
+    int smartChargeStatus = getSmartChargeStatus();
+    if (smartChargeStatus == 0 || smartChargeStatus < 0) {
+        return;
+    }
+    NSFileLog(@"smart charge reset restore permanent disable -> enable reason=%@ status=%d",
+              reason ?: @"reset",
+              smartChargeStatus);
+    setSmartChargeEnable(YES);
+}
+
+static void restoreThermalSimulationForReset(void) {
+    setThermalSimulationMode(@"off");
+}
+
+static void restoreAcceleratedChargeStateForReset(void) {
+    performAcccharge(NO);
+}
+
+static void resetBatteryStatusWithContext(BOOL restoreRuntimeSideEffects, NSString* reason) {
+    io_service_t serv = getIOPMPSServ();
     cancelDisableInflowRetry();
     time_t now = time(0);
-    NSMutableDictionary* props = [NSMutableDictionary new];
-    props[@"IsCharging"] = @YES;
-    props[@"PredictiveChargingInhibit"] = @NO;
-    props[@"ExternalConnected"] = @YES;
-    IORegistryEntrySetCFProperties(serv, (__bridge CFTypeRef)props);
+    if (restoreRuntimeSideEffects) {
+        restoreAcceleratedChargeStateForReset();
+        restoreSmartChargeForReset(reason);
+        restoreThermalSimulationForReset();
+    }
+    if (serv != IO_OBJECT_NULL) {
+        NSMutableDictionary* props = [NSMutableDictionary new];
+        props[@"IsCharging"] = @YES;
+        props[@"PredictiveChargingInhibit"] = @NO;
+        props[@"ExternalConnected"] = @YES;
+        IORegistryEntrySetCFProperties(serv, (__bridge CFTypeRef)props);
+    }
     g_chargeCommandEnabled = YES;
     g_lastChargeCommandTs = now;
     g_lastInflowCommandTs = now;
     resetHoldRuntimeState();
+    resetHoldSessionState();
+    clearPredictiveInhibitFallbackRuntimeState();
+    g_policyState = @"battery";
+    g_policyReason = reason ?: @"reset";
+    g_lastPolicyChangeReason = g_policyReason;
+    g_lastPolicyChangeTs = now;
 }
 
 static void performAcccharge(BOOL flag) {
@@ -2136,6 +2252,7 @@ static void tryRestoreSmartChargeAfterCoordination(NSString* reason) {
     if (!g_tempSmartChargeDisabledByCL) {
         return;
     }
+    verifyBundleStillInstalledForCurrentMode();
     if (g_smartChargeStatus < 0) {
         g_smartChargeStatus = getSmartChargeStatus();
     }
@@ -2268,6 +2385,7 @@ static void syncSmartChargeCoordination(NSDictionary* info, BOOL isAdaptorConnec
 static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
     NSDictionary* safeInfo = info ?: @{};
     NSDictionary* safeOld = oldInfo ?: safeInfo;
+    verifyBundleStillInstalledForCurrentMode();
     time_t now = time(0);
     BOOL previousExternalConnected = isAdaptorConnect(safeOld, @(getLocalBool(@"adv_disable_inflow", NO)));
     BOOL previousChargeCommandEnabled = g_chargeCommandEnabled;
@@ -3224,7 +3342,8 @@ void detectUPSBattery() {
     @autoreleasepool {
         for (LSApplicationProxy* proxy in list) {
             if ([proxy.bundleIdentifier isEqualToString:self->bid]) {
-                NSFileLog(@"uninstalled, exit"); // 卸载时旧版daemon自动退出
+                NSFileLog(@"uninstalled, restore and exit");
+                resetBatteryStatusWithContext(YES, @"app_uninstall");
                 exit(0);
             }
         }
@@ -3324,6 +3443,8 @@ void detectUPSBattery() {
         gNotifyPort = IONotificationPortCreate(kIOMasterPortDefault);
         CFRunLoopSourceRef runSrc = IONotificationPortGetRunLoopSource(gNotifyPort);
         CFRunLoopAddSource(CFRunLoopGetCurrent(), runSrc, kCFRunLoopDefaultMode);
+        registerDaemonResetAndExitSignal();
+        refreshTrollStoreBundleCheckTimer();
         io_service_t serv = getIOPMPSServ();
         if (serv != IO_OBJECT_NULL) {
             IOServiceAddInterestNotification(gNotifyPort, serv, "IOGeneralInterest", [](void* refcon, io_service_t service, uint32_t type, void* args) { // type == kIOPMMessageBatteryStatusHasChanged
@@ -3383,7 +3504,12 @@ int main(int argc, char** argv) { // daemon_main
                     [g_disableInflowRetryTimer invalidate];
                     g_disableInflowRetryTimer = nil;
                 }
-                resetBatteryStatus();
+                if (g_trollStoreBundleCheckTimer != nil) {
+                    [g_trollStoreBundleCheckTimer invalidate];
+                    g_trollStoreBundleCheckTimer = nil;
+                }
+                unregisterDaemonResetAndExitSignal();
+                resetBatteryStatusWithContext(YES, @"daemon_exit");
                 if (iopmpsNoti != IO_OBJECT_NULL) {
                     IOObjectRelease(iopmpsNoti);
                     iopmpsNoti = IO_OBJECT_NULL;
@@ -3403,7 +3529,12 @@ int main(int argc, char** argv) { // daemon_main
             return 0;
         } else if (argIndex < argc) {
             if (0 == strcmp(argv[argIndex], "reset")) { // 越狱下卸载前重置
-                resetBatteryStatus();
+                resetBatteryStatusWithContext(YES, @"cli_reset");
+                return 0;
+            } else if (0 == strcmp(argv[argIndex], "reset_and_exit")) {
+                notify_post(kDaemonResetAndExitNotifyName.UTF8String);
+                usleep(300 * 1000);
+                resetBatteryStatusWithContext(YES, @"cli_reset_and_exit_fallback");
                 return 0;
             } else if (0 == strcmp(argv[argIndex], "cleanup_data_container")) {
                 return cleanupAppDataContainer_C();
