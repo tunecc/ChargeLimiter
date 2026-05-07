@@ -8,31 +8,11 @@
 #import <UIKit/UIKit.h>
 #import "../CLBatteryManager.h"
 #import "../CLAPIClient.h"
+#import "../CLSymbolImageSupport.h"
 #import "../../CLLocalization.h"
 #import <objc/runtime.h>
 
 #pragma mark - 毛玻璃卡片（复用）
-
-static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config) {
-    static NSDictionary<NSString *, NSString *> *fallbacks;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        fallbacks = @{
-            @"chart.line.uptrend.xyaxis": @"chart.xyaxis.line",
-            @"bolt.batteryblock": @"battery.100.bolt",
-            @"thermometer.sun.fill": @"thermometer",
-            @"thermometer.sun": @"thermometer"
-        };
-    });
-    UIImage *img = [UIImage systemImageNamed:name withConfiguration:config];
-    if (!img) {
-        NSString *fallback = fallbacks[name];
-        if (fallback.length > 0) {
-            img = [UIImage systemImageNamed:fallback withConfiguration:config];
-        }
-    }
-    return img;
-}
 
 static char kCLAdvPickerColorKey;
 static char kCLAdvPickerIconViewKey;
