@@ -1738,8 +1738,15 @@ BOOL temporarilyDisableSmartCharge() {
 
 void setSmartChargeEnable(BOOL flag) {
     PowerUISmartChargeClient* client = getSmartChargeClient();
-    BOOL status = isSmartChargeEnable();
-    if (status == flag) {
+    int currentStatus = getSmartChargeStatus();
+    if (currentStatus < 0) {
+        return;
+    }
+    if (flag) {
+        if (currentStatus == 1 || currentStatus == 2) {
+            return;
+        }
+    } else if (currentStatus == 0) {
         return;
     }
     NSError* err = nil;
@@ -1747,6 +1754,9 @@ void setSmartChargeEnable(BOOL flag) {
         [client enableSmartCharging:&err];
     } else {
         [client disableSmartCharging:&err];
+    }
+    if (err != nil) {
+        NSLog(@"setSmartChargeEnable(%d) err=%@", flag, err);
     }
 }
 
