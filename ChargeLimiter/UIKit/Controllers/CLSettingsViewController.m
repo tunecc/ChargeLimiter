@@ -8,6 +8,7 @@
 #import "CLSettingsViewController.h"
 #import "../CLBatteryManager.h"
 #import "../CLAPIClient.h"
+#import "../CLSymbolImageSupport.h"
 #import "../../CLLocalization.h"
 NSString* getAppDocumentsPath_C(void);
 NSString* getConfPath_C(void);
@@ -68,27 +69,6 @@ typedef NS_ENUM(NSInteger, CLBatteryVisualState) {
 @property (nonatomic, strong) UIStackView *contentStack;
 @property (nonatomic, weak) UIViewController *viewController;
 @end
-
-static UIImage *CLSymbolImage(NSString *name, UIImageSymbolConfiguration *config) {
-    static NSDictionary<NSString *, NSString *> *fallbacks;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        fallbacks = @{
-            @"chart.line.uptrend.xyaxis": @"chart.xyaxis.line",
-            @"bolt.batteryblock": @"battery.100.bolt",
-            @"thermometer.sun.fill": @"thermometer",
-            @"thermometer.sun": @"thermometer"
-        };
-    });
-    UIImage *img = [UIImage systemImageNamed:name withConfiguration:config];
-    if (!img) {
-        NSString *fallback = fallbacks[name];
-        if (fallback.length > 0) {
-            img = [UIImage systemImageNamed:fallback withConfiguration:config];
-        }
-    }
-    return img;
-}
 
 static NSString *CLFirstFailedRemovePathFromResult(NSDictionary *result) {
     NSArray *errors = result[@"errors"];
