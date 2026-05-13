@@ -1304,19 +1304,37 @@ static int setChargeStatus(BOOL flag) {
     return 0;
 }
 
+static NSString* desiredThermalSimulationModeForCurrentState(NSDictionary* info) {
+    NSString* defaultMode = getLocalString(@"adv_def_thermal_mode", @"off");
+    if (getLocalBool(@"adv_thermal_mode_lock", NO)) {
+        return defaultMode;
+    }
+    if (!getLocalBool(@"adv_limit_inflow", NO)) {
+        return defaultMode;
+    }
+
+    NSDictionary* safeInfo = [info isKindOfClass:[NSDictionary class]] ? info : bat_info;
+    if (safeInfo == nil) {
+        safeInfo = @{};
+    }
+
+    NSNumber* advDisableInflow = @(getLocalBool(@"adv_disable_inflow", NO));
+    BOOL adaptorConnected = isAdaptorConnect(safeInfo, advDisableInflow);
+    BOOL chargeSessionActive = g_chargeCommandEnabled || [safeInfo[@"IsCharging"] boolValue];
+    if (!adaptorConnected || !chargeSessionActive) {
+        return defaultMode;
+    }
+
+    return getLocalString(@"adv_limit_inflow_mode", defaultMode);
+}
+
+static void syncThermalSimulationModeForCurrentState(NSDictionary* info) {
+    setThermalSimulationMode(desiredThermalSimulationModeForCurrentState(info));
+}
+
 static int setBatteryStatus(BOOL flag) {
     int ret = setChargeStatus(flag);
-    BOOL adv_limit_inflow = getLocalBool(@"adv_limit_inflow", NO);
-    BOOL adv_thermal_mode_lock = getLocalBool(@"adv_thermal_mode_lock", NO);
-    if (!adv_thermal_mode_lock && adv_limit_inflow) {
-        if (flag) {
-            NSString* mode = getLocalString(@"adv_limit_inflow_mode", @"");
-            setThermalSimulationMode(mode);
-        } else {
-            NSString* mode = getLocalString(@"adv_def_thermal_mode", @"");
-            setThermalSimulationMode(mode);
-        }
-    }
+    syncThermalSimulationModeForCurrentState(bat_info);
     return ret;
 }
 
@@ -1972,11 +1990,7 @@ static void updateStatistics() {
 }
 
 static void onBatteryEventEnd() {
-    BOOL adv_thermal_mode_lock = getLocalBool(@"adv_thermal_mode_lock", NO);
-    if (adv_thermal_mode_lock) {
-        NSString* mode = getLocalString(@"adv_def_thermal_mode", @"");
-        setThermalSimulationMode(mode);
-    }
+    syncThermalSimulationModeForCurrentState(bat_info);
 }
 
 static NSSet* gConfBoolKeys = nil;
@@ -2983,14 +2997,20 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC), dispatch_get_global_queue(0, 0), ^{
                 exit(0);
             });
-        } else if ([key isEqualToString:@"adv_def_thermal_mode"]) {
-            setThermalSimulationMode(val);
         } else if ([key isEqualToString:@"temp_mode"]) {
             NSArray* vals = nsreq[@"vals"];
             if (vals != nil && vals.count >= 2) {
                 setLocalFloat(@"charge_temp_below", [vals[0] floatValue]);
                 setLocalFloat(@"charge_temp_above", [vals[1] floatValue]);
             }
+        }
+        if ([@[
+            @"adv_limit_inflow",
+            @"adv_limit_inflow_mode",
+            @"adv_def_thermal_mode",
+            @"adv_thermal_mode_lock"
+        ] containsObject:key]) {
+            syncThermalSimulationModeForCurrentState(bat_info);
         }
         if (shouldRefreshBatteryPolicyForConfigKey(key)) {
             refreshBatteryStateAndApplyPolicy();
