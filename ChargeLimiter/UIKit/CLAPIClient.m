@@ -289,7 +289,7 @@ static int CLStartDaemonBestEffort(void) {
             @"acc_charge_bright": @NO,
             @"acc_charge_lpm": @YES,
             @"use_smart": @YES,
-            @"adv_predictive_inhibit_charge": @NO,
+            @"adv_predictive_inhibit_charge": @YES,
             @"adv_system_capacity_control_at_100": @YES,
             @"disable_smart_charge": @NO,
             @"adv_disable_inflow": @NO,
