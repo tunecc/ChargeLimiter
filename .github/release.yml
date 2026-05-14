@@ -1,0 +1,31 @@
+changelog:
+  categories:
+    - title: 功能新增
+      labels:
+        - feat
+        - feature
+        - enhancement
+    - title: 问题修复
+      labels:
+        - fix
+        - bug
+        - bugfix
+    - title: 改进优化
+      labels:
+        - refactor
+        - perf
+        - optimization
+    - title: 发布维护
+      labels:
+        - build
+        - ci
+        - release
+        - chore
+    - title: 文档与其他
+      labels:
+        - docs
+        - test
+        - style
+  exclude:
+    labels:
+      - skip-changelog
