@@ -1,0 +1,112 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的 tag，例如 v1.12.5"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-release:
+    runs-on: macos-15
+    env:
+      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      RELEASE_REPO: ${{ github.repository }}
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install packaging tools
+        run: brew install dpkg ldid ripgrep
+
+      - name: Prepare Theos headers
+        run: |
+          sudo mkdir -p /opt
+          if [ ! -d /opt/theos ]; then
+            sudo git clone --depth 1 --recursive https://github.com/theos/theos.git /opt/theos
+          else
+            cd /opt/theos
+            sudo git submodule update --init --recursive
+          fi
+          if [ ! -d /opt/theos/vendor/include ]; then
+            echo "Missing /opt/theos/vendor/include after clone" >&2
+            exit 1
+          fi
+          sudo ln -sfn /opt/theos/vendor/include /opt/include
+          sudo mkdir -p /opt/framework /opt/lib
+          test -f /opt/theos/vendor/include/IOKit/hid/IOHIDService.h
+          test -f /opt/theos/vendor/include/MobileCoreServices/LSApplicationProxy.h
+
+      - name: Verify release tag matches project version
+        run: |
+          PROJECT_VERSION="$(awk -F' = ' '/MARKETING_VERSION =/{gsub(/;/, "", $2); print $2; exit}' ChargeLimiter.xcodeproj/project.pbxproj)"
+          TAG_VERSION="${RELEASE_TAG#v}"
+          if [ "$PROJECT_VERSION" != "$TAG_VERSION" ]; then
+            echo "Tag version ($TAG_VERSION) does not match MARKETING_VERSION ($PROJECT_VERSION)." >&2
+            exit 1
+          fi
+
+      - name: Probe build environment
+        run: |
+          command -v xcodebuild
+          command -v dpkg-deb
+          command -v ldid
+          command -v rg
+          test -f /opt/theos/vendor/include/IOKit/hid/IOHIDService.h
+          test -f /opt/theos/vendor/include/MobileCoreServices/LSApplicationProxy.h
+          test -e /opt/include
+          xcodebuild -version
+
+      - name: Build packages
+        run: ./scripts/build_packages.sh
+
+      - name: Generate release notes
+        run: |
+          mkdir -p out
+          ./scripts/generate_release_notes.py \
+            --current-tag "$RELEASE_TAG" \
+            --repo "$RELEASE_REPO" \
+            --output out/release-notes.md
+
+      - name: Publish GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" \
+              --title "$RELEASE_TAG" \
+              --notes-file out/release-notes.md
+          else
+            gh release create "$RELEASE_TAG" \
+              --title "$RELEASE_TAG" \
+              --notes-file out/release-notes.md
+          fi
+
+          gh release upload "$RELEASE_TAG" \
+            out/ChargeLimiter_* \
+            --clobber

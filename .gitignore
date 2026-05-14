@@ -32,6 +32,8 @@ out/
 # Temporary files
 *.tmp
 *.temp
+__pycache__/
+*.pyc
 
 # Draft documents
 Readme2.md

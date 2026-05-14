@@ -357,9 +357,19 @@ sign_app "$ROOTLESS_APP" "$APP_ENT_JB"
 echo "[5/10] Prepare package trees..."
 cp -a "$PKG_ROOTFUL_DIR" "$STAGE_ROOTFUL_DIR"
 cp -a "$PKG_ROOTLESS_DIR" "$STAGE_ROOTLESS_DIR"
+[ -d "$STAGE_ROOTFUL_DIR/DEBIAN" ] || {
+  echo "[ERR] Missing rootful package template: $STAGE_ROOTFUL_DIR/DEBIAN" >&2
+  exit 1
+}
+[ -d "$STAGE_ROOTLESS_DIR/DEBIAN" ] || {
+  echo "[ERR] Missing rootless package template: $STAGE_ROOTLESS_DIR/DEBIAN" >&2
+  exit 1
+}
 rm -rf "$STAGE_ROOTFUL_DIR/Applications/ChargeLimiter.app"
 rm -rf "$STAGE_ROOTLESS_DIR/Applications"
 rm -rf "$STAGE_ROOTLESS_DIR/var/jb/Applications/ChargeLimiter.app"
+mkdir -p "$STAGE_ROOTFUL_DIR/Applications"
+mkdir -p "$STAGE_ROOTLESS_DIR/var/jb/Applications"
 cp -a "$ROOTFUL_APP" "$STAGE_ROOTFUL_DIR/Applications/ChargeLimiter.app"
 cp -a "$ROOTLESS_APP" "$STAGE_ROOTLESS_DIR/var/jb/Applications/ChargeLimiter.app"
 

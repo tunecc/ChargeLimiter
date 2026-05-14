@@ -120,7 +120,7 @@
 		18658A812BCF771800207EF3 /* ui.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = ui.mm; sourceTree = "<group>"; };
 		18658A832BCF772D00207EF3 /* ui.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ui.h; sourceTree = "<group>"; };
 		18658A842BCF7A0200207EF3 /* common.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = common.h; sourceTree = "<group>"; };
-		1867403A2BB6AC1E00BB3382 /* ChangeLog.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = ChangeLog.md; sourceTree = "<group>"; };
+		1867403A2BB6AC1E00BB3382 /* CHANGELOG.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = CHANGELOG.md; sourceTree = "<group>"; };
 		1867D8832B91A1D40006A073 /* NotificationCenter.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = NotificationCenter.framework; path = System/Library/Frameworks/NotificationCenter.framework; sourceTree = SDKROOT; };
 		1870F5FC2B83B8F100B3660F /* GraphicsServices.tbd */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = "sourcecode.text-based-dylib-definition"; path = GraphicsServices.tbd; sourceTree = "<group>"; };
 		1877493C2C5544C9006184AA /* libdobby.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libdobby.a; path = ../../../../../opt/lib/libdobby.a; sourceTree = "<group>"; };
@@ -243,7 +243,7 @@
 			isa = PBXGroup;
 			children = (
 				18B757232B57FDB2008A67D1 /* Readme.md */,
-				1867403A2BB6AC1E00BB3382 /* ChangeLog.md */,
+				1867403A2BB6AC1E00BB3382 /* CHANGELOG.md */,
 				1839C1D72B8C655900FCFDEB /* Readme2.md */,
 				18497C5D2B541D6100A6C5E3 /* md-trollstore */,
 				181BA3A02B91BAB400CC07A6 /* md-trollstore-appex */,
