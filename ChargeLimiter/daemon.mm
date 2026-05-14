@@ -1232,7 +1232,7 @@ static BOOL shouldUsePredictiveInhibitChargePath(void) {
     if (g_predictiveInhibitFallbackActive) {
         return NO;
     }
-    return getLocalBool(@"adv_predictive_inhibit_charge", NO);
+    return getLocalBool(@"adv_predictive_inhibit_charge", YES);
 }
 
 static kern_return_t writeChargeStatus(io_service_t serv, BOOL flag, BOOL usePredictiveInhibit) {
@@ -2774,7 +2774,7 @@ static void initConf(BOOL reset) {
         @"acc_charge_bright": @NO,
         @"acc_charge_lpm": @YES,
         @"adv_prefer_smart": @NO, // iPhone8+ iOS13+
-        @"adv_predictive_inhibit_charge": @NO, // 默认关闭，仍可在支持设备上手动开启
+        @"adv_predictive_inhibit_charge": @YES, // 默认开启，停充时优先走 PredictiveChargingInhibit，失败自动回退
         @"adv_system_capacity_control_at_100": @YES,
         @"adv_disable_inflow": @NO, // all (iPhone8+ iOS13+会改变系统充电图标)
         @"adv_hold_enabled": @YES, // 默认开启插电保持
