@@ -11,6 +11,7 @@ BUILD_ROOTLESS="$ROOT_DIR/build_rootless"
 PAYLOAD_DIR="$ROOT_DIR/Payload"
 ROOTHIDE_MERGE_ENT="$ROOT_DIR/scripts/roothide.entitlements"
 STAGE_DIR=""
+BUILD_LOG_ROOT=""
 
 require_cmd() {
     command -v "$1" >/dev/null 2>&1 || {
@@ -29,6 +30,27 @@ require_cmd ar
 require_cmd tar
 require_cmd rg
 require_cmd file
+
+run_logged_command() {
+  log_name="$1"
+  shift
+
+  if [ -z "$BUILD_LOG_ROOT" ]; then
+    BUILD_LOG_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/chargelimiter-build-logs.XXXXXX")"
+  fi
+
+  log_path="$BUILD_LOG_ROOT/${log_name}.log"
+  if "$@" >"$log_path" 2>&1; then
+    return 0
+  fi
+
+  status=$?
+  echo "[ERR] Command failed: $*" >&2
+  echo "[ERR] Build log: $log_path" >&2
+  echo "[ERR] Last 200 log lines:" >&2
+  tail -n 200 "$log_path" >&2 || true
+  exit "$status"
+}
 
 force_clean_dir() {
   dir="$1"
@@ -276,6 +298,10 @@ cleanup() {
     rm -rf "$PAYLOAD_DIR"
   fi
 
+  if [ -n "$BUILD_LOG_ROOT" ] && [ -d "$BUILD_LOG_ROOT" ]; then
+    rm -rf "$BUILD_LOG_ROOT"
+  fi
+
   return "$status"
 }
 
@@ -318,7 +344,7 @@ STAGE_ROOTLESS_DIR="$STAGE_DIR/rootless"
 STAGE_ROOTHIDE_DIR="$STAGE_DIR/roothide"
 
 echo "[1/10] Build rootful app (arm64)..."
-xcodebuild \
+run_logged_command build-rootful xcodebuild \
   -project "$PROJECT" \
   -scheme "ChargeLimiter" \
   -destination "generic/platform=iOS" \
@@ -327,10 +353,10 @@ xcodebuild \
   CODE_SIGNING_ALLOWED=NO \
   ARCHS=arm64 \
   MonkeyDevInstallOnAnyBuild=NO \
-  MonkeyDevBuildPackageOnAnyBuild=NO >/dev/null
+  MonkeyDevBuildPackageOnAnyBuild=NO
 
 echo "[2/10] Build rootless app (arm64)..."
-xcodebuild \
+run_logged_command build-rootless xcodebuild \
   -project "$PROJECT" \
   -scheme "ChargeLimiter rootless" \
   -destination "generic/platform=iOS" \
@@ -339,7 +365,7 @@ xcodebuild \
   CODE_SIGNING_ALLOWED=NO \
   ARCHS=arm64 \
   MonkeyDevInstallOnAnyBuild=NO \
-  MonkeyDevBuildPackageOnAnyBuild=NO >/dev/null
+  MonkeyDevBuildPackageOnAnyBuild=NO
 
 if [ ! -d "$ROOTFUL_APP" ] || [ ! -d "$ROOTLESS_APP" ]; then
     echo "[ERR] Build output app not found." >&2

@@ -78,6 +78,8 @@ jobs:
           test -f /opt/theos/vendor/include/IOKit/hid/IOHIDService.h
           test -f /opt/theos/vendor/include/MobileCoreServices/LSApplicationProxy.h
           test -e /opt/include
+          ls -ld /opt/include /opt/theos /opt/theos/vendor/include
+          test "$(readlink /opt/include)" = "/opt/theos/vendor/include"
           xcodebuild -version
 
       - name: Build packages
