@@ -29,7 +29,8 @@
 #define log_prefix      @"ChargeLimiterLogger"
 
 #define LOG_FILENAME        "aldente.log"
-#define CONF_FILENAME       "aldente.conf"
 #define DB_FILENAME         "aldente.db"
+#define CONFIG_PLIST_FILENAME       "com.chargelimiter.mod.plist"
+#define LEGACY_CONF_FILENAME        "aldente.conf"
 
 #endif // common_h

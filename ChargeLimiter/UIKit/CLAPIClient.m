@@ -43,6 +43,15 @@ static void CLPersistLocalConfig(NSString *key, id value) {
     setlocalKV_C(key, value ?: @"");
 }
 
+static BOOL CLProcessLooksLikeTrollStore(void) {
+    NSString *home = NSHomeDirectory();
+    if (![home isKindOfClass:[NSString class]] || home.length == 0) {
+        return NO;
+    }
+    NSString *lower = home.lowercaseString;
+    return [lower containsString:@"/var/mobile/containers/data/application/"];
+}
+
 static int CLStartDaemonBestEffort(void) {
     NSString *appDocs = getAppDocumentsPath_C();
     int rc = restartDaemonForApp_C(appDocs);
@@ -265,8 +274,8 @@ static int CLStartDaemonBestEffort(void) {
             @"adv_system_capacity_control_at_100": @YES,
             @"disable_smart_charge": @NO,
             @"adv_disable_inflow": @NO,
-            @"adv_hold_enabled": @YES,
-            @"adv_hold_band": @2,
+            @"adv_hold_enabled": @NO,
+            @"adv_hold_band": @5,
             @"adv_hold_check_interval_minutes": @3,
             @"adv_hold_behavior": @"balanced",
             @"adv_hold_temp_disable_smart_charge": @YES,
@@ -278,7 +287,7 @@ static int CLStartDaemonBestEffort(void) {
             @"full_charge_sched_interval_days": @7,
             @"full_charge_sched_start_minute": @120,
             @"full_charge_sched_duration_hours": @4,
-            @"ver": @"1.13.0",
+            @"ver": @"1.13.1",
             @"sysver": @"iOS 16.1.2",
             @"devmodel": @"iPhone14,2",
             @"sys_boot": @((NSInteger)[[NSDate date] timeIntervalSince1970] - 86400),
@@ -387,7 +396,7 @@ static int CLStartDaemonBestEffort(void) {
 - (void)sendRequestInternal:(NSDictionary *)params allowRetry:(BOOL)allowRetry completion:(CLAPICallback)completion {
     NSMutableDictionary *effectiveParams = [params mutableCopy];
 #if !CL_USE_MOCK_DATA
-    NSString *appDocs = getAppDocumentsPath_C();
+    NSString *appDocs = CLProcessLooksLikeTrollStore() ? getAppDocumentsPath_C() : nil;
     if (appDocs.length > 0) {
         effectiveParams[@"app_docs"] = appDocs;
     }
