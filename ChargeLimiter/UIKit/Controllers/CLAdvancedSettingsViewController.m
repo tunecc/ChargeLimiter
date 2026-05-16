@@ -408,11 +408,8 @@ static NSString *CLPolicyReasonLabel(NSString *reason) {
     if ([reason isEqualToString:@"hold_band_lower_reached"]) {
         return CLL(@"低于保持下边界，开始补电");
     }
-    if ([reason isEqualToString:@"hold_discharge_trend"]) {
-        return CLL(@"检测到持续放电趋势，提前补电");
-    }
     if ([reason isEqualToString:@"hold_monitoring"]) {
-        return CLL(@"保持区间内观察中");
+        return CLL(@"保持区间内等待下一次检查");
     }
     if ([reason isEqualToString:@"hold_recharge_active"]) {
         return CLL(@"保持补电进行中");
@@ -452,57 +449,6 @@ static NSString *CLPolicyReasonLabel(NSString *reason) {
     }
     if ([reason isEqualToString:@"smart_charge_session_released"]) {
         return CLL(@"系统优化充电状态已变化，本工具结束当前接管会话");
-    }
-    if ([reason isEqualToString:@"hold_behavior_changed"]) {
-        return CLL(@"自适应判断负载变化，已切换当前生效保持策略");
-    }
-    return CLL(@"未知");
-}
-
-static NSString *CLHoldBehaviorLabel(CLHoldModeBehavior behavior) {
-    switch (behavior) {
-        case CLHoldModeBehaviorAdaptive:
-            return CLL(@"智能自适应");
-        case CLHoldModeBehaviorPowerFirst:
-            return CLL(@"偏向外接供电");
-        case CLHoldModeBehaviorBatteryFirst:
-            return CLL(@"偏向减少循环");
-        default:
-            return CLL(@"平衡");
-    }
-}
-
-static CLHoldModeBehavior CLHoldBehaviorFromString(NSString *value) {
-    if ([value isEqualToString:@"power_first"]) {
-        return CLHoldModeBehaviorPowerFirst;
-    }
-    if ([value isEqualToString:@"battery_first"]) {
-        return CLHoldModeBehaviorBatteryFirst;
-    }
-    if ([value isEqualToString:@"adaptive"]) {
-        return CLHoldModeBehaviorAdaptive;
-    }
-    return CLHoldModeBehaviorBalanced;
-}
-
-static NSString *CLAdaptiveLoadLevelLabel(NSString *loadLevel) {
-    if ([loadLevel isEqualToString:@"high"]) {
-        return CLL(@"高负载");
-    }
-    if ([loadLevel isEqualToString:@"medium"]) {
-        return CLL(@"中负载");
-    }
-    if ([loadLevel isEqualToString:@"low"]) {
-        return CLL(@"低负载");
-    }
-    if ([loadLevel isEqualToString:@"thermal_guard"]) {
-        return CLL(@"温控保护");
-    }
-    if ([loadLevel isEqualToString:@"wireless_guard"]) {
-        return CLL(@"无线充保护");
-    }
-    if ([loadLevel isEqualToString:@"fixed"]) {
-        return CLL(@"固定策略");
     }
     return CLL(@"未知");
 }
@@ -690,30 +636,18 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
     [self addDiagnosticRowToCard:runtimeCard key:@"smart_charge_coordination_start_time" icon:@"clock" title:CLL(@"接管开始时间") color:[UIColor systemBlueColor]];
     [runtimeCard addSeparator];
     [self addDiagnosticRowToCard:runtimeCard key:@"last_inflow_command_time" icon:@"clock" title:CLL(@"最近禁流/恢复时间") color:[UIColor systemRedColor]];
-    [self addTipRowToCard:runtimeCard text:CLL(@"仅用于调试插电保持策略，不会改变正常使用逻辑。")];
+    [self addTipRowToCard:runtimeCard text:CLL(@"仅用于观察插电保持当前状态与检查节奏，不会改变正常使用逻辑。")];
     [self.mainStack addArrangedSubview:runtimeCard];
 
     CLAdvSettingsCard *holdCard = [[CLAdvSettingsCard alloc] init];
     [holdCard addSectionHeader:CLL(@"保持诊断")];
-    [self addDiagnosticRowToCard:holdCard key:@"hold_behavior" icon:@"slider.horizontal.3" title:CLL(@"保持策略") color:[UIColor systemIndigoColor]];
-    [holdCard addSeparator];
-    [self addDiagnosticRowToCard:holdCard key:@"hold_runtime_behavior" icon:@"slider.horizontal.3" title:CLL(@"当前生效策略") color:[UIColor systemIndigoColor]];
-    [holdCard addSeparator];
-    [self addDiagnosticRowToCard:holdCard key:@"hold_adaptive_load_level" icon:@"chart.bar" title:CLL(@"自适应负载等级") color:[UIColor systemIndigoColor]];
-    [holdCard addSeparator];
-    [self addDiagnosticRowToCard:holdCard key:@"hold_adaptive_average_current" icon:@"bolt.circle" title:CLL(@"近几次平均电流") color:[UIColor systemIndigoColor]];
+    [self addDiagnosticRowToCard:holdCard key:@"hold_interval" icon:@"timer" title:CLL(@"检查间隔") color:[UIColor systemIndigoColor]];
     [holdCard addSeparator];
     [self addDiagnosticRowToCard:holdCard key:@"hold_target" icon:@"scope" title:CLL(@"保持目标") color:[UIColor systemIndigoColor]];
     [holdCard addSeparator];
-    [self addDiagnosticRowToCard:holdCard key:@"hold_band" icon:@"arrow.left.arrow.right" title:CLL(@"保持带宽") color:[UIColor systemIndigoColor]];
+    [self addDiagnosticRowToCard:holdCard key:@"hold_band" icon:@"arrow.left.arrow.right" title:CLL(@"补电阈值") color:[UIColor systemIndigoColor]];
     [holdCard addSeparator];
     [self addDiagnosticRowToCard:holdCard key:@"hold_lower_bound" icon:@"scope" title:CLL(@"保持下边界") color:[UIColor systemIndigoColor]];
-    [holdCard addSeparator];
-    [self addDiagnosticRowToCard:holdCard key:@"hold_discharge_streak" icon:@"chart.bar" title:CLL(@"持续放电计数") color:[UIColor systemIndigoColor]];
-    [holdCard addSeparator];
-    [self addDiagnosticRowToCard:holdCard key:@"hold_interval" icon:@"timer" title:CLL(@"轮询间隔") color:[UIColor systemIndigoColor]];
-    [holdCard addSeparator];
-    [self addDiagnosticRowToCard:holdCard key:@"hold_early_recharge" icon:@"waveform.path.ecg" title:CLL(@"提前补电辅助") color:[UIColor systemIndigoColor]];
     [self.mainStack addArrangedSubview:holdCard];
 
     CLAdvSettingsCard *signalCard = [[CLAdvSettingsCard alloc] init];
@@ -745,7 +679,7 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
     CLAdvSettingsCard *historyCard = [[CLAdvSettingsCard alloc] init];
     [historyCard addSectionHeader:CLL(@"最近策略切换")];
     [self addDiagnosticRowToCard:historyCard key:@"policy_transition_history" icon:@"list.bullet.rectangle" title:CLL(@"最近若干次状态变化") color:[UIColor systemPurpleColor]];
-    [self addTipRowToCard:historyCard text:CLL(@"这里展示 daemon 运行期内最近几次状态切换，便于回看 hold 与补电变化。")];
+    [self addTipRowToCard:historyCard text:CLL(@"这里展示 daemon 运行期内最近几次状态切换，便于回看进入保持、等待检查和恢复补电的变化。")];
     [self.mainStack addArrangedSubview:historyCard];
 
     CLAdvSettingsCard *timelineCard = [[CLAdvSettingsCard alloc] init];
@@ -863,37 +797,8 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
     return base;
 }
 
-- (NSString *)holdEarlyRechargeTextForManager:(CLBatteryManager *)manager {
-    if (!manager.holdEarlyRechargeAssistEnabled) {
-        return CLL(@"未启用");
-    }
-    return [NSString stringWithFormat:CLL(@"已启用 · 连续 %ld 次放电后提前补电"),
-            (long)MAX(manager.holdEarlyRechargeStreakRequired, 1)];
-}
-
-- (NSString *)holdRuntimeBehaviorTextForManager:(CLBatteryManager *)manager {
-    NSString *base = CLHoldBehaviorLabel(manager.holdRuntimeBehavior);
-    NSString *reason = CLHoldUnavailableReason(manager);
-    if (reason.length > 0) {
-        return [NSString stringWithFormat:@"%@ · %@", base, reason];
-    }
-    if (manager.holdModeBehavior != CLHoldModeBehaviorAdaptive) {
-        return [NSString stringWithFormat:@"%@ · %@", base, CLL(@"固定策略")];
-    }
-    return base;
-}
-
-- (NSString *)holdAdaptiveLoadLevelTextForManager:(CLBatteryManager *)manager {
-    NSString *base = CLDebugValueWithRaw(CLAdaptiveLoadLevelLabel(manager.holdAdaptiveLoadLevel), manager.holdAdaptiveLoadLevel);
-    NSString *reason = CLHoldUnavailableReason(manager);
-    if (reason.length > 0) {
-        return [NSString stringWithFormat:@"%@ · %@", base, reason];
-    }
-    return base;
-}
-
-- (NSString *)holdAdaptiveAverageCurrentTextForManager:(CLBatteryManager *)manager {
-    NSString *base = [NSString stringWithFormat:@"%ld mA", (long)manager.holdAdaptiveAverageCurrent];
+- (NSString *)holdIntervalTextForManager:(CLBatteryManager *)manager {
+    NSString *base = [NSString stringWithFormat:CLL(@"%ld 分钟"), (long)MAX(manager.holdCheckIntervalMinutes, 1)];
     NSString *reason = CLHoldUnavailableReason(manager);
     if (reason.length > 0) {
         return [NSString stringWithFormat:@"%@ · %@", base, reason];
@@ -1011,18 +916,11 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
     }
 
     if (includeRuntimeDetails) {
-        NSString *holdBehavior = [item[@"hold_behavior"] isKindOfClass:[NSString class]] ? item[@"hold_behavior"] : @"";
-        if (holdBehavior.length > 0) {
+        NSNumber *holdCheckInterval = [item[@"hold_check_interval_minutes"] respondsToSelector:@selector(integerValue)] ? item[@"hold_check_interval_minutes"] : nil;
+        if (holdCheckInterval != nil) {
             [segments addObject:[NSString stringWithFormat:@"%@: %@",
-                                 CLL(@"保持策略"),
-                                 CLHoldBehaviorLabel(CLHoldBehaviorFromString(holdBehavior))]];
-        }
-
-        NSString *loadLevel = [item[@"hold_load_level"] isKindOfClass:[NSString class]] ? item[@"hold_load_level"] : @"";
-        if (loadLevel.length > 0) {
-            [segments addObject:[NSString stringWithFormat:@"%@: %@",
-                                 CLL(@"自适应负载等级"),
-                                 CLAdaptiveLoadLevelLabel(loadLevel)]];
+                                 CLL(@"检查间隔"),
+                                 [NSString stringWithFormat:CLL(@"%ld 分钟"), (long)MAX(holdCheckInterval.integerValue, 1)]]];
         }
 
         NSInteger smartChargeStatus = [item[@"smart_charge_status"] integerValue];
@@ -1049,12 +947,7 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
         return [NSString stringWithFormat:@"%@  %@", CLL(@"系统优化充电"), resolvedLabel.length > 0 ? resolvedLabel : CLL(@"未知")];
     }
     if ([type isEqualToString:@"hold_behavior_event"]) {
-        NSString *fromBehavior = CLHoldBehaviorLabel(CLHoldBehaviorFromString([item[@"from"] isKindOfClass:[NSString class]] ? item[@"from"] : @""));
-        NSString *toBehavior = CLHoldBehaviorLabel(CLHoldBehaviorFromString([item[@"to"] isKindOfClass:[NSString class]] ? item[@"to"] : @""));
-        if (fromBehavior.length > 0 && toBehavior.length > 0 && ![fromBehavior isEqualToString:toBehavior]) {
-            return [NSString stringWithFormat:@"%@  %@ -> %@", CLL(@"保持策略"), fromBehavior, toBehavior];
-        }
-        return [NSString stringWithFormat:@"%@  %@", CLL(@"保持策略"), toBehavior.length > 0 ? toBehavior : CLL(@"未知")];
+        return CLL(@"插电保持配置已更新");
     }
 
     NSString *fromState = [item[@"from"] isKindOfClass:[NSString class]] ? item[@"from"] : @"";
@@ -1113,19 +1006,13 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
                       CLL(@"当前状态原因"),
                       CLDebugValueWithRaw(CLPolicyReasonLabel(manager.policyReason), manager.policyReason)]];
     [lines addObject:[NSString stringWithFormat:@"%@: %@",
-                      CLL(@"保持策略"),
-                      CLHoldBehaviorLabel(manager.holdModeBehavior)]];
-    [lines addObject:[NSString stringWithFormat:@"%@: %@",
-                      CLL(@"当前生效策略"),
-                      [self holdRuntimeBehaviorTextForManager:manager]]];
-    [lines addObject:[NSString stringWithFormat:@"%@: %@",
-                      CLL(@"自适应负载等级"),
-                      [self holdAdaptiveLoadLevelTextForManager:manager]]];
+                      CLL(@"检查间隔"),
+                      [self holdIntervalTextForManager:manager]]];
     [lines addObject:[NSString stringWithFormat:@"%@: %@",
                       CLL(@"保持目标"),
                       [self holdTargetTextForManager:manager]]];
     [lines addObject:[NSString stringWithFormat:@"%@: %@",
-                      CLL(@"保持带宽"),
+                      CLL(@"补电阈值"),
                       [self holdBandTextForManager:manager]]];
     [lines addObject:[NSString stringWithFormat:@"%@: %@",
                       CLL(@"系统优化充电"),
@@ -1164,13 +1051,13 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
                       CLL(@"当前策略"),
                       CLDebugValueWithRaw(CLPolicyStateLabel(manager.policyState), manager.policyState)]];
     [lines addObject:[NSString stringWithFormat:@"%@: %@",
-                      CLL(@"保持策略"),
-                      CLHoldBehaviorLabel(manager.holdModeBehavior)]];
+                      CLL(@"检查间隔"),
+                      [self holdIntervalTextForManager:manager]]];
     [lines addObject:[NSString stringWithFormat:@"%@: %@",
                       CLL(@"保持目标"),
                       [self holdTargetTextForManager:manager]]];
     [lines addObject:[NSString stringWithFormat:@"%@: %@",
-                      CLL(@"保持带宽"),
+                      CLL(@"补电阈值"),
                       [self holdBandTextForManager:manager]]];
     [lines addObject:[NSString stringWithFormat:@"%@: %@",
                       CLL(@"系统优化充电"),
@@ -1193,10 +1080,10 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
     [lines addObject:@""];
     [lines addObject:CLL(@"建议验证项")];
     [lines addObject:CLL(@"1. 长时间轻负载插电：观察电量是否稳定停留在目标附近，是否频繁补电。")];
-    [lines addObject:CLL(@"2. 中高负载插电：观察电量是否持续下滑，以及当前生效保持策略是否会自动切换。")];
+    [lines addObject:CLL(@"2. 中高负载插电：观察电量是否在保持区间内缓慢下滑，以及低于下边界后才恢复补电。")];
     [lines addObject:CLL(@"3. 温控往返：观察接近高温阈值后是否暂停充电，降温后是否平稳恢复。")];
     [lines addObject:CLL(@"4. Smart Charge 接管：观察进入 hold/stop 时是否临时停用，退出后或 daemon 重启后是否恢复。")];
-    [lines addObject:CLL(@"5. 若结果不理想，优先调整保持带宽、保持策略，再考虑温控阈值。")];
+    [lines addObject:CLL(@"5. 若结果不理想，优先调整补电阈值、检查间隔，再考虑温控阈值。")];
     [lines addObject:@""];
     [lines addObject:CLL(@"观察记录")];
     [lines addObject:CLL(@"- 期望现象：")];
@@ -1251,16 +1138,10 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
     [self updateDiagnosticValue:[self smartChargeCoordinationStartTimeTextForManager:manager] forKey:@"smart_charge_coordination_start_time"];
     [self updateDiagnosticValue:CLTimestampLabel(manager.lastInflowCommandTime) forKey:@"last_inflow_command_time"];
 
-    [self updateDiagnosticValue:CLHoldBehaviorLabel(manager.holdModeBehavior) forKey:@"hold_behavior"];
-    [self updateDiagnosticValue:[self holdRuntimeBehaviorTextForManager:manager] forKey:@"hold_runtime_behavior"];
-    [self updateDiagnosticValue:[self holdAdaptiveLoadLevelTextForManager:manager] forKey:@"hold_adaptive_load_level"];
-    [self updateDiagnosticValue:[self holdAdaptiveAverageCurrentTextForManager:manager] forKey:@"hold_adaptive_average_current"];
+    [self updateDiagnosticValue:[self holdIntervalTextForManager:manager] forKey:@"hold_interval"];
     [self updateDiagnosticValue:[self holdTargetTextForManager:manager] forKey:@"hold_target"];
     [self updateDiagnosticValue:[self holdBandTextForManager:manager] forKey:@"hold_band"];
     [self updateDiagnosticValue:[self holdLowerBoundTextForManager:manager] forKey:@"hold_lower_bound"];
-    [self updateDiagnosticValue:[NSString stringWithFormat:@"%ld", (long)manager.holdDischargeStreak] forKey:@"hold_discharge_streak"];
-    [self updateDiagnosticValue:[NSString stringWithFormat:CLL(@"%ld 秒"), (long)MAX(manager.holdMonitorIntervalSeconds, 0)] forKey:@"hold_interval"];
-    [self updateDiagnosticValue:[self holdEarlyRechargeTextForManager:manager] forKey:@"hold_early_recharge"];
 
     [self updateDiagnosticValue:[NSString stringWithFormat:@"%ld%%", (long)manager.currentCapacity] forKey:@"current_capacity"];
     [self updateDiagnosticValue:[NSString stringWithFormat:@"%.1f°C", manager.temperature] forKey:@"temperature"];
@@ -1534,13 +1415,13 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
     [stopChargeCard addSeparator];
     [stopChargeCard addSwitchRowWithIcon:@"xmark.circle.fill" title:CLL(@"停充时启用禁流") subtitle:CLL(@"禁止电流流入设备，电池放电供电") isOn:disableInflowEnabled color:[UIColor systemRedColor] tag:CLAdvDisableInflowTag target:self action:@selector(disableInflowChanged:)];
     [stopChargeCard addSeparator];
-    [stopChargeCard addSwitchRowWithIcon:@"battery.100" title:CLL(@"插电保持") subtitle:CLL(@"围绕“停止充电”目标小范围补电，更接近电脑保电量体验") isOn:holdModeEnabled color:[UIColor systemIndigoColor] tag:CLAdvHoldModeTag target:self action:@selector(holdModeChanged:)];
-    [stopChargeCard addSeparator];
-    [stopChargeCard addPickerRowWithIcon:@"arrow.left.arrow.right" title:CLL(@"保持带宽") value:[self holdModeBandText] color:[UIColor systemIndigoColor] tag:CLAdvHoldModeBandTag target:self action:@selector(holdModeBandTapped:)];
-    [stopChargeCard addSeparator];
-    [stopChargeCard addPickerRowWithIcon:@"slider.horizontal.3" title:CLL(@"保持策略") value:[self holdModeBehaviorText] color:[UIColor systemIndigoColor] tag:CLAdvHoldModeBehaviorTag target:self action:@selector(holdModeBehaviorTapped:)];
-    [self addTipRowToCard:stopChargeCard text:CLL(@"开启后会以“停止充电”作为目标电量，并在目标下方缓冲范围内自动补电；开启禁流会自动关闭插电保持。")];
-    [self addTipRowToCard:stopChargeCard text:CLL(@"保持策略只影响插电保持模式，不会变成真正硬件旁路。")];
+    [stopChargeCard addSwitchRowWithIcon:@"battery.100" title:CLL(@"插电保持") subtitle:CLL(@"围绕“停止充电”目标维持一个缓冲区间，模拟 AlDente 的 Sailing Mode") isOn:holdModeEnabled color:[UIColor systemIndigoColor] tag:CLAdvHoldModeTag target:self action:@selector(holdModeChanged:)];
+    if (holdModeEnabled) {
+        [stopChargeCard addSeparator];
+        [stopChargeCard addPickerRowWithIcon:@"arrow.left.arrow.right" title:CLL(@"补电阈值") value:[self holdModeBandText] color:[UIColor systemIndigoColor] tag:CLAdvHoldModeBandTag target:self action:@selector(holdModeBandTapped:)];
+        [stopChargeCard addSeparator];
+        [stopChargeCard addPickerRowWithIcon:@"timer" title:CLL(@"检查间隔") value:[self holdCheckIntervalText] color:[UIColor systemIndigoColor] tag:CLAdvHoldModeBehaviorTag target:self action:@selector(holdCheckIntervalTapped:)];
+    }
     if ([self isHoldSuppressedBySystemCapacityControlForManager:manager]) {
         [self addTipRowToCard:stopChargeCard text:CLL(@"当前“停止充电”已设为 100%，且选择由系统接管，插电保持暂时停用并置灰；当关闭系统接管或把上限调回 100% 以下时，会自动恢复到你之前的 hold 设置。")];
     }
@@ -1548,33 +1429,6 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
     [self updateHoldOptionInterlockStateInCard:stopChargeCard manager:manager];
     [self.mainStack addArrangedSubview:stopChargeCard];
 
-    CLAdvSettingsCard *smartChargeCard = [[CLAdvSettingsCard alloc] init];
-    [smartChargeCard addSectionHeader:CLL(@"系统优化充电")];
-    [smartChargeCard addSwitchRowWithIcon:@"battery.100.circle" title:CLL(@"永久停用系统优化充电") subtitle:CLL(@"直接关闭系统的优化充电策略；旧版本默认可能已开启") isOn:manager.disableSmartCharge color:[UIColor systemBlueColor] tag:CLAdvDisableSmartChargeTag target:self action:@selector(disableSmartChargeChanged:)];
-    [smartChargeCard addSeparator];
-    [smartChargeCard addSwitchRowWithIcon:@"clock.badge.checkmark" title:CLL(@"插电保持时临时停用") subtitle:CLL(@"仅在保持/停充阶段暂时停用，退出后尝试恢复系统优化充电") isOn:holdTempDisableSmartChargeEnabled color:[UIColor systemBlueColor] tag:CLAdvHoldTempDisableSmartChargeTag target:self action:@selector(holdTempDisableSmartChargeChanged:)];
-    [self updateSmartChargeOptionInterlockStateInCard:smartChargeCard manager:manager];
-    [self.mainStack addArrangedSubview:smartChargeCard];
-
-    CLAdvSettingsCard *diagnosticsCard = [[CLAdvSettingsCard alloc] init];
-    [diagnosticsCard addSectionHeader:CLL(@"调试与观测")];
-    [diagnosticsCard addPickerRowWithIcon:@"waveform.path.ecg" title:CLL(@"策略诊断") value:CLL(@"查看") color:[UIColor systemTealColor] tag:314 target:self action:@selector(policyDiagnosticsTapped)];
-    [self addTipRowToCard:diagnosticsCard text:CLL(@"集中查看策略切换原因、hold 运行时参数和 Smart Charge 接管状态。")];
-    [self.mainStack addArrangedSubview:diagnosticsCard];
-
-    // 满充计划
-    CLAdvSettingsCard *scheduleCard = [[CLAdvSettingsCard alloc] init];
-    [scheduleCard addSectionHeader:CLL(@"满充计划")];
-    [scheduleCard addSwitchRowWithIcon:@"calendar" title:CLL(@"启用满充计划") subtitle:nil isOn:manager.fullChargeScheduleEnabled color:[UIColor systemTealColor] tag:307 target:self action:@selector(fullChargeScheduleEnabledChanged:)];
-    [scheduleCard addSeparator];
-    [scheduleCard addPickerRowWithIcon:@"repeat" title:CLL(@"每隔天数") value:[self fullChargeScheduleIntervalText] color:[UIColor systemTealColor] tag:308 target:self action:@selector(fullChargeScheduleIntervalTapped:)];
-    [scheduleCard addSeparator];
-    [scheduleCard addPickerRowWithIcon:@"clock" title:CLL(@"开始时间") value:[self fullChargeScheduleStartTimeText] color:[UIColor systemTealColor] tag:309 target:self action:@selector(fullChargeScheduleStartTimeTapped:)];
-    [scheduleCard addSeparator];
-    [scheduleCard addPickerRowWithIcon:@"timer" title:CLL(@"持续时长") value:[self fullChargeScheduleDurationText] color:[UIColor systemTealColor] tag:310 target:self action:@selector(fullChargeScheduleDurationTapped:)];
-    [self addTipRowToCard:scheduleCard text:CLL(@"让设备每隔几天在指定时间暂时解除电量上限；温度控制仍会保留。")];
-    [self.mainStack addArrangedSubview:scheduleCard];
-    
     // 限流控制
     CLAdvSettingsCard *limitCard = [[CLAdvSettingsCard alloc] init];
     [limitCard addSectionHeader:CLL(@"限流控制")];
@@ -1589,6 +1443,35 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
     [thermalCard addSeparator];
     [thermalCard addSwitchRowWithIcon:@"thermometer" title:CLL(@"锁定等级") subtitle:CLL(@"防止系统自动调节温度模拟") isOn:manager.thermalModeLock color:[UIColor systemOrangeColor] tag:304 target:self action:@selector(thermalLockChanged:)];
     [self.mainStack addArrangedSubview:thermalCard];
+
+    CLAdvSettingsCard *smartChargeCard = [[CLAdvSettingsCard alloc] init];
+    [smartChargeCard addSectionHeader:CLL(@"系统优化充电")];
+    [smartChargeCard addSwitchRowWithIcon:@"battery.100.circle" title:CLL(@"永久停用系统优化充电") subtitle:CLL(@"直接关闭系统的优化充电策略；旧版本默认可能已开启") isOn:manager.disableSmartCharge color:[UIColor systemBlueColor] tag:CLAdvDisableSmartChargeTag target:self action:@selector(disableSmartChargeChanged:)];
+    [smartChargeCard addSeparator];
+    [smartChargeCard addSwitchRowWithIcon:@"clock.badge.checkmark" title:CLL(@"插电保持时临时停用") subtitle:CLL(@"仅在保持/停充阶段暂时停用，退出后尝试恢复系统优化充电") isOn:holdTempDisableSmartChargeEnabled color:[UIColor systemBlueColor] tag:CLAdvHoldTempDisableSmartChargeTag target:self action:@selector(holdTempDisableSmartChargeChanged:)];
+    [self updateSmartChargeOptionInterlockStateInCard:smartChargeCard manager:manager];
+    [self.mainStack addArrangedSubview:smartChargeCard];
+
+    // 满充计划
+    CLAdvSettingsCard *scheduleCard = [[CLAdvSettingsCard alloc] init];
+    [scheduleCard addSectionHeader:CLL(@"满充计划")];
+    [scheduleCard addSwitchRowWithIcon:@"calendar" title:CLL(@"启用满充计划") subtitle:nil isOn:manager.fullChargeScheduleEnabled color:[UIColor systemTealColor] tag:307 target:self action:@selector(fullChargeScheduleEnabledChanged:)];
+    if (manager.fullChargeScheduleEnabled) {
+        [scheduleCard addSeparator];
+        [scheduleCard addPickerRowWithIcon:@"repeat" title:CLL(@"每隔天数") value:[self fullChargeScheduleIntervalText] color:[UIColor systemTealColor] tag:308 target:self action:@selector(fullChargeScheduleIntervalTapped:)];
+        [scheduleCard addSeparator];
+        [scheduleCard addPickerRowWithIcon:@"clock" title:CLL(@"开始时间") value:[self fullChargeScheduleStartTimeText] color:[UIColor systemTealColor] tag:309 target:self action:@selector(fullChargeScheduleStartTimeTapped:)];
+        [scheduleCard addSeparator];
+        [scheduleCard addPickerRowWithIcon:@"timer" title:CLL(@"持续时长") value:[self fullChargeScheduleDurationText] color:[UIColor systemTealColor] tag:310 target:self action:@selector(fullChargeScheduleDurationTapped:)];
+    }
+    [self addTipRowToCard:scheduleCard text:CLL(@"让设备每隔几天在指定时间暂时解除电量上限；温度控制仍会保留。")];
+    [self.mainStack addArrangedSubview:scheduleCard];
+
+    CLAdvSettingsCard *diagnosticsCard = [[CLAdvSettingsCard alloc] init];
+    [diagnosticsCard addSectionHeader:CLL(@"调试与观测")];
+    [diagnosticsCard addPickerRowWithIcon:@"waveform.path.ecg" title:CLL(@"策略诊断") value:CLL(@"查看") color:[UIColor systemTealColor] tag:314 target:self action:@selector(policyDiagnosticsTapped)];
+    [self addTipRowToCard:diagnosticsCard text:CLL(@"集中查看策略切换原因、hold 运行时参数和 Smart Charge 接管状态。")];
+    [self.mainStack addArrangedSubview:diagnosticsCard];
     
     // 重置按钮
     UIButton *resetButton = [UIButton buttonWithType:UIButtonTypeSystem];
@@ -1654,8 +1537,9 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
     return [NSString stringWithFormat:CLL(@"目标下方 %ld%%"), (long)band];
 }
 
-- (NSString *)holdModeBehaviorText {
-    return CLHoldBehaviorLabel([CLBatteryManager shared].holdModeBehavior);
+- (NSString *)holdCheckIntervalText {
+    NSInteger minutes = MAX([CLBatteryManager shared].holdCheckIntervalMinutes, 1);
+    return [NSString stringWithFormat:CLL(@"%ld 分钟"), (long)minutes];
 }
 
 - (NSString *)fullChargeScheduleIntervalText {
@@ -1800,8 +1684,8 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
 - (void)holdModeBandTapped:(UITapGestureRecognizer *)tap {
     NSInteger currentValue = MAX([CLBatteryManager shared].holdModeBand, 1);
     __weak typeof(self) weakSelf = self;
-    [self presentIntegerInputAlertWithTitle:CLL(@"保持带宽")
-                                    message:CLL(@"请输入 1 ~ 10 之间的百分比\n设备会在目标电量下方这段范围内恢复补电")
+    [self presentIntegerInputAlertWithTitle:CLL(@"补电阈值")
+                                    message:CLL(@"请输入 1 ~ 10 之间的百分比\n达到目标后，电量低于这个阈值时才会恢复补电")
                                currentValue:currentValue
                                    minValue:1
                                    maxValue:10
@@ -1812,30 +1696,25 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
     }];
 }
 
-- (void)holdModeBehaviorTapped:(UITapGestureRecognizer *)tap {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"保持策略")
-                                                                   message:CLL(@"选择插电保持时更偏向哪一种行为")
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-
-    NSArray *titles = @[CLL(@"平衡"), CLL(@"偏向外接供电"), CLL(@"偏向减少循环"), CLL(@"智能自适应")];
-    NSArray *values = @[@"balanced", @"power_first", @"battery_first", @"adaptive"];
+- (void)holdCheckIntervalTapped:(UITapGestureRecognizer *)tap {
+    NSInteger currentValue = MAX([CLBatteryManager shared].holdCheckIntervalMinutes, 1);
     __weak typeof(self) weakSelf = self;
-    for (NSInteger i = 0; i < titles.count; i++) {
-        UIAlertAction *action = [UIAlertAction actionWithTitle:titles[i] style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-            [CLBatteryManager shared].holdModeBehavior = (CLHoldModeBehavior)i;
-            [[CLAPIClient shared] setConfigWithKey:@"adv_hold_behavior" value:values[i] completion:nil];
-            [weakSelf reloadContentRows];
-        }];
-        [alert addAction:action];
-    }
-
-    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"取消") style:UIAlertActionStyleCancel handler:nil]];
-    [self presentViewController:alert animated:YES completion:nil];
+    [self presentIntegerInputAlertWithTitle:CLL(@"检查间隔")
+                                    message:CLL(@"请输入 1 ~ 10 之间的分钟数\n达到保持目标后，会按这个间隔检查一次是否需要恢复补电")
+                               currentValue:currentValue
+                                   minValue:1
+                                   maxValue:10
+                                 completion:^(NSInteger value) {
+        [CLBatteryManager shared].holdCheckIntervalMinutes = value;
+        [[CLAPIClient shared] setConfigWithKey:@"adv_hold_check_interval_minutes" value:@(value) completion:nil];
+        [weakSelf reloadContentRows];
+    }];
 }
 
 - (void)fullChargeScheduleEnabledChanged:(UISwitch *)sender {
     [CLBatteryManager shared].fullChargeScheduleEnabled = sender.on;
     [[CLAPIClient shared] setConfigWithKey:@"full_charge_sched_enabled" value:@(sender.on) completion:nil];
+    [self reloadContentRows];
 }
 
 - (void)fullChargeScheduleIntervalTapped:(UITapGestureRecognizer *)tap {

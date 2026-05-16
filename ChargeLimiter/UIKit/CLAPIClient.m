@@ -95,7 +95,7 @@ static int CLStartDaemonBestEffort(void) {
     BOOL handOverCapacityControl = (chargeAbove >= 100 && systemCapacityControlAt100Enabled);
     BOOL holdCapacityControlAvailable = holdEnabled && !handOverCapacityControl;
     NSInteger holdLower = MAX(chargeAbove - holdBand, 5);
-    NSString *configuredHoldBehavior = [config[@"adv_hold_behavior"] isKindOfClass:[NSString class]] ? config[@"adv_hold_behavior"] : @"balanced";
+    NSInteger holdCheckIntervalMinutes = MAX([config[@"adv_hold_check_interval_minutes"] integerValue], 1);
     
     // 模拟电量变化
     if (!holdCapacityControlAvailable) {
@@ -126,31 +126,7 @@ static int CLStartDaemonBestEffort(void) {
     BOOL smartChargeManaged = holdActive;
     NSString *policyState = holdCharging ? @"hold_recharge" : (predictiveInhibit ? @"hold" : (mockCharging ? @"charging" : @"battery"));
     NSString *policyReason = holdCharging ? @"hold_band_lower_reached" : (predictiveInhibit ? @"hold_target_reached" : (mockCharging ? @"charging_active" : @"battery_idle"));
-    NSString *runtimeHoldBehavior = configuredHoldBehavior;
-    NSString *adaptiveLoadLevel = @"fixed";
-    NSInteger adaptiveAverageCurrent = simulatedInstantAmperage;
-    if ([configuredHoldBehavior isEqualToString:@"adaptive"]) {
-        if (simulatedInstantAmperage <= -320) {
-            runtimeHoldBehavior = @"power_first";
-            adaptiveLoadLevel = @"high";
-        } else if (simulatedInstantAmperage <= -160) {
-            runtimeHoldBehavior = @"balanced";
-            adaptiveLoadLevel = @"medium";
-        } else {
-            runtimeHoldBehavior = @"battery_first";
-            adaptiveLoadLevel = @"low";
-        }
-    }
-    NSInteger holdMonitorIntervalSeconds = 15;
-    BOOL holdEarlyRechargeAssistEnabled = YES;
-    NSInteger holdEarlyRechargeStreakRequired = 2;
-    if ([runtimeHoldBehavior isEqualToString:@"power_first"]) {
-        holdMonitorIntervalSeconds = 10;
-        holdEarlyRechargeStreakRequired = 1;
-    } else if ([runtimeHoldBehavior isEqualToString:@"battery_first"]) {
-        holdMonitorIntervalSeconds = 20;
-        holdEarlyRechargeAssistEnabled = NO;
-    }
+    NSInteger holdMonitorIntervalSeconds = holdCheckIntervalMinutes * 60;
     NSArray *policyHistory = @[
         @{@"from": @"charging", @"to": @"hold", @"reason": @"hold_target_reached", @"ts": @(now - 180)},
         @{@"from": @"hold", @"to": @"hold_recharge", @"reason": @"hold_band_lower_reached", @"ts": @(now - 60)},
@@ -171,8 +147,8 @@ static int CLStartDaemonBestEffort(void) {
             @"charge_command_enabled": @NO,
             @"smart_charge_status": @(3),
             @"smart_charge_managed": @YES,
-            @"hold_behavior": runtimeHoldBehavior,
-            @"hold_load_level": adaptiveLoadLevel
+            @"hold_behavior": @"balanced",
+            @"hold_check_interval_minutes": @(holdCheckIntervalMinutes)
         },
         @{
             @"from": @"hold",
@@ -188,8 +164,8 @@ static int CLStartDaemonBestEffort(void) {
             @"charge_command_enabled": @YES,
             @"smart_charge_status": @(3),
             @"smart_charge_managed": @YES,
-            @"hold_behavior": runtimeHoldBehavior,
-            @"hold_load_level": adaptiveLoadLevel
+            @"hold_behavior": @"balanced",
+            @"hold_check_interval_minutes": @(holdCheckIntervalMinutes)
         },
         @{
             @"from": holdCharging ? @"hold" : @"charging",
@@ -205,8 +181,8 @@ static int CLStartDaemonBestEffort(void) {
             @"charge_command_enabled": @(!predictiveInhibit),
             @"smart_charge_status": @(smartChargeManaged ? 3 : 1),
             @"smart_charge_managed": @(smartChargeManaged),
-            @"hold_behavior": runtimeHoldBehavior,
-            @"hold_load_level": adaptiveLoadLevel
+            @"hold_behavior": @"balanced",
+            @"hold_check_interval_minutes": @(holdCheckIntervalMinutes)
         }
     ];
 
@@ -235,9 +211,7 @@ static int CLStartDaemonBestEffort(void) {
             @"HoldCharging": @(holdCharging),
             @"HoldTarget": @(holdCapacityControlAvailable ? chargeAbove : 0),
             @"HoldRangeLower": @(holdCapacityControlAvailable ? holdLower : 0),
-            @"HoldRuntimeBehavior": runtimeHoldBehavior,
-            @"HoldAdaptiveLoadLevel": adaptiveLoadLevel,
-            @"HoldAdaptiveAverageCurrent": @(adaptiveAverageCurrent),
+            @"HoldRuntimeBehavior": @"balanced",
             @"PolicyState": policyState,
             @"PolicyReason": policyReason,
             @"LastPolicyChangeReason": policyReason,
@@ -251,10 +225,7 @@ static int CLStartDaemonBestEffort(void) {
             @"SmartChargeOriginalStatus": @(smartChargeManaged ? 1 : -1),
             @"SmartChargeCoordinationSessionID": smartChargeManaged ? @"mock-smart-charge-session" : @"",
             @"SmartChargeCoordinationStartTime": @(smartChargeManaged ? (now - 180) : 0),
-            @"HoldDischargeStreak": @(predictiveInhibit ? 2 : 0),
             @"HoldMonitorIntervalSeconds": @(holdCapacityControlAvailable ? holdMonitorIntervalSeconds : 0),
-            @"HoldEarlyRechargeAssistEnabled": @(holdCapacityControlAvailable && holdEarlyRechargeAssistEnabled),
-            @"HoldEarlyRechargeStreakRequired": @(holdCapacityControlAvailable ? holdEarlyRechargeStreakRequired : 0),
             @"AdapterDetails": @{
                 @"Name": @"USB-C Power Adapter",
                 @"Description": @"usb host",
@@ -296,6 +267,7 @@ static int CLStartDaemonBestEffort(void) {
             @"adv_disable_inflow": @NO,
             @"adv_hold_enabled": @YES,
             @"adv_hold_band": @2,
+            @"adv_hold_check_interval_minutes": @3,
             @"adv_hold_behavior": @"balanced",
             @"adv_hold_temp_disable_smart_charge": @YES,
             @"adv_limit_inflow": @NO,
@@ -306,7 +278,7 @@ static int CLStartDaemonBestEffort(void) {
             @"full_charge_sched_interval_days": @7,
             @"full_charge_sched_start_minute": @120,
             @"full_charge_sched_duration_hours": @4,
-            @"ver": @"1.12.5",
+            @"ver": @"1.13.0",
             @"sysver": @"iOS 16.1.2",
             @"devmodel": @"iPhone14,2",
             @"sys_boot": @((NSInteger)[[NSDate date] timeIntervalSince1970] - 86400),
