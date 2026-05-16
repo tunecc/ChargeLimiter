@@ -48,6 +48,9 @@ typedef void (^CLAPICallback)(NSDictionary *_Nullable response, NSError *_Nullab
 // 便捷方法 - 获取策略事件
 - (void)getPolicyEventsWithLimit:(NSInteger)limit lastID:(NSInteger)lastID completion:(CLAPICallback)completion;
 
+// 便捷方法 - 清空历史统计
+- (void)clearStatisticsWithCompletion:(nullable CLAPICallback)completion;
+
 // 检查 daemon 是否存活
 - (void)checkDaemonAliveWithCompletion:(void (^)(BOOL alive))completion;
 

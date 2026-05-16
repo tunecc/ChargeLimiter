@@ -430,7 +430,7 @@ static NSString *CLPolicyReasonLabel(NSString *reason) {
         return CLL(@"插电即充模式下检测到接入电源");
     }
     if ([reason isEqualToString:@"edge_mode_stop"]) {
-        return CLL(@"边缘触发模式下插电后保持停充");
+        return CLL(@"检测到旧模式配置，已按插电即充处理");
     }
     if ([reason isEqualToString:@"adaptor_disconnected"]) {
         return CLL(@"检测到拔掉电源");

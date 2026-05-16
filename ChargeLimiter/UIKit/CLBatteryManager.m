@@ -102,7 +102,10 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
     if ([mode isEqualToString:@"charge_on_plug"]) {
         _chargeMode = CLChargeModePlugAndCharge;
     } else if ([mode isEqualToString:@"edge_trigger"]) {
-        _chargeMode = CLChargeModeEdgeTrigger;
+        _chargeMode = CLChargeModePlugAndCharge;
+        [self saveConfigKey:@"mode" value:@"charge_on_plug" completion:nil];
+    } else {
+        _chargeMode = CLChargeModePlugAndCharge;
     }
 
     _updateFrequency = [data[@"update_freq"] integerValue];
@@ -111,6 +114,8 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
     _tempControlEnabled = [data[@"enable_temp"] boolValue];
     _chargeTempBelow = [data[@"charge_temp_below"] integerValue];
     _chargeTempAbove = [data[@"charge_temp_above"] integerValue];
+    id historyStatsEnabledValue = data[@"history_stats_enabled"];
+    _historyStatsEnabled = historyStatsEnabledValue == nil ? YES : [historyStatsEnabledValue boolValue];
 
     _accChargeEnabled = [data[@"acc_charge"] boolValue];
     _accChargeAirMode = [data[@"acc_charge_airmode"] boolValue];
@@ -161,6 +166,7 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
     if (!m[@"enable_temp"]) m[@"enable_temp"] = @NO;
     if (!m[@"charge_temp_below"]) m[@"charge_temp_below"] = @35;
     if (!m[@"charge_temp_above"]) m[@"charge_temp_above"] = @40;
+    if (!m[@"history_stats_enabled"]) m[@"history_stats_enabled"] = @YES;
     if (!m[@"disable_smart_charge"]) m[@"disable_smart_charge"] = @NO;
     if (!m[@"adv_system_capacity_control_at_100"]) m[@"adv_system_capacity_control_at_100"] = @YES;
     if (!m[@"adv_hold_enabled"]) m[@"adv_hold_enabled"] = @YES;
@@ -192,6 +198,7 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
         _chargeAbove = 80;
         _chargeTempBelow = 35;  // 降温恢复温度
         _chargeTempAbove = 40;  // 高温停充温度
+        _historyStatsEnabled = YES;
         _chargeMode = CLChargeModePlugAndCharge;
         _systemCapacityControlAt100Enabled = YES;
         _holdModeBand = 2;
@@ -384,6 +391,15 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
     }];
 }
 
+- (void)clearStatisticsWithCompletion:(void (^)(BOOL))completion {
+    [[CLAPIClient shared] clearStatisticsWithCompletion:^(NSDictionary * _Nullable response, NSError * _Nullable error) {
+        BOOL success = (response && [response[@"status"] intValue] == 0);
+        if (completion) {
+            completion(success);
+        }
+    }];
+}
+
 - (void)saveConfigKey:(NSString *)key value:(id)value completion:(void (^)(BOOL))completion {
     [[CLAPIClient shared] setConfigWithKey:key value:value completion:^(NSDictionary * _Nullable response, NSError * _Nullable error) {
         BOOL success = (response && [response[@"status"] intValue] == 0);
@@ -440,14 +456,13 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
 }
 
 - (void)setChargeMode:(CLChargeMode)chargeMode {
-    if (_chargeMode != chargeMode) {
-        _chargeMode = chargeMode;
-        NSString *modeStr = (chargeMode == CLChargeModePlugAndCharge) ? @"charge_on_plug" : @"edge_trigger";
-        [self saveConfigKey:@"mode" value:modeStr completion:nil];
-        if (chargeMode == CLChargeModePlugAndCharge && self.predictiveInhibitCharge && self.disableInflow) {
-            _disableInflow = NO;
-            [self saveConfigKey:@"adv_disable_inflow" value:@NO completion:nil];
-        }
+    if (_chargeMode != CLChargeModePlugAndCharge) {
+        _chargeMode = CLChargeModePlugAndCharge;
+    }
+    [self saveConfigKey:@"mode" value:@"charge_on_plug" completion:nil];
+    if (self.predictiveInhibitCharge && self.disableInflow) {
+        _disableInflow = NO;
+        [self saveConfigKey:@"adv_disable_inflow" value:@NO completion:nil];
     }
 }
 
@@ -509,6 +524,13 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
     if (_chargeTempAbove != chargeTempAbove) {
         _chargeTempAbove = chargeTempAbove;
         [self saveConfigKey:@"charge_temp_above" value:@(chargeTempAbove) completion:nil];
+    }
+}
+
+- (void)setHistoryStatsEnabled:(BOOL)historyStatsEnabled {
+    if (_historyStatsEnabled != historyStatsEnabled) {
+        _historyStatsEnabled = historyStatsEnabled;
+        [self saveConfigKey:@"history_stats_enabled" value:@(historyStatsEnabled) completion:nil];
     }
 }
 

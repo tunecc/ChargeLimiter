@@ -107,6 +107,7 @@ extern NSNotificationName const CLDaemonStatusDidChangeNotification;
 @property(nonatomic, assign) BOOL tempControlEnabled;   // 温控开关
 @property(nonatomic, assign) NSInteger chargeTempBelow; // 温度下限 ℃
 @property(nonatomic, assign) NSInteger chargeTempAbove; // 温度上限 ℃
+@property(nonatomic, assign) BOOL historyStatsEnabled;  // 历史统计采集开关
 @property(nonatomic, assign) BOOL accChargeEnabled;     // 加速充电
 @property(nonatomic, assign) BOOL accChargeAirMode;
 @property(nonatomic, assign) BOOL accChargeWifi;
@@ -157,6 +158,9 @@ extern NSNotificationName const CLDaemonStatusDidChangeNotification;
 
 // 重置配置
 - (void)resetConfigWithCompletion:(nullable void (^)(BOOL success))completion;
+
+// 清空历史统计
+- (void)clearStatisticsWithCompletion:(nullable void (^)(BOOL success))completion;
 
 // 保存单个配置项
 - (void)saveConfigKey:(NSString *)key value:(id)value completion:(nullable void (^)(BOOL success))completion;
