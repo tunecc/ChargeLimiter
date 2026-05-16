@@ -12,6 +12,7 @@
 #import "../../CLLocalization.h"
 NSString* getAppDocumentsPath_C(void);
 NSString* getConfPath_C(void);
+NSString* getRuntimeDataRootPath_C(void);
 NSArray<NSString*>* getLegacyConfigDirsWithData_C(void);
 NSArray<NSString*>* getLegacyResidualFiles_C(void);
 NSDictionary* cleanupLegacyResidualFiles_C(void);
@@ -182,10 +183,103 @@ static NSArray<NSString *> *CLCollectFilzaInstallHints(void) {
     return dedup;
 }
 
+static NSString *CLNormalizedFilesystemPath(NSString *path) {
+    if (path.length == 0) {
+        return nil;
+    }
+    NSString *fixed = [path stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (fixed.length == 0 || ![fixed hasPrefix:@"/"]) {
+        return nil;
+    }
+    fixed = [fixed stringByStandardizingPath];
+    while (fixed.length > 1 && [fixed hasSuffix:@"/"]) {
+        fixed = [fixed substringToIndex:fixed.length - 1];
+    }
+    return fixed;
+}
+
+static NSArray<NSString *> *CLRoothideAliasPaths(NSString *path) {
+    NSString *normalized = CLNormalizedFilesystemPath(path);
+    if (normalized.length == 0) {
+        return @[];
+    }
+
+    NSRange marker = [normalized rangeOfString:@"/.jbroot-"];
+    if (marker.location == NSNotFound) {
+        return @[];
+    }
+
+    NSMutableArray<NSString *> *aliases = [NSMutableArray array];
+    NSUInteger searchStart = marker.location + 1;
+    for (NSString *suffix in @[@"/var/mobile/", @"/private/var/mobile/"]) {
+        NSRange suffixRange = [normalized rangeOfString:suffix
+                                                options:0
+                                                  range:NSMakeRange(searchStart, normalized.length - searchStart)];
+        if (suffixRange.location == NSNotFound) {
+            continue;
+        }
+        NSString *tail = [normalized substringFromIndex:suffixRange.location];
+        [aliases addObject:tail];
+        [aliases addObject:[@"/var/jb" stringByAppendingString:tail]];
+        if ([tail hasPrefix:@"/private/"]) {
+            [aliases addObject:[@"/var/jb" stringByAppendingString:[tail substringFromIndex:@"/private".length]]];
+        }
+    }
+    return aliases;
+}
+
+static NSArray<NSString *> *CLFilesystemPathVariants(NSString *path) {
+    NSString *normalized = CLNormalizedFilesystemPath(path);
+    if (normalized.length == 0) {
+        return @[];
+    }
+
+    NSMutableArray<NSString *> *variants = [NSMutableArray array];
+    NSMutableSet<NSString *> *seen = [NSMutableSet set];
+    NSMutableArray<NSString *> *queue = [NSMutableArray arrayWithObject:normalized];
+    while (queue.count > 0) {
+        NSString *current = CLNormalizedFilesystemPath(queue.firstObject);
+        [queue removeObjectAtIndex:0];
+        if (current.length == 0 || [seen containsObject:current]) {
+            continue;
+        }
+
+        [seen addObject:current];
+        [variants addObject:current];
+
+        NSString *resolved = CLNormalizedFilesystemPath([current stringByResolvingSymlinksInPath]);
+        if (resolved.length > 0 && ![seen containsObject:resolved]) {
+            [queue addObject:resolved];
+        }
+
+        if ([current hasPrefix:@"/private/"]) {
+            NSString *stripped = CLNormalizedFilesystemPath([current substringFromIndex:@"/private".length]);
+            if (stripped.length > 0 && ![seen containsObject:stripped]) {
+                [queue addObject:stripped];
+            }
+        } else if ([current hasPrefix:@"/"]) {
+            NSString *prefixed = CLNormalizedFilesystemPath([@"/private" stringByAppendingString:current]);
+            if (prefixed.length > 0 && ![seen containsObject:prefixed]) {
+                [queue addObject:prefixed];
+            }
+        }
+
+        for (NSString *alias in CLRoothideAliasPaths(current)) {
+            NSString *normalizedAlias = CLNormalizedFilesystemPath(alias);
+            if (normalizedAlias.length > 0 && ![seen containsObject:normalizedAlias]) {
+                [queue addObject:normalizedAlias];
+            }
+        }
+    }
+    return variants;
+}
+
 static NSString *CLBuildFilzaDebugReport(NSString *targetPath, NSArray<NSURL *> *candidates, NSArray<NSString *> *attemptLogs) {
     NSMutableArray<NSString *> *lines = [NSMutableArray array];
     NSString *appDocsPath = getAppDocumentsPath_C() ?: @"";
     NSString *confPath = getConfPath_C() ?: @"";
+    NSString *normalizedTargetPath = CLNormalizedFilesystemPath(targetPath) ?: @"";
+    NSString *resolvedTargetPath = CLNormalizedFilesystemPath([normalizedTargetPath stringByResolvingSymlinksInPath]) ?: @"";
     BOOL targetIsDir = NO;
     BOOL targetExists = (targetPath.length > 0) && [[NSFileManager defaultManager] fileExistsAtPath:targetPath isDirectory:&targetIsDir];
     BOOL confExists = (confPath.length > 0) && [[NSFileManager defaultManager] fileExistsAtPath:confPath];
@@ -196,10 +290,17 @@ static NSString *CLBuildFilzaDebugReport(NSString *targetPath, NSArray<NSURL *> 
     [lines addObject:[NSString stringWithFormat:@"appDocuments=%@", appDocsPath]];
     [lines addObject:[NSString stringWithFormat:@"confPath=%@", confPath]];
     [lines addObject:[NSString stringWithFormat:@"targetPath=%@", targetPath ?: @""]];
+    [lines addObject:[NSString stringWithFormat:@"normalizedTargetPath=%@", normalizedTargetPath]];
+    [lines addObject:[NSString stringWithFormat:@"resolvedTargetPath=%@", resolvedTargetPath]];
     [lines addObject:[NSString stringWithFormat:@"targetExists=%@ isDir=%@", targetExists ? @"yes" : @"no", targetIsDir ? @"yes" : @"no"]];
     [lines addObject:[NSString stringWithFormat:@"confExists=%@", confExists ? @"yes" : @"no"]];
     [lines addObject:[NSString stringWithFormat:@"canOpen(filza://)=%@", CLCanOpenURLString(@"filza://") ? @"yes" : @"no"]];
     [lines addObject:[NSString stringWithFormat:@"canOpen(filzaescaped://)=%@", CLCanOpenURLString(@"filzaescaped://") ? @"yes" : @"no"]];
+    NSArray<NSString *> *pathVariants = CLFilesystemPathVariants(targetPath);
+    [lines addObject:[NSString stringWithFormat:@"pathVariantCount=%lu", (unsigned long)pathVariants.count]];
+    for (NSUInteger i = 0; i < pathVariants.count; i++) {
+        [lines addObject:[NSString stringWithFormat:@"path[%lu]=%@", (unsigned long)i, pathVariants[i] ?: @"<nil>"]];
+    }
     [lines addObject:[NSString stringWithFormat:@"candidateCount=%lu", (unsigned long)candidates.count]];
     for (NSUInteger i = 0; i < candidates.count; i++) {
         NSURL *u = candidates[i];
@@ -260,15 +361,9 @@ static void CLOpenPathInFilza(UIViewController *vc, NSString *path) {
         return;
     }
 
-    NSString *pathA = path;
-    NSString *pathB = pathA;
-    if ([pathB hasPrefix:@"/private/var/"]) {
-        pathB = [@"/var/" stringByAppendingString:[pathB substringFromIndex:@"/private/var/".length]];
-    }
-
     NSMutableArray<NSURL *> *candidates = [NSMutableArray array];
     NSArray<NSString *> *schemes = @[@"filza", @"filzaescaped"];
-    for (NSString *p in @[pathA ?: @"", pathB ?: @""]) {
+    for (NSString *p in CLFilesystemPathVariants(path)) {
         if (p.length == 0) continue;
         NSString *encodedPath = [p stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLPathAllowedCharacterSet]];
         if (encodedPath.length == 0) continue;
@@ -4756,21 +4851,24 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
 
 - (void)configFolderTapped {
     NSString *confPath = getConfPath_C() ?: @"";
-    NSString *dirPath = getAppDocumentsPath_C() ?: @"";
+    NSString *dirPath = getRuntimeDataRootPath_C() ?: @"";
+    if (dirPath.length == 0) {
+        dirPath = getAppDocumentsPath_C() ?: @"";
+    }
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *targetPath = @"";
 
-    if (confPath.length > 0) {
-        BOOL isDir = NO;
-        if ([fm fileExistsAtPath:confPath isDirectory:&isDir] && !isDir) {
-            targetPath = confPath;
-        }
-    }
-
-    if (targetPath.length == 0 && dirPath.length > 0) {
+    if (dirPath.length > 0) {
         BOOL isDir = NO;
         if ([fm fileExistsAtPath:dirPath isDirectory:&isDir] && isDir) {
             targetPath = dirPath;
+        }
+    }
+
+    if (targetPath.length == 0 && confPath.length > 0) {
+        BOOL isDir = NO;
+        if ([fm fileExistsAtPath:confPath isDirectory:&isDir] && !isDir) {
+            targetPath = confPath;
         }
     }
 

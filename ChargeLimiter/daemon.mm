@@ -289,7 +289,7 @@ static int getFullChargeScheduleDurationHours() {
 }
 
 static BOOL isHoldModeEnabled() {
-    return getLocalBool(@"adv_hold_enabled", YES);
+    return getLocalBool(@"adv_hold_enabled", NO);
 }
 
 static BOOL shouldHandOverCapacityControlAt100() {
@@ -305,7 +305,7 @@ static BOOL isHoldCapacityControlAvailableForConfiguredTarget() {
 }
 
 static int getHoldModeBand() {
-    return clampIntValue(getLocalInt(@"adv_hold_band", 2), 1, 10);
+    return clampIntValue(getLocalInt(@"adv_hold_band", 5), 1, 10);
 }
 
 static int getHoldCheckIntervalMinutes() {
@@ -2786,8 +2786,8 @@ static void initConf(BOOL reset) {
         @"adv_predictive_inhibit_charge": @YES, // 默认开启，停充时优先走 PredictiveChargingInhibit，失败自动回退
         @"adv_system_capacity_control_at_100": @YES,
         @"adv_disable_inflow": @NO, // all (iPhone8+ iOS13+会改变系统充电图标)
-        @"adv_hold_enabled": @YES, // 默认开启插电保持
-        @"adv_hold_band": @2,
+        @"adv_hold_enabled": @NO, // 默认关闭插电保持
+        @"adv_hold_band": @5,
         @"adv_hold_behavior": @"balanced",
         @"adv_hold_temp_disable_smart_charge": @YES,
         @"adv_thermal_avail": @(adv_thermal_avail),
