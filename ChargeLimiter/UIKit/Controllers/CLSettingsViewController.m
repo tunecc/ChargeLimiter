@@ -1452,11 +1452,8 @@ static NSString *CLHistoryPolicyReasonLabel(NSString *reason) {
     if ([reason isEqualToString:@"hold_band_lower_reached"]) {
         return CLL(@"低于保持下边界，开始补电");
     }
-    if ([reason isEqualToString:@"hold_discharge_trend"]) {
-        return CLL(@"检测到持续放电趋势，提前补电");
-    }
     if ([reason isEqualToString:@"hold_monitoring"]) {
-        return CLL(@"保持区间内观察中");
+        return CLL(@"保持区间内等待下一次检查");
     }
     if ([reason isEqualToString:@"hold_recharge_active"]) {
         return CLL(@"保持补电进行中");
@@ -1496,47 +1493,6 @@ static NSString *CLHistoryPolicyReasonLabel(NSString *reason) {
     }
     if ([reason isEqualToString:@"smart_charge_session_released"]) {
         return CLL(@"系统优化充电状态已变化，本工具结束当前接管会话");
-    }
-    if ([reason isEqualToString:@"hold_behavior_changed"]) {
-        return CLL(@"自适应判断负载变化，已切换当前生效保持策略");
-    }
-    return CLL(@"未知");
-}
-
-static NSString *CLHistoryAdaptiveLoadLevelLabel(NSString *loadLevel) {
-    if ([loadLevel isEqualToString:@"high"]) {
-        return CLL(@"高负载");
-    }
-    if ([loadLevel isEqualToString:@"medium"]) {
-        return CLL(@"中负载");
-    }
-    if ([loadLevel isEqualToString:@"low"]) {
-        return CLL(@"低负载");
-    }
-    if ([loadLevel isEqualToString:@"thermal_guard"]) {
-        return CLL(@"温控保护");
-    }
-    if ([loadLevel isEqualToString:@"wireless_guard"]) {
-        return CLL(@"无线充保护");
-    }
-    if ([loadLevel isEqualToString:@"fixed"]) {
-        return CLL(@"固定策略");
-    }
-    return CLL(@"未知");
-}
-
-static NSString *CLHistoryHoldBehaviorLabel(NSString *behavior) {
-    if ([behavior isEqualToString:@"power_first"]) {
-        return CLL(@"偏向外接供电");
-    }
-    if ([behavior isEqualToString:@"battery_first"]) {
-        return CLL(@"偏向减少循环");
-    }
-    if ([behavior isEqualToString:@"adaptive"]) {
-        return CLL(@"智能自适应");
-    }
-    if ([behavior isEqualToString:@"balanced"]) {
-        return CLL(@"平衡");
     }
     return CLL(@"未知");
 }
@@ -1968,6 +1924,8 @@ static NSString *CLHistoryEventTimestampLabel(NSTimeInterval timestamp) {
                 weakSelf.offsetHour = 0;
                 weakSelf.offsetDay = 0;
                 weakSelf.offsetMonth = 0;
+                weakSelf.policyEventHistory = @[];
+                weakSelf.policyEventLastID = 0;
             }
             [weakSelf updateHistoryStatsSwitchStateAnimated:YES];
             [weakSelf updateHintForSegment];
@@ -2195,7 +2153,7 @@ static NSString *CLHistoryEventTimestampLabel(NSTimeInterval timestamp) {
         return CLL(@"温控");
     }
     if ([type isEqualToString:@"hold_behavior_event"]) {
-        return CLL(@"策略");
+        return CLL(@"保持");
     }
     if ([type isEqualToString:@"hold_event"]) {
         return CLL(@"保持");
@@ -2212,7 +2170,7 @@ static NSString *CLHistoryEventTimestampLabel(NSTimeInterval timestamp) {
         return @"thermometer.medium";
     }
     if ([type isEqualToString:@"hold_behavior_event"]) {
-        return @"slider.horizontal.3";
+        return @"timer";
     }
     if ([type isEqualToString:@"hold_event"]) {
         return @"arrow.triangle.2.circlepath";
@@ -2229,7 +2187,7 @@ static NSString *CLHistoryEventTimestampLabel(NSTimeInterval timestamp) {
         return [UIColor systemOrangeColor];
     }
     if ([type isEqualToString:@"hold_behavior_event"]) {
-        return [UIColor systemIndigoColor];
+        return [UIColor systemGreenColor];
     }
     if ([type isEqualToString:@"hold_event"]) {
         return [UIColor systemGreenColor];
@@ -2251,12 +2209,7 @@ static NSString *CLHistoryEventTimestampLabel(NSTimeInterval timestamp) {
         return [NSString stringWithFormat:@"%@  %@", CLL(@"系统优化充电"), resolvedLabel.length > 0 ? resolvedLabel : CLL(@"未知")];
     }
     if ([type isEqualToString:@"hold_behavior_event"]) {
-        NSString *fromBehavior = CLHistoryHoldBehaviorLabel([item[@"from"] isKindOfClass:[NSString class]] ? item[@"from"] : @"");
-        NSString *toBehavior = CLHistoryHoldBehaviorLabel([item[@"to"] isKindOfClass:[NSString class]] ? item[@"to"] : @"");
-        if (fromBehavior.length > 0 && toBehavior.length > 0 && ![fromBehavior isEqualToString:toBehavior]) {
-            return [NSString stringWithFormat:@"%@  %@ -> %@", CLL(@"保持策略"), fromBehavior, toBehavior];
-        }
-        return [NSString stringWithFormat:@"%@  %@", CLL(@"保持策略"), toBehavior.length > 0 ? toBehavior : CLL(@"未知")];
+        return CLL(@"插电保持配置已更新");
     }
     NSString *fromState = [item[@"from"] isKindOfClass:[NSString class]] ? item[@"from"] : @"";
     NSString *toState = [item[@"to"] isKindOfClass:[NSString class]] ? item[@"to"] : @"";
@@ -2295,9 +2248,11 @@ static NSString *CLHistoryEventTimestampLabel(NSTimeInterval timestamp) {
         [segments addObject:[NSString stringWithFormat:@"%.1f°C", temperature / 100.0]];
     }
 
-    NSString *loadLevel = [item[@"hold_load_level"] isKindOfClass:[NSString class]] ? item[@"hold_load_level"] : @"";
-    if (loadLevel.length > 0 && ![loadLevel isEqualToString:@"fixed"]) {
-        [segments addObject:CLHistoryAdaptiveLoadLevelLabel(loadLevel)];
+    NSNumber *holdCheckInterval = [item[@"hold_check_interval_minutes"] respondsToSelector:@selector(integerValue)] ? item[@"hold_check_interval_minutes"] : nil;
+    if (holdCheckInterval != nil) {
+        [segments addObject:[NSString stringWithFormat:@"%@ %@",
+                             CLL(@"检查间隔"),
+                             [NSString stringWithFormat:CLL(@"%ld 分钟"), (long)MAX(holdCheckInterval.integerValue, 1)]]];
     }
 
     NSInteger smartChargeStatus = [item[@"smart_charge_status"] integerValue];
@@ -4800,17 +4755,28 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
 }
 
 - (void)configFolderTapped {
-    NSString *confPath = getConfPath_C();
-    NSString *dirPath = getAppDocumentsPath_C();
-    NSString *targetPath = confPath;
+    NSString *confPath = getConfPath_C() ?: @"";
+    NSString *dirPath = getAppDocumentsPath_C() ?: @"";
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *targetPath = @"";
 
-    // Prefer opening the config file directly, matching previous behavior.
-    if (targetPath.length == 0 && dirPath.length > 0) {
-        targetPath = [dirPath stringByAppendingPathComponent:@"aldente.conf"];
+    if (confPath.length > 0) {
+        BOOL isDir = NO;
+        if ([fm fileExistsAtPath:confPath isDirectory:&isDir] && !isDir) {
+            targetPath = confPath;
+        }
     }
 
-    // Fallback to app data directory when file path cannot be resolved.
     if (targetPath.length == 0 && dirPath.length > 0) {
+        BOOL isDir = NO;
+        if ([fm fileExistsAtPath:dirPath isDirectory:&isDir] && isDir) {
+            targetPath = dirPath;
+        }
+    }
+
+    if (targetPath.length == 0 && confPath.length > 0) {
+        targetPath = confPath;
+    } else if (targetPath.length == 0) {
         targetPath = dirPath;
     }
 
@@ -5051,6 +5017,10 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
 @property (nonatomic, strong) CLGlassCard *tempCard;       // 温度控制卡片
 @property (nonatomic, strong) CLGlassCard *adapterCard;    // 适配器信息卡片
 @property (nonatomic, strong) CLGlassCard *powerPathCard;  // 电源路径卡片
+@property (nonatomic, strong) UIView *powerPathHoldSectionSeparator;
+@property (nonatomic, strong) UIView *powerPathHoldCheckIntervalRow;
+@property (nonatomic, strong) UIView *powerPathHoldRangeSeparator;
+@property (nonatomic, strong) UIView *powerPathHoldRangeRow;
 @property (nonatomic, strong) CLGlassCard *infoCard;
 @property (nonatomic, strong) CLGlassCard *softwareSettingsEntryCard;
 @property (nonatomic, strong) CLGlassCard *historyEntryCard;
@@ -5088,6 +5058,7 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
 - (void)showSystemControlHintWithText:(NSString *)text;
 - (BOOL)usesSystemCapacityControlForManager:(CLBatteryManager *)manager chargeAbove:(NSInteger)chargeAbove;
 - (BOOL)isHoldSuppressedBySystemCapacityControlForManager:(CLBatteryManager *)manager;
+- (void)updatePowerPathHoldVisibilityForManager:(CLBatteryManager *)manager;
 @end
 
 @implementation CLSettingsViewController
@@ -5891,10 +5862,13 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     [self.powerPathCard addRowWithIcon:@"bolt.slash" title:CLL(@"系统停充抑制") value:CLL(@"未启用") color:[UIColor systemRedColor]];
     [self.powerPathCard addSeparator];
     [self.powerPathCard addRowWithIcon:@"battery.100.circle" title:CLL(@"系统优化充电") value:CLL(@"未知") color:[UIColor systemBlueColor]];
-    [self.powerPathCard addSeparator];
-    [self.powerPathCard addRowWithIcon:@"slider.horizontal.3" title:CLL(@"保持策略") value:CLL(@"平衡") color:[UIColor systemIndigoColor]];
-    [self.powerPathCard addSeparator];
+    self.powerPathHoldSectionSeparator = [self.powerPathCard addSeparator];
+    [self.powerPathCard addRowWithIcon:@"timer" title:CLL(@"检查间隔") value:CLL(@"3 分钟") color:[UIColor systemIndigoColor]];
+    self.powerPathHoldCheckIntervalRow = self.powerPathCard.contentStack.arrangedSubviews.lastObject;
+    self.powerPathHoldRangeSeparator = [self.powerPathCard addSeparator];
     [self.powerPathCard addRowWithIcon:@"scope" title:CLL(@"保持范围") value:@"--" color:[UIColor systemIndigoColor]];
+    self.powerPathHoldRangeRow = self.powerPathCard.contentStack.arrangedSubviews.lastObject;
+    [self updatePowerPathHoldVisibilityForManager:[CLBatteryManager shared]];
 
     [self.mainStack addArrangedSubview:self.powerPathCard];
 }
@@ -6413,6 +6387,7 @@ static BOOL CLDisplayedPowerStateUsesExternalPower(CLBatteryManager *manager) {
     CLBatteryManager *manager = [CLBatteryManager shared];
     NSString *powerStateLabel = [self powerStateLabelForManager:manager];
     [self updateSetChargeAboveCurrentButtonState];
+    [self updatePowerPathHoldVisibilityForManager:manager];
 
     // 更新电池状态
     [self.batteryStatus applyBatteryManager:manager statusText:powerStateLabel];
@@ -6430,7 +6405,7 @@ static BOOL CLDisplayedPowerStateUsesExternalPower(CLBatteryManager *manager) {
     [self updateCardValue:self.powerPathCard title:CLL(@"充电命令") value:[self chargeCommandLabelForManager:manager]];
     [self updateCardValue:self.powerPathCard title:CLL(@"系统停充抑制") value:(manager.predictiveChargingInhibitActive ? CLL(@"已启用") : CLL(@"未启用"))];
     [self updateCardValue:self.powerPathCard title:CLL(@"系统优化充电") value:[self smartChargeStatusLabelForManager:manager]];
-    [self updateCardValue:self.powerPathCard title:CLL(@"保持策略") value:[self holdBehaviorLabelForManager:manager]];
+    [self updateCardValue:self.powerPathCard title:CLL(@"检查间隔") value:[self holdCheckIntervalLabelForManager:manager]];
     [self updateCardValue:self.powerPathCard title:CLL(@"保持范围") value:[self holdRangeLabelForManager:manager]];
 
     // 更新适配器卡片
@@ -6564,6 +6539,14 @@ static BOOL CLDisplayedPowerStateUsesExternalPower(CLBatteryManager *manager) {
     return [self usesSystemCapacityControlForManager:manager chargeAbove:manager.chargeAbove];
 }
 
+- (void)updatePowerPathHoldVisibilityForManager:(CLBatteryManager *)manager {
+    BOOL showHoldSummary = manager.holdModeEnabled;
+    self.powerPathHoldSectionSeparator.hidden = !showHoldSummary;
+    self.powerPathHoldCheckIntervalRow.hidden = !showHoldSummary;
+    self.powerPathHoldRangeSeparator.hidden = !showHoldSummary;
+    self.powerPathHoldRangeRow.hidden = !showHoldSummary;
+}
+
 - (NSString *)holdRangeLabelForManager:(CLBatteryManager *)manager {
     if ([self isHoldSuppressedBySystemCapacityControlForManager:manager]) {
         return CLL(@"系统控制");
@@ -6575,36 +6558,21 @@ static BOOL CLDisplayedPowerStateUsesExternalPower(CLBatteryManager *manager) {
     return [NSString stringWithFormat:@"%ld%% - %ld%%", (long)lower, (long)manager.holdTarget];
 }
 
-- (NSString *)fixedHoldBehaviorLabel:(CLHoldModeBehavior)behavior {
-    switch (behavior) {
-        case CLHoldModeBehaviorAdaptive:
-            return CLL(@"智能自适应");
-        case CLHoldModeBehaviorPowerFirst:
-            return CLL(@"偏向外接供电");
-        case CLHoldModeBehaviorBatteryFirst:
-            return CLL(@"偏向减少循环");
-        default:
-            return CLL(@"平衡");
-    }
-}
-
-- (NSString *)holdBehaviorLabelForManager:(CLBatteryManager *)manager {
+- (NSString *)holdCheckIntervalLabelForManager:(CLBatteryManager *)manager {
     if ([self isHoldSuppressedBySystemCapacityControlForManager:manager]) {
         return CLL(@"系统控制");
     }
-    if (manager.holdModeBehavior == CLHoldModeBehaviorAdaptive) {
-        if (!manager.holdModeEnabled) {
-            return [NSString stringWithFormat:@"%@ · %@", CLL(@"智能自适应"), CLL(@"未启用")];
-        }
-        return [NSString stringWithFormat:CLL(@"智能自适应 · 当前%@"),
-                [self fixedHoldBehaviorLabel:manager.holdRuntimeBehavior]];
+    if (!manager.holdModeEnabled) {
+        return CLL(@"关闭");
     }
-    return [self fixedHoldBehaviorLabel:manager.holdModeBehavior];
+    NSInteger minutes = MAX(manager.holdCheckIntervalMinutes, 1);
+    return [NSString stringWithFormat:CLL(@"%ld 分钟"), (long)minutes];
 }
 
 
 - (void)configDidUpdate {
     CLBatteryManager *manager = [CLBatteryManager shared];
+    [self updatePowerPathHoldVisibilityForManager:manager];
     
     // 更新控制卡片的开关和值
     [self updateSwitchInCard:self.controlCard tag:100 value:manager.enabled];
@@ -6624,7 +6592,7 @@ static BOOL CLDisplayedPowerStateUsesExternalPower(CLBatteryManager *manager) {
     [self updateSliderLabel:self.chargeAboveRow value:chargeAbove suffix:@"%"];
     self.batteryStatus.chargeBelow = chargeBelow;
     self.batteryStatus.chargeAbove = chargeAbove;
-    [self updateCardValue:self.powerPathCard title:CLL(@"保持策略") value:[self holdBehaviorLabelForManager:manager]];
+    [self updateCardValue:self.powerPathCard title:CLL(@"检查间隔") value:[self holdCheckIntervalLabelForManager:manager]];
     [self updateCardValue:self.powerPathCard title:CLL(@"保持范围") value:[self holdRangeLabelForManager:manager]];
     
     // 更新温度控制卡片

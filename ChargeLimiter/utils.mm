@@ -14,26 +14,51 @@ static NSString* g_dbPath = nil;
 static NSString* g_appDocumentsPathOverride = nil;
 static NSString* const kLegacyContainerCacheFileName = @"com.chargelimiter.mod.containerpath";
 typedef const char* (*jbroot_fn_t)(const char* path);
+static NSString* resolveJbRootFromSelfExe(void);
+
+static BOOL hasAllowedAppContainerPrefix(NSString* prefix) {
+    if (prefix.length == 0) {
+        return YES;
+    }
+    if ([prefix isEqualToString:@"/private"] || [prefix hasSuffix:@"/private"]) {
+        return YES;
+    }
+    if ([prefix containsString:@"/.jbroot-"]) {
+        return YES;
+    }
+    return NO;
+}
+
+static BOOL isSupportedAppContainerPath(NSString* lower) {
+    if (lower.length == 0 || ![lower hasPrefix:@"/"]) {
+        return NO;
+    }
+    NSArray<NSString*>* anchors = @[
+        @"/var/mobile/containers/data/application/",
+        @"/private/var/mobile/containers/data/application/",
+        @"/var/jb/var/mobile/containers/data/application/",
+        @"/private/var/jb/var/mobile/containers/data/application/",
+        @"/var/jb/private/var/mobile/containers/data/application/"
+    ];
+    for (NSString* anchor in anchors) {
+        NSRange range = [lower rangeOfString:anchor];
+        if (range.location == NSNotFound) {
+            continue;
+        }
+        NSString* prefix = [lower substringToIndex:range.location];
+        if (hasAllowedAppContainerPrefix(prefix)) {
+            return YES;
+        }
+    }
+    return NO;
+}
 
 static BOOL isValidAppDocumentsPath(NSString* path) {
     if (path.length == 0) {
         return NO;
     }
     NSString* lower = path.lowercaseString;
-    if (![lower hasPrefix:@"/"]) {
-        return NO;
-    }
-    if (![lower containsString:@"/containers/data/"]) {
-        return NO;
-    }
-    if ([lower hasPrefix:@"/var/mobile/"] ||
-        [lower hasPrefix:@"/private/var/mobile/"] ||
-        [lower hasPrefix:@"/var/jb/var/mobile/"] ||
-        [lower hasPrefix:@"/private/var/jb/var/mobile/"] ||
-        [lower hasPrefix:@"/var/jb/private/var/mobile/"]) {
-        return YES;
-    }
-    return NO;
+    return isSupportedAppContainerPath(lower);
 }
 
 static BOOL isValidAppContainerRoot(NSString* path) {
@@ -41,20 +66,7 @@ static BOOL isValidAppContainerRoot(NSString* path) {
         return NO;
     }
     NSString* lower = path.lowercaseString;
-    if (![lower hasPrefix:@"/"]) {
-        return NO;
-    }
-    if (![lower containsString:@"/containers/data/"]) {
-        return NO;
-    }
-    if ([lower hasPrefix:@"/var/mobile/"] ||
-        [lower hasPrefix:@"/private/var/mobile/"] ||
-        [lower hasPrefix:@"/var/jb/var/mobile/"] ||
-        [lower hasPrefix:@"/private/var/jb/var/mobile/"] ||
-        [lower hasPrefix:@"/var/jb/private/var/mobile/"]) {
-        return YES;
-    }
-    return NO;
+    return isSupportedAppContainerPath(lower);
 }
 
 static NSString* validatedDocumentsPath(NSString* path) {
@@ -129,7 +141,7 @@ static NSString* resolveContainerRootByScanning(NSString* bid) {
     if (bid.length == 0) {
         return nil;
     }
-    NSArray<NSString*>* bases = @[
+    NSMutableArray<NSString*>* bases = [NSMutableArray arrayWithArray:@[
         @"/var/mobile/Containers/Data/Application",
         @"/private/var/mobile/Containers/Data/Application",
         @"/var/mobile/containers/data/application",
@@ -140,7 +152,14 @@ static NSString* resolveContainerRootByScanning(NSString* bid) {
         @"/var/jb/var/mobile/containers/data/application",
         @"/private/var/jb/var/mobile/containers/data/application",
         @"/var/jb/private/var/mobile/containers/data/application"
-    ];
+    ]];
+    NSString* jbroot = resolveJbRootFromSelfExe();
+    if (jbroot.length > 0) {
+        [bases addObject:[jbroot stringByAppendingPathComponent:@"var/mobile/Containers/Data/Application"]];
+        [bases addObject:[jbroot stringByAppendingPathComponent:@"var/mobile/containers/data/application"]];
+        [bases addObject:[jbroot stringByAppendingPathComponent:@"private/var/mobile/Containers/Data/Application"]];
+        [bases addObject:[jbroot stringByAppendingPathComponent:@"private/var/mobile/containers/data/application"]];
+    }
     for (NSString* base in bases) {
         NSError* error = nil;
         NSArray* containers = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:base error:&error];

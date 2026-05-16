@@ -136,6 +136,7 @@ static NSString* g_smartChargeCoordinationSessionID = nil;
 static time_t g_smartChargeCoordinationStartedTs = 0;
 static int g_holdDischargeStreak = 0;
 static BOOL g_holdHasReachedTargetSincePlug = NO;
+static BOOL g_holdMonitorCheckRequested = NO;
 static NSArray* g_recentPolicyTransitions = nil;
 static NSArray* g_policyEventHistory = nil;
 static NSString* g_holdRuntimeBehavior = @"balanced";
@@ -145,9 +146,9 @@ static time_t g_lastHoldRuntimeBehaviorChangeTs = 0;
 static NSMutableArray<NSNumber*>* g_holdCurrentSamples = nil;
 static BOOL g_predictiveInhibitFallbackActive = NO;
 
-static const int kHoldMonitorIntervalPowerFirstSeconds = 10;
-static const int kHoldMonitorIntervalBalancedSeconds = 15;
-static const int kHoldMonitorIntervalBatteryFirstSeconds = 20;
+static const int kHoldDefaultMonitorIntervalMinutes = 3;
+static const int kHoldMinMonitorIntervalMinutes = 1;
+static const int kHoldMaxMonitorIntervalMinutes = 10;
 static const int kHoldActionMinGapSeconds = 20;
 static const int kHoldCurrentChargeThresholdmA = 120;
 static const int kHoldCurrentDischargeThresholdmA = -120;
@@ -209,6 +210,7 @@ static void updateStatistics(void);
 static void evaluateFullChargeSchedule(BOOL forceApply);
 static void refreshBatteryStateAndApplyPolicy(void);
 static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info);
+static BOOL historyStatsEnabled(void);
 static BOOL hasPotentialExternalPowerSignal(NSDictionary* info);
 static BOOL isDisableInflowRetryEligible(NSDictionary* info, NSString* policyState);
 static void cancelDisableInflowRetry(void);
@@ -306,6 +308,16 @@ static int getHoldModeBand() {
     return clampIntValue(getLocalInt(@"adv_hold_band", 2), 1, 10);
 }
 
+static int getHoldCheckIntervalMinutes() {
+    return clampIntValue(getLocalInt(@"adv_hold_check_interval_minutes", kHoldDefaultMonitorIntervalMinutes),
+                         kHoldMinMonitorIntervalMinutes,
+                         kHoldMaxMonitorIntervalMinutes);
+}
+
+static int getHoldCheckIntervalSeconds() {
+    return getHoldCheckIntervalMinutes() * 60;
+}
+
 static NSString* normalizeHoldModeBehavior(NSString* behavior) {
     if ([@[@"balanced", @"power_first", @"battery_first", @"adaptive"] containsObject:behavior]) {
         return behavior;
@@ -314,7 +326,7 @@ static NSString* normalizeHoldModeBehavior(NSString* behavior) {
 }
 
 static NSString* getHoldModeBehavior() {
-    return normalizeHoldModeBehavior(getLocalString(@"adv_hold_behavior", @"balanced"));
+    return @"balanced";
 }
 
 static BOOL isHoldAdaptiveBehavior(NSString* behavior) {
@@ -322,22 +334,11 @@ static BOOL isHoldAdaptiveBehavior(NSString* behavior) {
 }
 
 static NSString* currentHoldRuntimeBehavior(void) {
-    NSString* configured = getHoldModeBehavior();
-    if (!isHoldAdaptiveBehavior(configured)) {
-        return configured;
-    }
-    return normalizeHoldModeBehavior(g_holdRuntimeBehavior ?: @"balanced");
+    return @"balanced";
 }
 
 static int getHoldStrategyMonitorIntervalSecondsForBehavior(NSString* behavior) {
-    NSString* safeBehavior = normalizeHoldModeBehavior(behavior);
-    if ([safeBehavior isEqualToString:@"power_first"]) {
-        return kHoldMonitorIntervalPowerFirstSeconds;
-    }
-    if ([safeBehavior isEqualToString:@"battery_first"]) {
-        return kHoldMonitorIntervalBatteryFirstSeconds;
-    }
-    return kHoldMonitorIntervalBalancedSeconds;
+    return getHoldCheckIntervalSeconds();
 }
 
 static BOOL isHoldSmartChargeCoordinationEnabled() {
@@ -349,15 +350,11 @@ static int getHoldStrategyMonitorIntervalSeconds() {
 }
 
 static BOOL shouldUseHoldEarlyRechargeAssistForBehavior(NSString* behavior) {
-    return ![normalizeHoldModeBehavior(behavior) isEqualToString:@"battery_first"];
+    return NO;
 }
 
 static int getHoldEarlyRechargeDischargeStreakRequiredForBehavior(NSString* behavior) {
-    NSString* safeBehavior = normalizeHoldModeBehavior(behavior);
-    if ([safeBehavior isEqualToString:@"power_first"]) {
-        return 1;
-    }
-    return 2;
+    return 0;
 }
 
 static BOOL shouldUseHoldEarlyRechargeAssist() {
@@ -365,11 +362,7 @@ static BOOL shouldUseHoldEarlyRechargeAssist() {
 }
 
 static int getHoldEarlyRechargeDischargeStreakRequired() {
-    NSString* behavior = currentHoldRuntimeBehavior();
-    if ([behavior isEqualToString:@"power_first"]) {
-        return 1;
-    }
-    return 2;
+    return 0;
 }
 
 static void resetHoldAdaptiveRuntimeState() {
@@ -605,8 +598,8 @@ static NSDictionary* policyEventSnapshot(NSDictionary* info) {
     snapshot[@"charge_command_enabled"] = @(g_chargeCommandEnabled);
     snapshot[@"smart_charge_status"] = @(g_smartChargeStatus);
     snapshot[@"smart_charge_managed"] = @(g_tempSmartChargeDisabledByCL);
-    snapshot[@"hold_behavior"] = currentHoldRuntimeBehavior() ?: @"balanced";
-    snapshot[@"hold_load_level"] = g_holdAdaptiveLoadLevel ?: @"fixed";
+    snapshot[@"hold_behavior"] = @"balanced";
+    snapshot[@"hold_check_interval_minutes"] = @(getHoldCheckIntervalMinutes());
     return snapshot;
 }
 
@@ -644,6 +637,9 @@ static void appendPolicyEventHistory(NSString* eventType,
                                      NSDictionary* info,
                                      NSDictionary* extras,
                                      time_t now) {
+    if (!historyStatsEnabled()) {
+        return;
+    }
     NSMutableArray* history = [recentPolicyEventHistory() mutableCopy];
     NSDictionary* item = buildPolicyEventRecord(eventType, fromState, toState, reason, info, extras, now);
     [history addObject:item];
@@ -964,7 +960,7 @@ static void refreshHoldMonitorTimer(void) {
         g_holdMonitorTimerIntervalSeconds = 0;
         return;
     }
-    int intervalSeconds = getHoldStrategyMonitorIntervalSeconds();
+    int intervalSeconds = getHoldCheckIntervalSeconds();
     if (g_holdMonitorTimer != nil && g_holdMonitorTimerIntervalSeconds == intervalSeconds) {
         return;
     }
@@ -975,7 +971,9 @@ static void refreshHoldMonitorTimer(void) {
     g_holdMonitorTimerIntervalSeconds = intervalSeconds;
     g_holdMonitorTimer = [NSTimer scheduledTimerWithTimeInterval:intervalSeconds repeats:YES block:^(NSTimer* timer) {
         @synchronized (Service.inst) {
+            g_holdMonitorCheckRequested = YES;
             refreshBatteryStateAndApplyPolicy();
+            g_holdMonitorCheckRequested = NO;
         }
     }];
     [[NSRunLoop mainRunLoop] addTimer:g_holdMonitorTimer forMode:NSRunLoopCommonModes];
@@ -2024,6 +2022,17 @@ static void clearAllStatisticsData(void) {
     if (serial.length > 0) {
         clearStatisticsTablesForBattery(serial);
     }
+    g_policyEventHistory = @[];
+    persistPolicyEventHistory();
+    NSString* quotedTbl = policyEventDBTableNameQuoted();
+    if (db && quotedTbl.length > 0) {
+        NSString* sql = [NSString stringWithFormat:@"delete from %@", quotedTbl];
+        char* err = NULL;
+        sqlite3_exec(db, sql.UTF8String, NULL, NULL, &err);
+        if (err != NULL) {
+            sqlite3_free(err);
+        }
+    }
 }
 
 static void onBatteryEventEnd() {
@@ -2066,6 +2075,7 @@ static void initConfKeySets() {
             @"temp_mode",
             @"update_freq",
             @"adv_hold_band",
+            @"adv_hold_check_interval_minutes",
             @"full_charge_sched_interval_days",
             @"full_charge_sched_start_minute",
             @"full_charge_sched_duration_hours",
@@ -2495,25 +2505,7 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
         markPredictiveInhibitFallbackActive(@"predictive_inhibit_stop_unconfirmed", safeInfo, extras, now);
         setBatteryStatus(NO);
     }
-    NSString* previousRuntimeHoldBehavior = currentHoldRuntimeBehavior();
-    BOOL holdRuntimeBehaviorChanged = NO;
-    NSString* runtimeHoldBehavior = updateHoldRuntimeBehavior(safeInfo,
-                                                              adv_hold_enabled,
-                                                              is_adaptor_connected,
-                                                              temperature,
-                                                              charge_temp_above,
-                                                              now,
-                                                              &holdRuntimeBehaviorChanged);
-    if (holdRuntimeBehaviorChanged) {
-        refreshHoldMonitorTimer();
-        appendPolicyEventHistory(@"hold_behavior_event",
-                                 previousRuntimeHoldBehavior ?: @"",
-                                 runtimeHoldBehavior ?: @"",
-                                 @"hold_behavior_changed",
-                                 safeInfo,
-                                 nil,
-                                 now);
-    }
+    NSString* runtimeHoldBehavior = currentHoldRuntimeBehavior();
     BOOL holdCapacityControlActive = (!disable_capacity_control && adv_hold_enabled && is_adaptor_connected);
     if (!holdCapacityControlActive || is_adaptor_new_connected) {
         resetHoldSessionState();
@@ -2615,15 +2607,8 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
             if (g_holdHasReachedTargetSincePlug) {
                 BOOL should_recharge_for_hold = (capacity.intValue <= hold_lower);
                 NSString* holdRechargeReason = @"hold_band_lower_reached";
-                if (!should_recharge_for_hold &&
-                    within_hold_band &&
-                    shouldUseHoldEarlyRechargeAssistForBehavior(runtimeHoldBehavior) &&
-                    g_holdDischargeStreak >= getHoldEarlyRechargeDischargeStreakRequiredForBehavior(runtimeHoldBehavior) &&
-                    canToggleChargeCommand(now)) {
-                    NSFileLog(@"hold early recharge for discharge trend %@ target=%d lower=%d streak=%d current=%d behavior=%@",
-                              capacity, charge_above, hold_lower, g_holdDischargeStreak, effective_current, runtimeHoldBehavior);
-                    should_recharge_for_hold = YES;
-                    holdRechargeReason = @"hold_discharge_trend";
+                if (!should_recharge_for_hold && within_hold_band && !g_holdMonitorCheckRequested) {
+                    should_recharge_for_hold = NO;
                 }
                 if (should_recharge_for_hold) {
                     if (!g_chargeCommandEnabled || predictive_inhibit_active || !current_looks_charging) {
@@ -3070,14 +3055,14 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
         data[@"HoldTarget"] = holdCapacityControlAvailable ? @(target) : @0;
         data[@"HoldRangeLower"] = holdCapacityControlAvailable ? @(getHoldModeLowerBound(target)) : @0;
         data[@"HoldBand"] = @(getHoldModeBand());
-        data[@"HoldBehavior"] = getHoldModeBehavior() ?: @"balanced";
-        data[@"HoldRuntimeBehavior"] = currentHoldRuntimeBehavior() ?: @"balanced";
-        data[@"HoldAdaptiveLoadLevel"] = g_holdAdaptiveLoadLevel ?: @"fixed";
-        data[@"HoldAdaptiveAverageCurrent"] = @(g_holdAdaptiveAverageCurrentmA);
-        data[@"HoldDischargeStreak"] = @(g_holdDischargeStreak);
+        data[@"HoldBehavior"] = @"balanced";
+        data[@"HoldRuntimeBehavior"] = @"balanced";
+        data[@"HoldAdaptiveLoadLevel"] = @"fixed";
+        data[@"HoldAdaptiveAverageCurrent"] = @0;
+        data[@"HoldDischargeStreak"] = @0;
         data[@"HoldMonitorIntervalSeconds"] = holdCapacityControlAvailable ? @((g_holdMonitorTimerIntervalSeconds > 0) ? g_holdMonitorTimerIntervalSeconds : getHoldStrategyMonitorIntervalSeconds()) : @0;
-        data[@"HoldEarlyRechargeAssistEnabled"] = @(holdCapacityControlAvailable && shouldUseHoldEarlyRechargeAssist());
-        data[@"HoldEarlyRechargeStreakRequired"] = holdCapacityControlAvailable ? @(getHoldEarlyRechargeDischargeStreakRequired()) : @0;
+        data[@"HoldEarlyRechargeAssistEnabled"] = @NO;
+        data[@"HoldEarlyRechargeStreakRequired"] = @0;
         data[@"SmartChargeStatus"] = @(g_smartChargeStatus);
         data[@"SmartChargeManagedByDaemon"] = @(g_tempSmartChargeDisabledByCL);
         data[@"SmartChargeOriginalStatus"] = @(g_smartChargeCoordinationOriginalStatus);
