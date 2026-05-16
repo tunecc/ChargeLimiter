@@ -1474,7 +1474,7 @@ static NSString *CLHistoryPolicyReasonLabel(NSString *reason) {
         return CLL(@"插电即充模式下检测到接入电源");
     }
     if ([reason isEqualToString:@"edge_mode_stop"]) {
-        return CLL(@"边缘触发模式下插电后保持停充");
+        return CLL(@"检测到旧模式配置，已按插电即充处理");
     }
     if ([reason isEqualToString:@"adaptor_disconnected"]) {
         return CLL(@"检测到拔掉电源");
@@ -1589,6 +1589,8 @@ static NSString *CLHistoryEventTimestampLabel(NSTimeInterval timestamp) {
 @property (nonatomic, strong) UIButton *prevButton;
 @property (nonatomic, strong) UIButton *nextButton;
 @property (nonatomic, strong) UIStackView *legendStack;
+@property (nonatomic, strong) UISwitch *historyStatsSwitch;
+@property (nonatomic, assign) BOOL historyStatsEnabled;
 @property (nonatomic, strong) NSArray<NSDictionary *> *historyMin5;
 @property (nonatomic, strong) NSArray<NSDictionary *> *historyHour;
 @property (nonatomic, strong) NSArray<NSDictionary *> *historyDay;
@@ -1615,6 +1617,7 @@ static NSString *CLHistoryEventTimestampLabel(NSTimeInterval timestamp) {
     self.title = CLL(@"历史统计");
     self.showAmperage = NO;
     self.showVoltage = NO;
+    self.historyStatsEnabled = [CLBatteryManager shared].historyStatsEnabled;
     [self setupUI];
     
     [[NSNotificationCenter defaultCenter] addObserver:self
@@ -1625,6 +1628,8 @@ static NSString *CLHistoryEventTimestampLabel(NSTimeInterval timestamp) {
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
+    self.historyStatsEnabled = [CLBatteryManager shared].historyStatsEnabled;
+    [self updateHistoryStatsSwitchStateAnimated:NO];
     [self refreshHistoryData];
     if (!self.refreshTimer) {
         self.refreshTimer = [NSTimer scheduledTimerWithTimeInterval:60.0 target:self selector:@selector(refreshHistoryData) userInfo:nil repeats:YES];
@@ -1656,9 +1661,12 @@ static NSString *CLHistoryEventTimestampLabel(NSTimeInterval timestamp) {
         [v removeFromSuperview];
     }
     [self setupUI];
+    [self updateHistoryStatsSwitchStateAnimated:NO];
+    [self updateHistoryTable];
 }
 
 - (void)setupUI {
+    [self setupNavigationBarItems];
     self.scrollView = [[UIScrollView alloc] init];
     self.scrollView.translatesAutoresizingMaskIntoConstraints = NO;
     self.scrollView.showsVerticalScrollIndicator = NO;
@@ -1712,6 +1720,30 @@ static NSString *CLHistoryEventTimestampLabel(NSTimeInterval timestamp) {
     
     [self updateHintForSegment];
     [self updateHistoryTable];
+}
+
+- (void)setupNavigationBarItems {
+    UILabel *label = [[UILabel alloc] init];
+    label.text = CLL(@"统计");
+    label.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+    label.textColor = [UIColor secondaryLabelColor];
+
+    UISwitch *toggle = [[UISwitch alloc] init];
+    [toggle addTarget:self action:@selector(historyStatsSwitchChanged:) forControlEvents:UIControlEventValueChanged];
+    self.historyStatsSwitch = toggle;
+
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[label, toggle]];
+    stack.axis = UILayoutConstraintAxisHorizontal;
+    stack.alignment = UIStackViewAlignmentCenter;
+    stack.spacing = 8;
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithCustomView:stack];
+}
+
+- (void)updateHistoryStatsSwitchStateAnimated:(BOOL)animated {
+    if (!self.historyStatsSwitch) {
+        return;
+    }
+    [self.historyStatsSwitch setOn:self.historyStatsEnabled animated:animated];
 }
 
 - (void)setupChartCard {
@@ -1876,11 +1908,72 @@ static NSString *CLHistoryEventTimestampLabel(NSTimeInterval timestamp) {
     BOOL showToggles = self.segmentControl.selectedSegmentIndex <= 1;
     self.ampButton.hidden = !showToggles;
     self.voltButton.hidden = !showToggles;
-    if (showToggles) {
+    if (!self.historyStatsEnabled) {
+        self.hintLabel.text = CLL(@"统计已关闭，当前仅展示已有历史数据");
+    } else if (showToggles) {
         self.hintLabel.text = CLL(@"默认显示电量/温度，点击右侧可展开电流、电压。左右滑动切换页");
     } else {
         self.hintLabel.text = CLL(@"该维度仅显示容量与循环次数。左右滑动切换页");
     }
+}
+
+- (void)historyStatsSwitchChanged:(UISwitch *)sender {
+    if (sender.isOn) {
+        [self setHistoryStatsEnabled:YES clearExisting:NO];
+        return;
+    }
+    [self presentDisableHistoryStatsPrompt];
+}
+
+- (void)presentDisableHistoryStatsPrompt {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"关闭历史统计")
+                                                                   message:CLL(@"关闭后将停止继续采集历史统计。你可以保留已有记录，或同时删除已有历史统计数据。")
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"保留历史记录") style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        [weakSelf setHistoryStatsEnabled:NO clearExisting:NO];
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"删除历史记录") style:UIAlertActionStyleDestructive handler:^(UIAlertAction * _Nonnull action) {
+        [weakSelf setHistoryStatsEnabled:NO clearExisting:YES];
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"取消") style:UIAlertActionStyleCancel handler:^(UIAlertAction * _Nonnull action) {
+        [weakSelf updateHistoryStatsSwitchStateAnimated:YES];
+    }]];
+    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
+        alert.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItem;
+        alert.popoverPresentationController.permittedArrowDirections = UIPopoverArrowDirectionAny;
+    }
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)setHistoryStatsEnabled:(BOOL)enabled clearExisting:(BOOL)clearExisting {
+    __weak typeof(self) weakSelf = self;
+    [CLBatteryManager shared].historyStatsEnabled = enabled;
+    if (!clearExisting) {
+        self.historyStatsEnabled = enabled;
+        [self updateHistoryStatsSwitchStateAnimated:YES];
+        [self updateHintForSegment];
+        [self refreshHistoryData];
+        return;
+    }
+    [[CLBatteryManager shared] clearStatisticsWithCompletion:^(BOOL success) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            weakSelf.historyStatsEnabled = enabled;
+            if (success) {
+                weakSelf.historyMin5 = @[];
+                weakSelf.historyHour = @[];
+                weakSelf.historyDay = @[];
+                weakSelf.historyMonth = @[];
+                weakSelf.offsetMin5 = 0;
+                weakSelf.offsetHour = 0;
+                weakSelf.offsetDay = 0;
+                weakSelf.offsetMonth = 0;
+            }
+            [weakSelf updateHistoryStatsSwitchStateAnimated:YES];
+            [weakSelf updateHintForSegment];
+            [weakSelf updateHistoryTable];
+        });
+    }];
 }
 
 - (NSArray<NSDictionary *> *)currentVisibleHistoryData {
@@ -1903,6 +1996,9 @@ static NSString *CLHistoryEventTimestampLabel(NSTimeInterval timestamp) {
 
 - (void)refreshHistoryData {
     [self refreshPolicyEventHistory];
+    self.historyStatsEnabled = [CLBatteryManager shared].historyStatsEnabled;
+    [self updateHistoryStatsSwitchStateAnimated:NO];
+    [self updateHintForSegment];
     BOOL isInitial = (self.historyMin5.count == 0 && self.historyHour.count == 0 && self.historyDay.count == 0 && self.historyMonth.count == 0);
     NSDictionary *conf = nil;
     if (isInitial) {
@@ -4961,9 +5057,9 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
 @property (nonatomic, strong) CLGlassCard *moreCard;
 @property (nonatomic, strong) UIButton *refreshButton;
 @property (nonatomic, strong) UILabel *softwareSettingsSubtitleLabel;
+@property (nonatomic, strong) UILabel *historyEntrySubtitleLabel;
 @property (nonatomic, assign) NSInteger chargeBelow;
 @property (nonatomic, assign) NSInteger chargeAbove;
-@property (nonatomic, assign) NSInteger currentChargeMode; // 0=插电即充, 1=边缘触发
 @property (nonatomic, strong) UIView *chargeBelowRow;
 @property (nonatomic, strong) UIView *chargeAboveRow;      // 停止充电行
 @property (nonatomic, strong) UIButton *chargeAbovePresetButton;
@@ -5359,8 +5455,6 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     [self.controlCard addSwitchRowWithIcon:@"bolt.fill" title:CLL(@"启用") isOn:YES color:[UIColor systemGreenColor] tag:100 onChange:^(BOOL isOn) {
         [CLBatteryManager shared].enabled = isOn;
     }];
-    [self.controlCard addSeparator];
-    [self.controlCard addNavigationRowWithIcon:@"gearshape" title:CLL(@"充电模式") value:CLL(@"插电即充") color:[UIColor systemBlueColor] target:self action:@selector(chargeModesTapped)];
     
     [self.mainStack addArrangedSubview:self.controlCard];
 }
@@ -5434,16 +5528,10 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     // 停止充电滑块 - 保存引用以便更新
     self.chargeAboveRow = [self.limitCard addSliderRowWithTitle:CLL(@"停止充电 (电量 ≥)") value:self.chargeAbove minValue:15 maxValue:100 color:[UIColor systemGreenColor] tag:201 onChange:^(NSInteger value) {
         NSInteger adjustedAbove = value;
-        BOOL enforceEdge = (weakSelf.currentChargeMode == 1);
         NSInteger belowValue = weakSelf.chargeBelow;
         UISlider *belowSlider = [weakSelf sliderForTag:200];
         if (belowSlider) {
             belowValue = (NSInteger)roundf(belowSlider.value);
-        }
-        if (enforceEdge && adjustedAbove <= belowValue) {
-            adjustedAbove = belowValue + 1;
-            [weakSelf updateSliderValue:weakSelf.chargeAboveRow value:adjustedAbove];
-            [weakSelf updateSliderLabel:weakSelf.chargeAboveRow value:adjustedAbove suffix:@"%"];
         }
         weakSelf.chargeAbove = adjustedAbove;
         weakSelf.batteryStatus.chargeAbove = adjustedAbove;
@@ -5452,16 +5540,10 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     } onLiveChange:^(NSInteger value) {
         // 实时更新电池图标上的标记线
         NSInteger adjustedValue = value;
-        BOOL enforceEdge = (weakSelf.currentChargeMode == 1);
         NSInteger belowValue = weakSelf.chargeBelow;
         UISlider *belowSlider = [weakSelf sliderForTag:200];
         if (belowSlider) {
             belowValue = (NSInteger)roundf(belowSlider.value);
-        }
-        if (enforceEdge && adjustedValue <= belowValue) {
-            adjustedValue = belowValue + 1;
-            [weakSelf updateSliderValue:weakSelf.chargeAboveRow value:adjustedValue];
-            [weakSelf updateSliderLabel:weakSelf.chargeAboveRow value:adjustedValue suffix:@"%"];
         }
         weakSelf.batteryStatus.chargeAbove = adjustedValue;
         [weakSelf updateSystemControlHintForChargeAbove:adjustedValue];
@@ -5473,44 +5555,21 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     
     // 开始充电滑块 - 保存引用以便隐藏
     self.chargeBelowRow = [self.limitCard addSliderRowWithTitle:CLL(@"开始充电 (电量 ≤)") value:self.chargeBelow minValue:10 maxValue:95 color:[UIColor systemBlueColor] tag:200 onChange:^(NSInteger value) {
-        NSInteger adjustedBelow = value;
-        BOOL enforceEdge = (weakSelf.currentChargeMode == 1);
-        NSInteger aboveValue = weakSelf.chargeAbove;
-        UISlider *aboveSlider = [weakSelf sliderForTag:201];
-        if (aboveSlider) {
-            aboveValue = (NSInteger)roundf(aboveSlider.value);
-        }
-        if (enforceEdge && adjustedBelow >= aboveValue) {
-            adjustedBelow = aboveValue - 1;
-            [weakSelf updateSliderValue:weakSelf.chargeBelowRow value:adjustedBelow];
-            [weakSelf updateSliderLabel:weakSelf.chargeBelowRow value:adjustedBelow suffix:@"%"];
-        }
-        weakSelf.chargeBelow = adjustedBelow;
-        weakSelf.batteryStatus.chargeBelow = adjustedBelow;
-        [CLBatteryManager shared].chargeBelow = adjustedBelow;
+        weakSelf.chargeBelow = value;
+        weakSelf.batteryStatus.chargeBelow = value;
+        [CLBatteryManager shared].chargeBelow = value;
     } onLiveChange:^(NSInteger value) {
         // 实时更新电池图标上的标记线
-        NSInteger adjustedValue = value;
-        BOOL enforceEdge = (weakSelf.currentChargeMode == 1);
-        NSInteger aboveValue = weakSelf.chargeAbove;
-        UISlider *aboveSlider = [weakSelf sliderForTag:201];
-        if (aboveSlider) {
-            aboveValue = (NSInteger)roundf(aboveSlider.value);
-        }
-        if (enforceEdge && adjustedValue >= aboveValue) {
-            adjustedValue = aboveValue - 1;
-            [weakSelf updateSliderValue:weakSelf.chargeBelowRow value:adjustedValue];
-            [weakSelf updateSliderLabel:weakSelf.chargeBelowRow value:adjustedValue suffix:@"%"];
-        }
-        weakSelf.batteryStatus.chargeBelow = adjustedValue;
+        weakSelf.batteryStatus.chargeBelow = value;
     }];
     
     [self.mainStack addArrangedSubview:self.limitCard];
     
     // 默认模式是插电即充，隐藏开始充电选项
-    self.currentChargeMode = 0;
     self.chargeBelowRow.hidden = YES;
     self.chargeBelowRow.alpha = 0;
+    self.chargeBelowSeparator.hidden = YES;
+    self.chargeBelowSeparator.alpha = 0;
 }
 
 - (void)attachSetCurrentButtonToChargeAboveRow {
@@ -5728,7 +5787,7 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     self.tempSeparator2 = [self.tempCard addSeparator];
     
     // 降温恢复 - 温度 ≤ X°C 时恢复充电
-    self.tempBelowRow = [self.tempCard addSliderRowWithTitle:CLL(@"降温恢复 (温度 ≤)") value:self.chargeTempBelow minValue:25 maxValue:45 color:[UIColor systemBlueColor] tag:251 suffix:@"°C" onChange:^(NSInteger value) {
+    self.tempBelowRow = [self.tempCard addSliderRowWithTitle:CLL(@"降温恢复 (温度 ≤)") value:self.chargeTempBelow minValue:25 maxValue:49 color:[UIColor systemBlueColor] tag:251 suffix:@"°C" onChange:^(NSInteger value) {
         // 确保恢复温度 < 停充温度
         if (value >= weakSelf.chargeTempAbove) {
             value = weakSelf.chargeTempAbove - 1;
@@ -5947,6 +6006,18 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     self.softwareSettingsSubtitleLabel.textColor = [UIColor secondaryLabelColor];
 }
 
+- (NSString *)historyEntrySubtitleText {
+    return [CLBatteryManager shared].historyStatsEnabled ? CLL(@"5分钟/小时/天/月趋势图表") : CLL(@"统计已关闭，可查看已有记录");
+}
+
+- (void)updateHistoryEntrySubtitle {
+    if (!self.historyEntrySubtitleLabel) {
+        return;
+    }
+    self.historyEntrySubtitleLabel.text = [self historyEntrySubtitleText];
+    self.historyEntrySubtitleLabel.textColor = [UIColor secondaryLabelColor];
+}
+
 - (void)setupHistoryEntryCard {
     self.historyEntryCard = [[CLGlassCard alloc] init];
     
@@ -5984,9 +6055,11 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     UILabel *subtitleLabel = [[UILabel alloc] init];
     subtitleLabel.translatesAutoresizingMaskIntoConstraints = NO;
     subtitleLabel.userInteractionEnabled = NO;
-    subtitleLabel.text = CLL(@"5分钟/小时/天/月趋势图表");
+    subtitleLabel.text = [self historyEntrySubtitleText];
     subtitleLabel.font = [UIFont systemFontOfSize:12];
     subtitleLabel.textColor = [UIColor secondaryLabelColor];
+    subtitleLabel.numberOfLines = 2;
+    self.historyEntrySubtitleLabel = subtitleLabel;
     
     UIStackView *textStack = [[UIStackView alloc] initWithArrangedSubviews:@[titleLabel, subtitleLabel]];
     textStack.translatesAutoresizingMaskIntoConstraints = NO;
@@ -6196,71 +6269,18 @@ static BOOL CLDisplayedPowerStateUsesExternalPower(CLBatteryManager *manager) {
 }
 
 - (NSInteger)normalizedChargeValueForSlider:(UISlider *)slider value:(NSInteger)value {
-    BOOL enforceEdge = (self.currentChargeMode == 1);
-    if (!enforceEdge) {
-        return value;
-    }
-    if (slider.tag == 201) { // stop charge
-        NSInteger belowValue = self.chargeBelow;
-        UISlider *belowSlider = [self sliderForTag:200];
-        if (belowSlider) {
-            belowValue = (NSInteger)roundf(belowSlider.value);
-        }
-        if (value <= belowValue) {
-            return belowValue + 1;
-        }
-    }
-    if (slider.tag == 200) { // start charge
-        NSInteger aboveValue = self.chargeAbove;
-        UISlider *aboveSlider = [self sliderForTag:201];
-        if (aboveSlider) {
-            aboveValue = (NSInteger)roundf(aboveSlider.value);
-        }
-        if (value >= aboveValue) {
-            return aboveValue - 1;
-        }
-    }
     return value;
 }
 
 #pragma mark - Navigation Actions
 
-- (void)chargeModesTapped {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"充电模式") message:nil preferredStyle:UIAlertControllerStyleActionSheet];
-    
-    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"插电即充") style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        [CLBatteryManager shared].chargeMode = CLChargeModePlugAndCharge;
-        [self updateCardValue:self.controlCard title:CLL(@"充电模式") value:CLL(@"插电即充")];
-        self.currentChargeMode = 0;
-        [self updateChargeBelowVisibility];
-    }]];
-    
-    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"边缘触发") style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        [CLBatteryManager shared].chargeMode = CLChargeModeEdgeTrigger;
-        [self updateCardValue:self.controlCard title:CLL(@"充电模式") value:CLL(@"边缘触发")];
-        self.currentChargeMode = 1;
-        [self updateChargeBelowVisibility];
-    }]];
-    
-    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"取消") style:UIAlertActionStyleCancel handler:nil]];
-    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
-        alert.popoverPresentationController.sourceView = self.view;
-        alert.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width / 2, self.view.bounds.size.height / 2, 0, 0);
-        alert.popoverPresentationController.permittedArrowDirections = 0;
-    }
-    [self presentViewController:alert animated:YES completion:nil];
-}
-
 - (void)updateChargeBelowVisibility {
-    // 插电即充模式下隐藏"开始充电"选项，边缘触发显示
-    BOOL shouldHide = (self.currentChargeMode == 0);
-    
     [UIView animateWithDuration:0.3 animations:^{
-        self.chargeBelowRow.hidden = shouldHide;
-        self.chargeBelowRow.alpha = shouldHide ? 0 : 1;
-        self.chargeBelowSeparator.hidden = shouldHide;
-        self.chargeBelowSeparator.alpha = shouldHide ? 0 : 1;
-        self.batteryStatus.showLowMarker = !shouldHide;
+        self.chargeBelowRow.hidden = YES;
+        self.chargeBelowRow.alpha = 0;
+        self.chargeBelowSeparator.hidden = YES;
+        self.chargeBelowSeparator.alpha = 0;
+        self.batteryStatus.showLowMarker = NO;
     }];
 }
 
@@ -6383,6 +6403,7 @@ static BOOL CLDisplayedPowerStateUsesExternalPower(CLBatteryManager *manager) {
 }
 
 - (void)updateCheckStatusDidChange {
+    [self updateHistoryEntrySubtitle];
     [self updateSoftwareSettingsEntrySubtitle];
 }
 
@@ -6587,26 +6608,11 @@ static BOOL CLDisplayedPowerStateUsesExternalPower(CLBatteryManager *manager) {
     
     // 更新控制卡片的开关和值
     [self updateSwitchInCard:self.controlCard tag:100 value:manager.enabled];
-    
-    // 更新充电模式显示
-    NSString *modeStr = (manager.chargeMode == CLChargeModePlugAndCharge) ? CLL(@"插电即充") : CLL(@"边缘触发");
-    [self updateCardValue:self.controlCard title:CLL(@"充电模式") value:modeStr];
-    self.currentChargeMode = (manager.chargeMode == CLChargeModePlugAndCharge) ? 0 : 1;
     [self updateChargeBelowVisibility];
     
     // 更新充电阈值
     NSInteger chargeBelow = manager.chargeBelow;
     NSInteger chargeAbove = manager.chargeAbove;
-    if (self.currentChargeMode == 1) { // 边缘触发：开始充电必须小于停止充电
-        if (chargeBelow >= chargeAbove) {
-            chargeBelow = MAX(10, chargeAbove - 5);
-            if (chargeBelow >= chargeAbove) {
-                chargeAbove = MIN(100, chargeBelow + 5);
-            }
-            manager.chargeBelow = chargeBelow;
-            manager.chargeAbove = chargeAbove;
-        }
-    }
     self.chargeBelow = chargeBelow;
     self.chargeAbove = chargeAbove;
     self.lastChargeAboveForHint = chargeAbove;
@@ -6634,6 +6640,7 @@ static BOOL CLDisplayedPowerStateUsesExternalPower(CLBatteryManager *manager) {
     [self updateSliderValue:self.tempAboveRow value:manager.chargeTempAbove];
     [self updateSliderLabel:self.tempAboveRow value:manager.chargeTempAbove suffix:@"°C"];
     
+    [self updateHistoryEntrySubtitle];
     [self updateSoftwareSettingsEntrySubtitle];
 }
 
@@ -6658,6 +6665,7 @@ static BOOL CLDisplayedPowerStateUsesExternalPower(CLBatteryManager *manager) {
     [self setupUI];
     [self batteryInfoDidUpdate];
     [self configDidUpdate];
+    [self updateHistoryEntrySubtitle];
     [self updateSoftwareSettingsEntrySubtitle];
 }
 

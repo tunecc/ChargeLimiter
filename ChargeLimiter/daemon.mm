@@ -1684,6 +1684,10 @@ static NSString* policyEventDBTableNameQuoted(void) {
     return quoteSQLiteIdent(kPolicyEventDBTableName);
 }
 
+static BOOL historyStatsEnabled(void) {
+    return getLocalBool(@"history_stats_enabled", YES);
+}
+
 static void updateDBData(NSString* tbl, int tid, NSDictionary* info) {
     @autoreleasepool {
         if (!db) {
@@ -1956,6 +1960,9 @@ static NSMutableDictionary* getFilteredMDic(NSDictionary* dic, NSArray* filter) 
 }
 
 static void updateStatistics() {
+    if (!historyStatsEnabled()) {
+        return;
+    }
     int ts = (int)time(0);
     NSDictionary* info_h = nil;
     NSDictionary* info_d = nil;
@@ -1986,6 +1993,36 @@ static void updateStatistics() {
         updateDBData(tblDay, ts / 86400, info_d);
         NSString* tblMonth = tableNameForSuffix(@"month", batId);
         updateDBData(tblMonth, ts / 2592000, info_d);
+    }
+}
+
+static void clearStatisticsTablesForBattery(NSString* batId) {
+    if (!db) {
+        return;
+    }
+    for (NSString* suffix in @[@"min5", @"hour", @"day", @"month"]) {
+        NSString* tblName = tableNameForSuffix(suffix, batId);
+        if (tblName.length == 0 || !isAllowedStatsTableName(tblName)) {
+            continue;
+        }
+        NSString* quotedTbl = quoteSQLiteIdent(tblName);
+        if (quotedTbl.length == 0) {
+            continue;
+        }
+        NSString* sql = [NSString stringWithFormat:@"delete from %@", quotedTbl];
+        char* err = NULL;
+        sqlite3_exec(db, sql.UTF8String, NULL, NULL, &err);
+        if (err != NULL) {
+            sqlite3_free(err);
+        }
+    }
+}
+
+static void clearAllStatisticsData(void) {
+    clearStatisticsTablesForBattery(nil);
+    NSString* serial = [gUPSPS.props[@"Serial"] isKindOfClass:[NSString class]] ? gUPSPS.props[@"Serial"] : nil;
+    if (serial.length > 0) {
+        clearStatisticsTablesForBattery(serial);
     }
 }
 
@@ -2020,7 +2057,8 @@ static void initConfKeySets() {
             @"adv_hold_temp_disable_smart_charge",
             @"adv_limit_inflow",
             @"adv_thermal_mode_lock",
-            @"full_charge_sched_enabled"
+            @"full_charge_sched_enabled",
+            @"history_stats_enabled"
         ]];
         gConfIntKeys = [NSSet setWithArray:@[
             @"charge_below",
@@ -2406,11 +2444,10 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
     NSString* previousPolicyState = g_policyState ?: @"battery";
     NSString* previousPolicyReason = g_policyReason ?: @"battery_idle";
     NSString* raw_mode = getLocalString(@"mode", @"charge_on_plug");
-    int mode = 0;
-    if ([raw_mode isEqualToString:@"charge_on_plug"]) {
-        mode = CL_MODE_PLUG;
-    } else if ([raw_mode isEqualToString:@"edge_trigger"]) {
-        mode = CL_MODE_EDGE;
+    int mode = CL_MODE_PLUG;
+    if ([raw_mode isEqualToString:@"edge_trigger"] ||
+        (raw_mode.length > 0 && ![raw_mode isEqualToString:@"charge_on_plug"])) {
+        setLocalString(@"mode", @"charge_on_plug");
     }
     int charge_below = getLocalInt(@"charge_below", 0);
     int charge_above = getLocalInt(@"charge_above", 100);
@@ -2655,32 +2692,18 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
             nextPolicyReason = @"capacity_low";
             break;
         }
-        if (is_adaptor_connected && !disable_capacity_control) {
-            if (mode == CL_MODE_PLUG) {
-                if (is_adaptor_new_connected) { // 充电-插电,优先级=6
-                    if (shouldIssueEnableInflowCommand(adv_disable_inflow, inflow_enabled_snapshot, previousPolicyState)) {
-                        NSFileLog(@"enable inflow for plug in");
-                        setInflowStatus(YES);
-                    }
-                    NSFileLog(@"start charging for plug in");
-                    setBatteryStatus(YES);
-                    performAction(@"start_charge");
-                    performAcccharge(YES);
-                    nextPolicyState = @"charging";
-                    nextPolicyReason = @"plug_mode_start";
-                    break;
+        if (is_adaptor_connected && !disable_capacity_control && mode == CL_MODE_PLUG) {
+            if (is_adaptor_new_connected) { // 充电-插电,优先级=6
+                if (shouldIssueEnableInflowCommand(adv_disable_inflow, inflow_enabled_snapshot, previousPolicyState)) {
+                    NSFileLog(@"enable inflow for plug in");
+                    setInflowStatus(YES);
                 }
-            } else if (mode == CL_MODE_EDGE) {
-                if (is_adaptor_new_connected) {
-                    NSFileLog(@"stop charging for plug in");
-                    setBatteryStatus(NO);
-                    if (shouldIssueDisableInflowCommand(adv_disable_inflow, inflow_enabled_snapshot, previousPolicyState)) {
-                        NSFileLog(@"disable inflow for plug in");
-                        setInflowStatus(NO);
-                    }
-                }
-                nextPolicyState = adv_disable_inflow ? @"no_inflow" : @"stopped";
-                nextPolicyReason = @"edge_mode_stop";
+                NSFileLog(@"start charging for plug in");
+                setBatteryStatus(YES);
+                performAction(@"start_charge");
+                performAcccharge(YES);
+                nextPolicyState = @"charging";
+                nextPolicyReason = @"plug_mode_start";
                 break;
             }
         }
@@ -2767,6 +2790,7 @@ static void initConf(BOOL reset) {
         @"temp_mode": @0,
         @"charge_temp_above": @40,
         @"charge_temp_below": @35,
+        @"history_stats_enabled": @YES,
         @"acc_charge": @NO,
         @"acc_charge_airmode": @YES,
         @"acc_charge_wifi": @NO,
@@ -2930,6 +2954,9 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
     } else if ([api isEqualToString:@"set_conf"]) {
         NSString* key = nsreq[@"key"];
         id val = nsreq[@"val"];
+        if ([key isEqualToString:@"mode"]) {
+            val = @"charge_on_plug";
+        }
         if ([key isEqualToString:@"floatwnd"]) {
             g_enable_floatwnd = [val boolValue];
             showFloatwnd(g_enable_floatwnd);
@@ -3116,6 +3143,11 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
         return @{
             @"status": @0,
             @"data": getPolicyEventDBData(n, lastID),
+        };
+    } else if ([api isEqualToString:@"clear_statistics"]) {
+        clearAllStatisticsData();
+        return @{
+            @"status": @0,
         };
     } else if ([api isEqualToString:@"set_charge_status"]) {
         NSNumber* flag = nsreq[@"flag"];

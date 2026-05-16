@@ -251,10 +251,6 @@
         content:@"适合普通用户。接入电源时自动开始充电，达到上限时停止。"];
     [self.stackView addArrangedSubview:mode1];
     
-    CLHelpCardView *mode2 = [[CLHelpCardView alloc] initWithTitle:@"边缘触发" 
-        content:@"适合常年连接电源的场景。仅在电量低于下限时开始充电，高于上限时停止。"];
-    [self.stackView addArrangedSubview:mode2];
-    
     // 阈值设置
     [self.stackView addArrangedSubview:[[CLHelpSectionHeader alloc] initWithTitle:@"⚡️ 阈值设置"]];
     

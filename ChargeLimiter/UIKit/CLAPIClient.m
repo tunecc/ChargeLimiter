@@ -282,6 +282,7 @@ static int CLStartDaemonBestEffort(void) {
             @"enable_temp": @YES,
             @"charge_temp_below": @35,   // 降温恢复温度
             @"charge_temp_above": @40,   // 高温停充温度
+            @"history_stats_enabled": @YES,
             @"acc_charge": @NO,
             @"acc_charge_airmode": @YES,
             @"acc_charge_wifi": @NO,
@@ -341,6 +342,9 @@ static int CLStartDaemonBestEffort(void) {
         return @{@"status": @0};
     } else if ([api isEqualToString:@"reset_conf"]) {
         NSLog(@"[CL-Mock] 重置配置");
+        return @{@"status": @0};
+    } else if ([api isEqualToString:@"clear_statistics"]) {
+        NSLog(@"[CL-Mock] 清空历史统计");
         return @{@"status": @0};
     } else if ([api isEqualToString:@"get_statistics"]) {
         NSDictionary *conf = params[@"conf"];
@@ -588,6 +592,10 @@ static int CLStartDaemonBestEffort(void) {
         @"last_id": @(MAX(lastID, 0))
     };
     [self sendRequest:params completion:completion];
+}
+
+- (void)clearStatisticsWithCompletion:(CLAPICallback)completion {
+    [self sendRequest:@{@"api": @"clear_statistics"} completion:completion];
 }
 
 - (void)checkDaemonAliveWithCompletion:(void (^)(BOOL))completion {
