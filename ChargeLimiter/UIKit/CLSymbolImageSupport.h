@@ -19,6 +19,7 @@ NS_INLINE NSDictionary<NSString *, NSArray<NSString *> *> *CLSymbolFallbackMap(v
             @"bolt.shield": @[@"bolt.fill", @"bolt.circle"],
             @"chart.line.uptrend.xyaxis": @[@"chart.xyaxis.line", @"chart.bar"],
             @"clock.badge.checkmark": @[@"clock"],
+            @"folder.badge.gearshape": @[@"folder"],
             @"point.topleft.down.curvedto.point.bottomright.up": @[@"arrow.left.arrow.right"],
             @"powerplug.fill": @[@"powerplug", @"bolt.fill"],
             @"thermometer.medium": @[@"thermometer"],

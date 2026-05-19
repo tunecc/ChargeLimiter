@@ -30,7 +30,7 @@ ChargeLimiter 本质上是一个充电策略调度器，不是硬件电源路径
 - TrollStore
 - 越狱 rootful
 - 越狱 rootless
-- roothide 兼容包
+- roothide 兼容环境
 
 ## 当前版本能做什么
 
@@ -333,9 +333,11 @@ Apple 官方对 iPhone 电池寿命的说明里，明确把 `温度历史` 和 `
 仓库当前脚本会生成这几类发布产物：
 
 - TrollStore：`out/ChargeLimiter_<VERSION>_TrollStore.tipa`
-- rootful：`out/ChargeLimiter_<VERSION>_rootful_iphoneos-arm.deb`
+- rootful：`out/ChargeLimiter_<VERSION>_rootful_arm.deb`
 - rootless：`out/ChargeLimiter_<VERSION>_rootless_arm64.deb`
 - roothide：`out/ChargeLimiter_<VERSION>_roothide_arm64e.deb`
+
+当前仓库还没有原生 roothide Xcode 打包入口，所以脚本会默认把 rootless 临时包树转换成 roothide 安装包，保证一次运行能拿到四类产物。这个 roothide 产物可安装，但它依然不是未来原生 `THEOS_PACKAGE_SCHEME=roothide` 正式发布线的替代品。
 
 ## 构建与打包
 

@@ -138,12 +138,57 @@ static BOOL pathsAreEquivalentForLegacyDetection(NSString* lhs, NSString* rhs) {
     return NO;
 }
 
-static BOOL pathMatchesAnyEquivalentPath(NSString* path, NSArray<NSString*>* candidates) {
+static void appendStablePathVariants(NSMutableArray<NSString*>* variants, NSString* path) {
+    NSString* normalized = normalizedAbsolutePath(path);
+    if (normalized.length == 0) {
+        return;
+    }
+
+    NSMutableSet<NSString*>* seen = [NSMutableSet setWithArray:variants];
+    NSMutableArray<NSString*>* queue = [NSMutableArray arrayWithObject:normalized];
+    while (queue.count > 0) {
+        NSString* current = normalizedAbsolutePath(queue.firstObject);
+        [queue removeObjectAtIndex:0];
+        if (current.length == 0 || [seen containsObject:current]) {
+            continue;
+        }
+
+        [seen addObject:current];
+        [variants addObject:current];
+
+        NSString* resolved = normalizedAbsolutePath([current stringByResolvingSymlinksInPath]);
+        if (resolved.length > 0 && ![seen containsObject:resolved]) {
+            [queue addObject:resolved];
+        }
+
+        if ([current hasPrefix:@"/private/"]) {
+            NSString* stripped = normalizedAbsolutePath([current substringFromIndex:@"/private".length]);
+            if (stripped.length > 0 && ![seen containsObject:stripped]) {
+                [queue addObject:stripped];
+            }
+        } else if ([current hasPrefix:@"/"]) {
+            NSString* prefixed = normalizedAbsolutePath([@"/private" stringByAppendingString:current]);
+            if (prefixed.length > 0 && ![seen containsObject:prefixed]) {
+                [queue addObject:prefixed];
+            }
+        }
+    }
+}
+
+static BOOL pathMatchesAnyStableCurrentPath(NSString* path, NSArray<NSString*>* candidates) {
     if (path.length == 0 || candidates.count == 0) {
         return NO;
     }
+
+    NSMutableArray<NSString*>* pathVariants = [NSMutableArray new];
+    appendStablePathVariants(pathVariants, path);
+    NSMutableArray<NSString*>* candidateVariants = [NSMutableArray new];
     for (NSString* candidate in candidates) {
-        if (pathsAreEquivalentForLegacyDetection(path, candidate)) {
+        appendStablePathVariants(candidateVariants, candidate);
+    }
+
+    for (NSString* pathVariant in pathVariants) {
+        if ([candidateVariants containsObject:pathVariant]) {
             return YES;
         }
     }
@@ -241,6 +286,9 @@ static NSString* resolveStableJailbreakPath(NSString* logicalPath) {
 static NSString* resolveRuntimeConfigRootPath(void) {
     if (getJBType() == JBTYPE_TROLLSTORE) {
         return ensureValidDocumentsPath([NSHomeDirectory() stringByAppendingPathComponent:@"Documents"]);
+    }
+    if (getJBType() == JBTYPE_ROOTHIDE) {
+        return @"/var/mobile/Library/Preferences";
     }
     return resolveStableJailbreakPath(@"/var/mobile/Library/Preferences");
 }
@@ -759,6 +807,177 @@ extern "C" NSString* getConfDirPath_C(void) {
     return getConfDirPath();
 }
 
+static void appendUniqueNormalizedPath(NSMutableArray<NSString*>* paths, NSString* path) {
+    NSString* normalized = normalizedAbsolutePath(path);
+    if (normalized.length == 0) {
+        return;
+    }
+    if (![paths containsObject:normalized]) {
+        [paths addObject:normalized];
+    }
+}
+
+static void appendConfigPathVariants(NSMutableArray<NSString*>* paths, NSString* path) {
+    for (NSString* variant in comparisonPathVariantsForPath(path)) {
+        appendUniqueNormalizedPath(paths, variant);
+    }
+}
+
+static void appendRoothidePreferencesDirForRoot(NSMutableArray<NSString*>* dirs, NSString* jbrootPath) {
+    NSString* root = normalizedAbsolutePath(jbrootPath);
+    if (root.length == 0 || ![root.lastPathComponent hasPrefix:@".jbroot-"]) {
+        return;
+    }
+    appendUniqueNormalizedPath(dirs, [root stringByAppendingPathComponent:@"var/mobile/Library/Preferences"]);
+    appendUniqueNormalizedPath(dirs, [root stringByAppendingPathComponent:@"private/var/mobile/Library/Preferences"]);
+}
+
+static NSArray<NSString*>* roothideHistoricalPreferencesDirs(void) {
+    if (getJBType() != JBTYPE_ROOTHIDE) {
+        return @[];
+    }
+
+    NSMutableArray<NSString*>* dirs = [NSMutableArray new];
+    NSFileManager* fm = [NSFileManager defaultManager];
+    NSString* appBundleContainerRoot = @"/var/containers/Bundle/Application";
+    NSArray<NSString*>* topItems = [fm contentsOfDirectoryAtPath:appBundleContainerRoot error:nil];
+    for (NSString* topItem in topItems) {
+        NSString* topPath = [appBundleContainerRoot stringByAppendingPathComponent:topItem];
+        BOOL topIsDir = NO;
+        if (![fm fileExistsAtPath:topPath isDirectory:&topIsDir] || !topIsDir) {
+            continue;
+        }
+
+        appendRoothidePreferencesDirForRoot(dirs, topPath);
+
+        NSArray<NSString*>* childItems = [fm contentsOfDirectoryAtPath:topPath error:nil];
+        for (NSString* childItem in childItems) {
+            if (![childItem hasPrefix:@".jbroot-"]) {
+                continue;
+            }
+            appendRoothidePreferencesDirForRoot(dirs, [topPath stringByAppendingPathComponent:childItem]);
+        }
+    }
+    return dirs;
+}
+
+static NSArray<NSString*>* configFilePathCandidates(BOOL includeHistoricalRoothidePaths) {
+    ensureAppPaths();
+
+    NSMutableArray<NSString*>* paths = [NSMutableArray new];
+    appendConfigPathVariants(paths, g_confPath);
+
+    if (getJBType() == JBTYPE_ROOTHIDE) {
+        NSString* roothidePrefsDir = resolveRoothidePreferencesDirByAPI();
+        appendConfigPathVariants(paths, [roothidePrefsDir stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME]);
+
+        NSString* inferredJbRoot = resolveJbRootFromSelfExe();
+        if (inferredJbRoot.length > 0) {
+            appendConfigPathVariants(paths, [[inferredJbRoot stringByAppendingPathComponent:@"var/mobile/Library/Preferences"] stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME]);
+            appendConfigPathVariants(paths, [[inferredJbRoot stringByAppendingPathComponent:@"private/var/mobile/Library/Preferences"] stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME]);
+        }
+
+        appendConfigPathVariants(paths, [@"/var/jb/var/mobile/Library/Preferences" stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME]);
+        appendConfigPathVariants(paths, [@"/var/jb/private/var/mobile/Library/Preferences" stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME]);
+
+        if (includeHistoricalRoothidePaths) {
+            for (NSString* dir in roothideHistoricalPreferencesDirs()) {
+                appendConfigPathVariants(paths, [dir stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME]);
+            }
+        }
+    }
+
+    return paths;
+}
+
+static NSDictionary* readConfigDictionaryFromDisk(NSString** pathOut) {
+    for (NSString* confPath in configFilePathCandidates(YES)) {
+        NSDictionary* fileDict = [NSDictionary dictionaryWithContentsOfFile:confPath];
+        if (![fileDict isKindOfClass:[NSDictionary class]]) {
+            continue;
+        }
+        if (pathOut) {
+            *pathOut = confPath;
+        }
+        return fileDict;
+    }
+    if (pathOut) {
+        *pathOut = nil;
+    }
+    return nil;
+}
+
+static BOOL writeConfigDataToDisk(NSData* plistData, NSString** pathOut, NSError** errorOut) {
+    if (plistData.length == 0) {
+        return NO;
+    }
+
+    NSFileManager* fm = [NSFileManager defaultManager];
+    NSError* lastError = nil;
+    for (NSString* confPath in configFilePathCandidates(NO)) {
+        if (confPath.length == 0) {
+            continue;
+        }
+
+        NSString* parent = [confPath stringByDeletingLastPathComponent];
+        if (parent.length > 0) {
+            NSError* mkdirError = nil;
+            if (![fm createDirectoryAtPath:parent withIntermediateDirectories:YES attributes:nil error:&mkdirError]) {
+                lastError = mkdirError;
+                continue;
+            }
+        }
+
+        NSError* writeError = nil;
+        if ([plistData writeToFile:confPath options:NSDataWritingAtomic error:&writeError]) {
+            if (pathOut) {
+                *pathOut = confPath;
+            }
+            return YES;
+        }
+        lastError = writeError;
+    }
+
+    if (pathOut) {
+        *pathOut = nil;
+    }
+    if (errorOut) {
+        *errorOut = lastError;
+    }
+    return NO;
+}
+
+static void migrateLoadedConfigToPreferredPathIfNeeded(NSDictionary* preferences, NSString* loadedPath) {
+    NSString* primaryPath = normalizedAbsolutePath(getConfPath());
+    NSString* sourcePath = normalizedAbsolutePath(loadedPath);
+    if (preferences.count == 0 || primaryPath.length == 0 || sourcePath.length == 0 || [sourcePath isEqualToString:primaryPath]) {
+        return;
+    }
+
+    BOOL isDir = NO;
+    if ([[NSFileManager defaultManager] fileExistsAtPath:primaryPath isDirectory:&isDir] && !isDir) {
+        return;
+    }
+
+    NSError* plistError = nil;
+    NSData* plistData = [NSPropertyListSerialization dataWithPropertyList:preferences
+                                                                    format:NSPropertyListBinaryFormat_v1_0
+                                                                   options:0
+                                                                     error:&plistError];
+    if (!plistData) {
+        NSLog2(@"[CL] conf migration serialize failed: source=%@ target=%@ err=%@", sourcePath, primaryPath, plistError);
+        return;
+    }
+
+    NSError* writeError = nil;
+    NSString* writtenPath = nil;
+    if (!writeConfigDataToDisk(plistData, &writtenPath, &writeError)) {
+        NSLog2(@"[CL] conf migration write failed: source=%@ target=%@ err=%@", sourcePath, primaryPath, writeError);
+        return;
+    }
+    NSLog2(@"[CL] conf migrated source=%@ written=%@", sourcePath, writtenPath ?: @"");
+}
+
 extern "C" int cleanupAppDataContainer_C(void) {
     if (getJBType() != JBTYPE_TROLLSTORE) {
         NSString* sharedRoot = getRuntimeDataRootPath();
@@ -862,6 +1081,11 @@ static NSArray<NSString*>* legacyConfigCandidateDirs() {
     NSString* inferredJbRoot = resolveJbRootFromSelfExe();
     if (inferredJbRoot.length > 0) {
         [dirs addObject:[inferredJbRoot stringByAppendingPathComponent:@"var/mobile/Library/Preferences"]];
+        [dirs addObject:[inferredJbRoot stringByAppendingPathComponent:@"private/var/mobile/Library/Preferences"]];
+    }
+
+    if (getJBType() == JBTYPE_ROOTHIDE) {
+        [dirs addObjectsFromArray:roothideHistoricalPreferencesDirs()];
     }
 
     NSString* currentDir = getConfDirPath();
@@ -872,10 +1096,10 @@ static NSArray<NSString*>* legacyConfigCandidateDirs() {
         if (dir.length == 0 || [seen containsObject:dir]) {
             continue;
         }
-        if (currentDir.length > 0 && pathsAreEquivalentForLegacyDetection(dir, currentDir)) {
+        if (currentDir.length > 0 && pathMatchesAnyStableCurrentPath(dir, @[currentDir])) {
             continue;
         }
-        if (currentDataRoot.length > 0 && pathsAreEquivalentForLegacyDetection(dir, currentDataRoot)) {
+        if (currentDataRoot.length > 0 && pathMatchesAnyStableCurrentPath(dir, @[currentDataRoot])) {
             continue;
         }
         [seen addObject:dir];
@@ -926,7 +1150,7 @@ static NSArray<NSString*>* legacyResidualFilesInDir(NSString* dir) {
             if (![fm fileExistsAtPath:path isDirectory:&isDir] || isDir) {
                 continue;
             }
-            if (pathMatchesAnyEquivalentPath(path, currentRuntimePaths)) {
+            if (pathMatchesAnyStableCurrentPath(path, currentRuntimePaths)) {
                 continue;
             }
             if (![files containsObject:path]) {
@@ -2187,12 +2411,14 @@ void setSmartChargeEnable(BOOL flag) {
         _preferences = [NSMutableDictionary new];
         _cachedChanges = [NSMutableDictionary new];
         _isDirty = NO;
-        NSString* confPath = getConfPath();
-        if (confPath.length > 0) {
-            NSDictionary* fileDict = [NSDictionary dictionaryWithContentsOfFile:confPath];
-            if ([fileDict isKindOfClass:[NSDictionary class]]) {
-                [_preferences addEntriesFromDictionary:fileDict];
+        NSString* loadedPath = nil;
+        NSDictionary* fileDict = readConfigDictionaryFromDisk(&loadedPath);
+        if ([fileDict isKindOfClass:[NSDictionary class]]) {
+            [_preferences addEntriesFromDictionary:fileDict];
+            if (loadedPath.length > 0) {
+                NSLog2(@"[CL] conf loaded path=%@", loadedPath);
             }
+            migrateLoadedConfigToPreferredPathIfNeeded(_preferences, loadedPath);
         }
     }
     return self;
@@ -2300,29 +2526,22 @@ void setSmartChargeEnable(BOOL flag) {
         if (!self.isDirty) {
             return;
         }
-        NSString* confPath = getConfPath();
-        if (confPath.length == 0) {
-            NSLog2(@"[CL] conf path empty, skip apply");
-            return;
-        }
-        NSString* parent = [confPath stringByDeletingLastPathComponent];
-        if (parent.length > 0) {
-            [[NSFileManager defaultManager] createDirectoryAtPath:parent withIntermediateDirectories:YES attributes:nil error:nil];
-        }
         NSError* plistError = nil;
         NSData* plistData = [NSPropertyListSerialization dataWithPropertyList:self.preferences
                                                                         format:NSPropertyListBinaryFormat_v1_0
                                                                        options:0
                                                                          error:&plistError];
         if (!plistData) {
-            NSLog2(@"[CL] conf serialize failed: path=%@ err=%@", confPath, plistError);
+            NSLog2(@"[CL] conf serialize failed: err=%@", plistError);
             return;
         }
         NSError* writeError = nil;
-        if (![plistData writeToFile:confPath options:NSDataWritingAtomic error:&writeError]) {
-            NSLog2(@"[CL] conf write failed: path=%@ err=%@", confPath, writeError);
+        NSString* writtenPath = nil;
+        if (!writeConfigDataToDisk(plistData, &writtenPath, &writeError)) {
+            NSLog2(@"[CL] conf write failed: candidates=%@ err=%@", configFilePathCandidates(NO), writeError);
             return;
         }
+        NSLog2(@"[CL] conf written path=%@", writtenPath ?: @"");
         [self.cachedChanges removeAllObjects];
         self.isDirty = NO;
     }
@@ -2333,13 +2552,14 @@ void setSmartChargeEnable(BOOL flag) {
         [self.preferences removeAllObjects];
         [self.cachedChanges removeAllObjects];
         self.isDirty = NO;
-        NSString* confPath = getConfPath();
-        if (confPath.length == 0) {
-            return;
-        }
-        NSDictionary* fileDict = [NSDictionary dictionaryWithContentsOfFile:confPath];
+        NSString* loadedPath = nil;
+        NSDictionary* fileDict = readConfigDictionaryFromDisk(&loadedPath);
         if ([fileDict isKindOfClass:[NSDictionary class]]) {
             [self.preferences addEntriesFromDictionary:fileDict];
+            if (loadedPath.length > 0) {
+                NSLog2(@"[CL] conf reloaded path=%@", loadedPath);
+            }
+            migrateLoadedConfigToPreferredPathIfNeeded(self.preferences, loadedPath);
         }
     }
 }
