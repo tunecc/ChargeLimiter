@@ -84,11 +84,14 @@
 "深色" = "Dark";
 "iOS 13+ 才支持深色模式" = "Dark mode requires iOS 13+.";
 "配置文件夹" = "Config Folder";
+"配置文件" = "Config File";
 "应用数据目录" = "App Data Folder";
 "帮助" = "Help";
 "无法打开" = "Unable to Open";
 "未能定位配置目录" = "Config directory not found.";
 "配置目录 URL 无效" = "Invalid config URL.";
+"未能定位配置文件" = "Config file not found.";
+"配置文件 URL 无效" = "Invalid config file URL.";
 "未检测到 Filza" = "Filza Not Found";
 "请先安装 Filza 文件管理器，再重试打开配置目录。" = "Install Filza to open the config folder.";
 "请先安装 Filza 文件管理器，再重试跳转。" = "Install Filza and try opening again.";

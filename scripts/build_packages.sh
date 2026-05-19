@@ -12,6 +12,26 @@ PAYLOAD_DIR="$ROOT_DIR/Payload"
 ROOTHIDE_MERGE_ENT="$ROOT_DIR/scripts/roothide.entitlements"
 STAGE_DIR=""
 BUILD_LOG_ROOT=""
+BUILD_LEGACY_ROOTHIDE="${CHARGELIMITER_BUILD_ROOTHIDE:-${CHARGELIMITER_BUILD_LEGACY_ROOTHIDE:-1}}"
+DPKG_DEB_SUPPORTS_ROOT_OWNER_GROUP=0
+
+usage() {
+  cat >&2 <<EOF
+Usage: $0 [VERSION] [--skip-roothide] [--legacy-roothide-convert]
+
+Build TrollStore, rootful, rootless, and roothide packages into out/.
+
+This repository still has no native roothide Xcode packaging entry, so the
+default roothide package is produced by converting the rootless staging tree.
+That output is installable for roothide users, but it is not the same as a
+future native THEOS_PACKAGE_SCHEME=roothide release path.
+
+Options:
+  --skip-roothide            Do not build the roothide package.
+  --legacy-roothide-convert  Compatibility alias. The current default already
+                             builds the roothide package by conversion.
+EOF
+}
 
 require_cmd() {
     command -v "$1" >/dev/null 2>&1 || {
@@ -26,10 +46,11 @@ require_cmd zip
 require_cmd ldid
 require_cmd plutil
 require_cmd xcrun
-require_cmd ar
-require_cmd tar
 require_cmd rg
-require_cmd file
+
+if dpkg-deb --help 2>&1 | grep -q -- '--root-owner-group'; then
+  DPKG_DEB_SUPPORTS_ROOT_OWNER_GROUP=1
+fi
 
 run_logged_command() {
   log_name="$1"
@@ -50,6 +71,17 @@ run_logged_command() {
   echo "[ERR] Last 200 log lines:" >&2
   tail -n 200 "$log_path" >&2 || true
   exit "$status"
+}
+
+dpkg_build_package() {
+  stage_path="$1"
+  out_path="$2"
+
+  if [ "$DPKG_DEB_SUPPORTS_ROOT_OWNER_GROUP" = "1" ]; then
+    dpkg-deb --root-owner-group -Zxz -b "$stage_path" "$out_path" >/dev/null
+  else
+    dpkg-deb -Zxz -b "$stage_path" "$out_path" >/dev/null
+  fi
 }
 
 force_clean_dir() {
@@ -75,12 +107,57 @@ force_clean_dir() {
   fi
 }
 
+clean_host_metadata() {
+  dir="$1"
+  [ -d "$dir" ] || return 0
+  find "$dir" \( -name .DS_Store -o -name __MACOSX -o -name '._*' \) -exec rm -rf {} + 2>/dev/null || true
+}
+
+clean_known_outputs() {
+  [ -d "$OUT_DIR" ] || return 0
+  find "$OUT_DIR" -maxdepth 1 -type f -name 'ChargeLimiter_*' -delete
+}
+
+require_project_build_environment() {
+  missing=0
+  for header in \
+    IOKit/hid/IOHIDService.h \
+    MobileCoreServices/LSApplicationProxy.h
+  do
+    found=0
+    for include_root in /opt/theos/vendor/include /opt/include; do
+      if [ -f "$include_root/$header" ]; then
+        found=1
+        break
+      fi
+    done
+
+    if [ "$found" -ne 1 ]; then
+      echo "[ERR] Missing build dependency header: $header" >&2
+      missing=1
+    fi
+  done
+
+  if [ "$missing" -ne 0 ]; then
+    echo "[ERR] Prepare Theos headers before building. This project searches /opt/theos/vendor/include and /opt/include." >&2
+    echo "[ERR] Example: clone Theos to /opt/theos; /opt/include may also point to /opt/theos/vendor/include." >&2
+    exit 1
+  fi
+}
+
 copy_tree_contents() {
   src_dir="$1"
   dst_dir="$2"
   [ -d "$src_dir" ] || return 0
   mkdir -p "$dst_dir"
   cp -a "$src_dir"/. "$dst_dir"/
+}
+
+require_legacy_roothide_enabled() {
+  if [ "$BUILD_LEGACY_ROOTHIDE" != "1" ]; then
+    echo "[ERR] Legacy roothide conversion called without CHARGELIMITER_BUILD_LEGACY_ROOTHIDE=1." >&2
+    exit 1
+  fi
 }
 
 set_control_version() {
@@ -127,6 +204,8 @@ strip_app() {
 }
 
 copy_rootless_stage_to_roothide_layout() {
+  require_legacy_roothide_enabled
+
   src_stage="$1"
   dst_stage="$2"
 
@@ -194,6 +273,8 @@ change_macho_load_path() {
 }
 
 rewrite_macho_for_roothide() {
+  require_legacy_roothide_enabled
+
   target_file="$1"
 
   list_rpaths "$target_file" | while IFS= read -r rpath; do
@@ -225,6 +306,8 @@ rewrite_macho_for_roothide() {
 }
 
 rewrite_roothide_maintainer_script() {
+  require_legacy_roothide_enabled
+
   target_file="$1"
   tmp_file="${target_file}.tmp.$$"
   sed \
@@ -251,6 +334,8 @@ rewrite_roothide_maintainer_script() {
 }
 
 rewrite_roothide_launchdaemon_plist() {
+  require_legacy_roothide_enabled
+
   target_file="$1"
   tmp_file="${target_file}.tmp.$$"
   plutil -convert xml1 "$target_file" >/dev/null 2>&1 || true
@@ -259,6 +344,8 @@ rewrite_roothide_launchdaemon_plist() {
 }
 
 convert_rootless_stage_to_roothide() {
+  require_legacy_roothide_enabled
+
   src_stage="$1"
   dst_stage="$2"
 
@@ -282,7 +369,7 @@ convert_rootless_stage_to_roothide() {
     fi
   done
 
-  find "$dst_stage" -name .DS_Store -delete
+  clean_host_metadata "$dst_stage"
   chmod 755 "$dst_stage/DEBIAN"/*
   set_roothide_control_arch "$dst_stage/DEBIAN/control"
 }
@@ -307,7 +394,57 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
-VERSION="${1:-}"
+VERSION=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --skip-roothide)
+      BUILD_LEGACY_ROOTHIDE=0
+      ;;
+    --legacy-roothide-convert)
+      BUILD_LEGACY_ROOTHIDE=1
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      echo "[ERR] Unknown option: $1" >&2
+      usage
+      exit 1
+      ;;
+    *)
+      if [ -n "$VERSION" ]; then
+        echo "[ERR] Version was provided more than once." >&2
+        usage
+        exit 1
+      fi
+      VERSION="$1"
+      ;;
+  esac
+  shift
+done
+
+case "$BUILD_LEGACY_ROOTHIDE" in
+  0|1)
+    ;;
+  *)
+    echo "[ERR] CHARGELIMITER_BUILD_ROOTHIDE / CHARGELIMITER_BUILD_LEGACY_ROOTHIDE must be 0 or 1." >&2
+    exit 1
+    ;;
+esac
+
+if [ "$BUILD_LEGACY_ROOTHIDE" = "1" ]; then
+  require_cmd file
+  [ -f "$ROOTHIDE_MERGE_ENT" ] || {
+    echo "[ERR] Missing roothide compatibility entitlements: $ROOTHIDE_MERGE_ENT" >&2
+    exit 1
+  }
+fi
+
 if [ -z "$VERSION" ]; then
     VERSION="$(awk -F' = ' '/MARKETING_VERSION =/{gsub(/;/, "", $2); print $2; exit}' "$ROOT_DIR/ChargeLimiter.xcodeproj/project.pbxproj")"
 fi
@@ -317,11 +454,6 @@ if [ -z "$VERSION" ]; then
     exit 1
 fi
 
-[ -f "$ROOTHIDE_MERGE_ENT" ] || {
-  echo "[ERR] Missing roothide entitlements: $ROOTHIDE_MERGE_ENT" >&2
-  exit 1
-}
-
 ROOTFUL_APP="$BUILD_ROOTFUL/Build/Products/Release-iphoneos/ChargeLimiter.app"
 ROOTLESS_APP="$BUILD_ROOTLESS/Build/Products/Release-iphoneos/ChargeLimiter.app"
 APP_ENT_TS="$ROOT_DIR/ChargeLimiter/ChargeLimiter.app.entitlements"
@@ -329,7 +461,7 @@ APP_ENT_JB="$ROOT_DIR/ChargeLimiter/ChargeLimiter.app.jb.entitlements"
 DAEMON_ENT="$ROOT_DIR/ChargeLimiter/ChargeLimiter.entitlements"
 
 TIPA_OUT="$OUT_DIR/ChargeLimiter_${VERSION}_TrollStore.tipa"
-ROOTFUL_DEB_OUT="$OUT_DIR/ChargeLimiter_${VERSION}_rootful_iphoneos-arm.deb"
+ROOTFUL_DEB_OUT="$OUT_DIR/ChargeLimiter_${VERSION}_rootful_arm.deb"
 ROOTLESS_DEB_OUT="$OUT_DIR/ChargeLimiter_${VERSION}_rootless_arm64.deb"
 ROOTHIDE_DEB_OUT="$OUT_DIR/ChargeLimiter_${VERSION}_roothide_arm64e.deb"
 TROLLSTORE_BANNED_ENTITLEMENTS_REGEX="com\\.apple\\.private\\.cs\\.debugger|dynamic-codesigning|com\\.apple\\.private\\.skip-library-validation"
@@ -337,13 +469,19 @@ TROLLSTORE_BANNED_ENTITLEMENTS_REGEX="com\\.apple\\.private\\.cs\\.debugger|dyna
 force_clean_dir "$BUILD_ROOTFUL"
 force_clean_dir "$BUILD_ROOTLESS"
 force_clean_dir "$PAYLOAD_DIR"
+require_project_build_environment
 mkdir -p "$OUT_DIR" "$PAYLOAD_DIR"
+clean_known_outputs
 STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/chargelimiter-pack.XXXXXX")"
 STAGE_ROOTFUL_DIR="$STAGE_DIR/rootful"
 STAGE_ROOTLESS_DIR="$STAGE_DIR/rootless"
 STAGE_ROOTHIDE_DIR="$STAGE_DIR/roothide"
 
-echo "[1/10] Build rootful app (arm64)..."
+if [ "$BUILD_LEGACY_ROOTHIDE" = "1" ]; then
+  echo "[WARN] roothide package will be built by converting the rootless staging tree because this project still has no native roothide Xcode packaging entry."
+fi
+
+echo "[1/9] Build rootful app (arm64)..."
 run_logged_command build-rootful xcodebuild \
   -project "$PROJECT" \
   -scheme "ChargeLimiter" \
@@ -351,11 +489,13 @@ run_logged_command build-rootful xcodebuild \
   -configuration Release \
   -derivedDataPath "$BUILD_ROOTFUL" \
   CODE_SIGNING_ALLOWED=NO \
+  THEOS_PACKAGE_SCHEME= \
+  THEOS_PACKAGE_INSTALL_PREFIX= \
   ARCHS=arm64 \
   MonkeyDevInstallOnAnyBuild=NO \
   MonkeyDevBuildPackageOnAnyBuild=NO
 
-echo "[2/10] Build rootless app (arm64)..."
+echo "[2/9] Build rootless app (arm64)..."
 run_logged_command build-rootless xcodebuild \
   -project "$PROJECT" \
   -scheme "ChargeLimiter rootless" \
@@ -363,6 +503,8 @@ run_logged_command build-rootless xcodebuild \
   -configuration Release \
   -derivedDataPath "$BUILD_ROOTLESS" \
   CODE_SIGNING_ALLOWED=NO \
+  THEOS_PACKAGE_SCHEME=rootless \
+  THEOS_PACKAGE_INSTALL_PREFIX=/var/jb \
   ARCHS=arm64 \
   MonkeyDevInstallOnAnyBuild=NO \
   MonkeyDevBuildPackageOnAnyBuild=NO
@@ -372,15 +514,15 @@ if [ ! -d "$ROOTFUL_APP" ] || [ ! -d "$ROOTLESS_APP" ]; then
     exit 1
 fi
 
-echo "[3/10] Strip app binaries..."
+echo "[3/9] Strip app binaries..."
 strip_app "$ROOTFUL_APP"
 strip_app "$ROOTLESS_APP"
 
-echo "[4/10] Sign app binaries..."
+echo "[4/9] Sign app binaries..."
 sign_app "$ROOTFUL_APP" "$APP_ENT_JB"
 sign_app "$ROOTLESS_APP" "$APP_ENT_JB"
 
-echo "[5/10] Prepare package trees..."
+echo "[5/9] Prepare package trees..."
 cp -a "$PKG_ROOTFUL_DIR" "$STAGE_ROOTFUL_DIR"
 cp -a "$PKG_ROOTLESS_DIR" "$STAGE_ROOTLESS_DIR"
 [ -d "$STAGE_ROOTFUL_DIR/DEBIAN" ] || {
@@ -399,19 +541,23 @@ mkdir -p "$STAGE_ROOTLESS_DIR/var/jb/Applications"
 cp -a "$ROOTFUL_APP" "$STAGE_ROOTFUL_DIR/Applications/ChargeLimiter.app"
 cp -a "$ROOTLESS_APP" "$STAGE_ROOTLESS_DIR/var/jb/Applications/ChargeLimiter.app"
 
-find "$STAGE_ROOTFUL_DIR" -name .DS_Store -delete
-find "$STAGE_ROOTLESS_DIR" -name .DS_Store -delete
+clean_host_metadata "$STAGE_ROOTFUL_DIR"
+clean_host_metadata "$STAGE_ROOTLESS_DIR"
 chmod 755 "$STAGE_ROOTFUL_DIR/DEBIAN"/* "$STAGE_ROOTLESS_DIR/DEBIAN"/*
 set_control_version "$STAGE_ROOTFUL_DIR/DEBIAN/control"
 set_control_version "$STAGE_ROOTLESS_DIR/DEBIAN/control"
 
-echo "[6/10] Convert rootless package tree to roothide layout..."
-convert_rootless_stage_to_roothide "$STAGE_ROOTLESS_DIR" "$STAGE_ROOTHIDE_DIR"
+if [ "$BUILD_LEGACY_ROOTHIDE" = "1" ]; then
+  echo "[6/9] Convert rootless package tree to roothide layout..."
+  convert_rootless_stage_to_roothide "$STAGE_ROOTLESS_DIR" "$STAGE_ROOTHIDE_DIR"
+else
+  echo "[6/9] Skip roothide package by request."
+fi
 
-echo "[7/10] Build TrollStore package..."
+echo "[7/9] Build TrollStore package..."
 cp -a "$ROOTLESS_APP" "$PAYLOAD_DIR/ChargeLimiter.app"
 sign_app "$PAYLOAD_DIR/ChargeLimiter.app" "$APP_ENT_TS"
-find "$PAYLOAD_DIR" -name .DS_Store -delete
+clean_host_metadata "$PAYLOAD_DIR"
 (
   cd "$ROOT_DIR"
   rm -f "$TIPA_OUT"
@@ -419,11 +565,13 @@ find "$PAYLOAD_DIR" -name .DS_Store -delete
 )
 rm -rf "$PAYLOAD_DIR"
 
-echo "[8/10] Build deb packages..."
+echo "[8/9] Build deb packages..."
 rm -f "$ROOTFUL_DEB_OUT" "$ROOTLESS_DEB_OUT" "$ROOTHIDE_DEB_OUT"
-dpkg-deb -Zxz -b "$STAGE_ROOTFUL_DIR" "$ROOTFUL_DEB_OUT" >/dev/null
-dpkg-deb -Zxz -b "$STAGE_ROOTLESS_DIR" "$ROOTLESS_DEB_OUT" >/dev/null
-dpkg-deb -Zxz -b "$STAGE_ROOTHIDE_DIR" "$ROOTHIDE_DEB_OUT" >/dev/null
+dpkg_build_package "$STAGE_ROOTFUL_DIR" "$ROOTFUL_DEB_OUT"
+dpkg_build_package "$STAGE_ROOTLESS_DIR" "$ROOTLESS_DEB_OUT"
+if [ "$BUILD_LEGACY_ROOTHIDE" = "1" ]; then
+  dpkg_build_package "$STAGE_ROOTHIDE_DIR" "$ROOTHIDE_DEB_OUT"
+fi
 
 extract_arch() {
   xcrun lipo -info "$1" | sed -n 's/.*architecture: \(.*\)$/\1/p'
@@ -475,6 +623,83 @@ check_app() {
   check_binary "$APP_PATH/ChargeLimiterDaemon" "$EXPECTED_ARCH" "$BID"
 }
 
+check_deb_field() {
+  deb_path="$1"
+  field="$2"
+  expected="$3"
+
+  actual="$(dpkg-deb -f "$deb_path" "$field")"
+  if [ "$actual" != "$expected" ]; then
+    echo "[ERR] Unexpected $field in $deb_path: expected $expected, got $actual" >&2
+    exit 1
+  fi
+}
+
+check_no_host_metadata() {
+  stage_path="$1"
+  if find "$stage_path" \( -name .DS_Store -o -name __MACOSX -o -name '._*' \) | rg -q .; then
+    echo "[ERR] Host metadata found in package stage: $stage_path" >&2
+    find "$stage_path" \( -name .DS_Store -o -name __MACOSX -o -name '._*' \) >&2
+    exit 1
+  fi
+}
+
+check_deb_metadata() {
+  deb_path="$1"
+  expected_arch="$2"
+
+  [ -f "$deb_path" ] || {
+    echo "[ERR] Missing package output: $deb_path" >&2
+    exit 1
+  }
+
+  check_deb_field "$deb_path" Package "com.chargelimiter.mod"
+  check_deb_field "$deb_path" Version "$VERSION"
+  check_deb_field "$deb_path" Architecture "$expected_arch"
+}
+
+check_rootful_stage() {
+  stage_path="$1"
+  app_path="$stage_path/Applications/ChargeLimiter.app"
+  plist_path="$stage_path/Library/LaunchDaemons/com.chargelimiter.mod.plist"
+
+  [ -d "$app_path" ] || {
+    echo "[ERR] Missing rootful app bundle: $app_path" >&2
+    exit 1
+  }
+  [ -f "$plist_path" ] || {
+    echo "[ERR] Missing rootful launch daemon plist: $plist_path" >&2
+    exit 1
+  }
+  [ ! -e "$stage_path/var/jb" ] || {
+    echo "[ERR] Rootful package stage contains rootless install root: $stage_path/var/jb" >&2
+    exit 1
+  }
+  check_no_host_metadata "$stage_path"
+  check_app "$app_path" "arm64"
+}
+
+check_rootless_stage() {
+  stage_path="$1"
+  app_path="$stage_path/var/jb/Applications/ChargeLimiter.app"
+  plist_path="$stage_path/var/jb/Library/LaunchDaemons/com.chargelimiter.mod.plist"
+
+  [ -d "$app_path" ] || {
+    echo "[ERR] Missing rootless app bundle: $app_path" >&2
+    exit 1
+  }
+  [ -f "$plist_path" ] || {
+    echo "[ERR] Missing rootless launch daemon plist: $plist_path" >&2
+    exit 1
+  }
+  [ ! -e "$stage_path/Applications/ChargeLimiter.app" ] || {
+    echo "[ERR] Rootless package stage contains rootful app path." >&2
+    exit 1
+  }
+  check_no_host_metadata "$stage_path"
+  check_app "$app_path" "arm64"
+}
+
 check_roothide_stage() {
   STAGE_PATH="$1"
   APP_PATH="$STAGE_PATH/Applications/ChargeLimiter.app"
@@ -523,14 +748,24 @@ check_roothide_stage() {
   check_app "$APP_PATH" "arm64"
 }
 
-echo "[9/10] Verify package contents..."
-check_app "$ROOTFUL_APP" "arm64"
-check_app "$ROOTLESS_APP" "arm64"
-check_roothide_stage "$STAGE_ROOTHIDE_DIR"
+echo "[9/9] Verify package contents..."
+check_rootful_stage "$STAGE_ROOTFUL_DIR"
+check_rootless_stage "$STAGE_ROOTLESS_DIR"
+check_deb_metadata "$ROOTFUL_DEB_OUT" "iphoneos-arm"
+check_deb_metadata "$ROOTLESS_DEB_OUT" "iphoneos-arm64"
+if [ "$BUILD_LEGACY_ROOTHIDE" = "1" ]; then
+  check_roothide_stage "$STAGE_ROOTHIDE_DIR"
+  check_no_host_metadata "$STAGE_ROOTHIDE_DIR"
+  check_deb_metadata "$ROOTHIDE_DEB_OUT" "iphoneos-arm64e"
+fi
 
-echo "[10/10] Finalize outputs..."
 echo "[OK] Done"
 echo "[OUT] $TIPA_OUT"
 echo "[OUT] $ROOTFUL_DEB_OUT"
 echo "[OUT] $ROOTLESS_DEB_OUT"
-echo "[OUT] $ROOTHIDE_DEB_OUT"
+if [ "$BUILD_LEGACY_ROOTHIDE" = "1" ]; then
+  echo "[OUT] $ROOTHIDE_DEB_OUT"
+  echo "[INFO] roothide package was built by compatibility conversion from the rootless staging tree. A true native roothide release path still needs a dedicated roothide packaging entry."
+else
+  echo "[INFO] roothide package was skipped."
+fi

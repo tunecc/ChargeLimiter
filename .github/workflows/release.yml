@@ -85,6 +85,15 @@ jobs:
       - name: Build packages
         run: ./scripts/build_packages.sh
 
+      - name: Verify expected release assets
+        run: |
+          TAG_VERSION="${RELEASE_TAG#v}"
+          test -f "out/ChargeLimiter_${TAG_VERSION}_TrollStore.tipa"
+          test -f "out/ChargeLimiter_${TAG_VERSION}_rootful_arm.deb"
+          test -f "out/ChargeLimiter_${TAG_VERSION}_rootless_arm64.deb"
+          test -f "out/ChargeLimiter_${TAG_VERSION}_roothide_arm64e.deb"
+          ls -l out/ChargeLimiter_*
+
       - name: Generate release notes
         run: |
           mkdir -p out

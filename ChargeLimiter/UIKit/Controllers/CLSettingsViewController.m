@@ -12,6 +12,7 @@
 #import "../../CLLocalization.h"
 NSString* getAppDocumentsPath_C(void);
 NSString* getConfPath_C(void);
+NSString* getConfDirPath_C(void);
 NSString* getRuntimeDataRootPath_C(void);
 NSArray<NSString*>* getLegacyConfigDirsWithData_C(void);
 NSArray<NSString*>* getLegacyResidualFiles_C(void);
@@ -4499,6 +4500,8 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     [self.settingsCard addSeparator];
     [self.settingsCard addNavigationRowWithIcon:@"folder" title:CLL(@"应用数据目录") value:@"" color:[UIColor systemTealColor] target:self action:@selector(configFolderTapped)];
     [self.settingsCard addSeparator];
+    [self.settingsCard addNavigationRowWithIcon:@"doc.badge.gearshape" title:CLL(@"配置文件") value:@"" color:[UIColor systemBlueColor] target:self action:@selector(configDirectoryTapped)];
+    [self.settingsCard addSeparator];
     [self.settingsCard addNavigationRowWithIcon:@"arrow.triangle.swap" title:CLL(@"迁移/删除旧版数据") value:@"" color:[UIColor systemOrangeColor] target:self action:@selector(migrateLegacyDataTapped)];
     [self.settingsCard addSeparator];
     [self.settingsCard addNavigationRowWithIcon:@"arrow.triangle.2.circlepath" title:CLL(@"检查更新") value:[self updateStatusValue] color:[UIColor systemIndigoColor] target:self action:@selector(checkUpdateTapped)];
@@ -4850,7 +4853,6 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
 }
 
 - (void)configFolderTapped {
-    NSString *confPath = getConfPath_C() ?: @"";
     NSString *dirPath = getRuntimeDataRootPath_C() ?: @"";
     if (dirPath.length == 0) {
         dirPath = getAppDocumentsPath_C() ?: @"";
@@ -4865,16 +4867,7 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
         }
     }
 
-    if (targetPath.length == 0 && confPath.length > 0) {
-        BOOL isDir = NO;
-        if ([fm fileExistsAtPath:confPath isDirectory:&isDir] && !isDir) {
-            targetPath = confPath;
-        }
-    }
-
-    if (targetPath.length == 0 && confPath.length > 0) {
-        targetPath = confPath;
-    } else if (targetPath.length == 0) {
+    if (targetPath.length == 0) {
         targetPath = dirPath;
     }
 
@@ -4885,6 +4878,36 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
         return;
     }
     CLOpenPathInFilza(self, targetPath);
+}
+
+- (void)configDirectoryTapped {
+    NSString *confPath = getConfPath_C() ?: @"";
+    if (confPath.length == 0) {
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"无法打开") message:CLL(@"未能定位配置文件") preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:CLL(@"确定") style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:alert animated:YES completion:nil];
+        return;
+    }
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *dirPath = [confPath stringByDeletingLastPathComponent];
+    BOOL isDir = NO;
+    if (dirPath.length > 0 && (![fm fileExistsAtPath:dirPath isDirectory:&isDir] || !isDir)) {
+        NSError *error = nil;
+        if (![fm createDirectoryAtPath:dirPath withIntermediateDirectories:YES attributes:nil error:&error]) {
+            NSString *message = error.localizedDescription.length > 0 ? error.localizedDescription : CLL(@"未能定位配置文件");
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"无法打开") message:message preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:CLL(@"确定") style:UIAlertActionStyleDefault handler:nil]];
+            [self presentViewController:alert animated:YES completion:nil];
+            return;
+        }
+    }
+
+    if (![fm fileExistsAtPath:confPath]) {
+        [@{} writeToFile:confPath atomically:YES];
+    }
+
+    CLOpenPathInFilza(self, confPath);
 }
 
 - (void)helpTapped {
