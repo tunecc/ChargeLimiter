@@ -48,7 +48,7 @@ enum {
     JBTYPE_TROLLSTORE   = 8, // TrollStore/AppStore
 };
 int getJBType();
-void NSFileLog(NSString* fmt, ...);
+void NSFileErrorLog(NSString* fmt, ...);
 NSString* getAppVer();
 NSString* getSysVer();
 NSOperatingSystemVersion getSysVerInt();

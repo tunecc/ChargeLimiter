@@ -1029,8 +1029,26 @@ extern "C" int cleanupAppDataContainer_C(void) {
     return -1;
 }
 
-static NSArray<NSString*>* legacyConfigFileNames() {
+static NSArray<NSString*>* legacyMigratableFileNames() {
+    return @[@CONFIG_PLIST_FILENAME, @DB_FILENAME];
+}
+
+static NSArray<NSString*>* legacyResidualFileNames() {
     return @[@CONFIG_PLIST_FILENAME, @DB_FILENAME, @LOG_FILENAME];
+}
+
+static NSString* latestLegacySourceForFile(NSString* file, NSString* legacyDir);
+
+static BOOL legacyDirHasAllMigratableFiles(NSString* dir) {
+    if (dir.length == 0) {
+        return NO;
+    }
+    for (NSString* file in legacyMigratableFileNames()) {
+        if (latestLegacySourceForFile(file, dir).length == 0) {
+            return NO;
+        }
+    }
+    return YES;
 }
 
 static NSArray<NSString*>* legacySourceFileNamesForTargetFile(NSString* targetFile) {
@@ -1143,7 +1161,7 @@ static NSArray<NSString*>* legacyResidualFilesInDir(NSString* dir) {
 
     NSFileManager* fm = [NSFileManager defaultManager];
     NSArray<NSString*>* currentRuntimePaths = currentRuntimePathsForLegacyDetection();
-    for (NSString* file in legacyConfigFileNames()) {
+    for (NSString* file in legacyResidualFileNames()) {
         for (NSString* sourceFile in legacySourceFileNamesForTargetFile(file)) {
             NSString* path = [dir stringByAppendingPathComponent:sourceFile];
             BOOL isDir = NO;
@@ -1161,12 +1179,8 @@ static NSArray<NSString*>* legacyResidualFilesInDir(NSString* dir) {
     return files;
 }
 
-static NSInteger legacyRuntimeFileCountInDir(NSString* dir) {
-    return (NSInteger)legacyResidualFilesInDir(dir).count;
-}
-
 static BOOL hasCompleteLegacyRuntimeFilesInDir(NSString* dir) {
-    return legacyRuntimeFileCountInDir(dir) == (NSInteger)legacyConfigFileNames().count;
+    return legacyDirHasAllMigratableFiles(dir);
 }
 
 static NSArray<NSString*>* legacyConfigDirsWithData() {
@@ -1185,8 +1199,11 @@ extern "C" NSArray<NSString*>* getLegacyConfigDirsWithData_C(void) {
 
 static NSArray<NSString*>* legacyResidualFiles(void) {
     NSMutableArray<NSString*>* files = [NSMutableArray new];
-    NSInteger fullCount = (NSInteger)legacyConfigFileNames().count;
+    NSInteger fullCount = (NSInteger)legacyResidualFileNames().count;
     for (NSString* dir in legacyConfigCandidateDirs()) {
+        if (legacyDirHasAllMigratableFiles(dir)) {
+            continue;
+        }
         NSArray<NSString*>* residualFiles = legacyResidualFilesInDir(dir);
         NSInteger count = residualFiles.count;
         if (count <= 0 || count >= fullCount) {
@@ -1241,7 +1258,7 @@ static NSDate* fileModifyDate(NSString* path) {
 
 static NSDate* legacyDirLatestDate(NSString* dir) {
     NSDate* latest = [NSDate distantPast];
-    for (NSString* file in legacyConfigFileNames()) {
+    for (NSString* file in legacyMigratableFileNames()) {
         for (NSString* sourceFile in legacySourceFileNamesForTargetFile(file)) {
             NSString* src = [dir stringByAppendingPathComponent:sourceFile];
             NSDate* d = fileModifyDate(src);
@@ -1273,7 +1290,7 @@ static NSString* latestLegacyDir(NSArray<NSString*>* legacyDirs) {
     NSDate* latestDate = [NSDate distantPast];
     for (NSString* dir in legacyDirs) {
         BOOL hasAll = YES;
-        for (NSString* file in legacyConfigFileNames()) {
+        for (NSString* file in legacyMigratableFileNames()) {
             if (latestLegacySourceForFile(file, dir).length == 0) {
                 hasAll = NO;
                 break;
@@ -1295,8 +1312,7 @@ extern "C" NSDictionary* migrateLegacyConfigFiles_C(void) {
     ensureAppPaths();
     NSString* targetConfPath = getConfPath();
     NSString* targetDbPath = getDbPath();
-    NSString* targetLogPath = getLogPath();
-    if (targetConfPath.length == 0 || targetDbPath.length == 0 || targetLogPath.length == 0) {
+    if (targetConfPath.length == 0 || targetDbPath.length == 0) {
         return @{
             @"migrated": @0,
             @"replaced": @0,
@@ -1315,14 +1331,12 @@ extern "C" NSDictionary* migrateLegacyConfigFiles_C(void) {
     NSInteger missing = 0;
     NSInteger failed = 0;
 
-    for (NSString* file in legacyConfigFileNames()) {
+    for (NSString* file in legacyMigratableFileNames()) {
         NSString* dst = nil;
         if ([file isEqualToString:@CONFIG_PLIST_FILENAME]) {
             dst = targetConfPath;
         } else if ([file isEqualToString:@DB_FILENAME]) {
             dst = targetDbPath;
-        } else if ([file isEqualToString:@LOG_FILENAME]) {
-            dst = targetLogPath;
         }
         if (dst.length == 0) {
             failed++;
@@ -1373,6 +1387,10 @@ extern "C" NSDictionary* migrateLegacyConfigFiles_C(void) {
             } else {
                 migrated++;
             }
+            NSString* legacyLog = [sourceDir stringByAppendingPathComponent:@LOG_FILENAME];
+            if ([fm fileExistsAtPath:legacyLog]) {
+                removeLegacyFilePreferRoot(legacyLog);
+            }
             continue;
         }
 
@@ -1380,8 +1398,8 @@ extern "C" NSDictionary* migrateLegacyConfigFiles_C(void) {
         [errors addObject:[NSString stringWithFormat:@"%@ <- %@ (%@)", dst, chosenSrc, copyError.localizedDescription ?: @"copy failed"]];
     }
 
-    NSLog2(@"[CL] legacy migration result: migrated=%ld replaced=%ld missing=%ld failed=%ld legacyDirs=%@ target_conf=%@ target_db=%@ target_log=%@",
-           (long)migrated, (long)replaced, (long)missing, (long)failed, legacyDirs, targetConfPath, targetDbPath, targetLogPath);
+    NSLog2(@"[CL] legacy migration result: migrated=%ld replaced=%ld missing=%ld failed=%ld legacyDirs=%@ target_conf=%@ target_db=%@",
+           (long)migrated, (long)replaced, (long)missing, (long)failed, legacyDirs, targetConfPath, targetDbPath);
 
     return @{
         @"migrated": @(migrated),
@@ -1392,8 +1410,7 @@ extern "C" NSDictionary* migrateLegacyConfigFiles_C(void) {
         @"legacyDirs": legacyDirs,
         @"targetDir": getRuntimeDataRootPath() ?: @"",
         @"targetConfPath": targetConfPath ?: @"",
-        @"targetDbPath": targetDbPath ?: @"",
-        @"targetLogPath": targetLogPath ?: @""
+        @"targetDbPath": targetDbPath ?: @""
     };
 }
 
@@ -1844,9 +1861,7 @@ extern "C" int restartDaemonForApp_C(NSString* appDocs) {
     return rc;
 }
 
-void NSFileLog(NSString* fmt, ...) {
-    va_list va;
-    va_start(va, fmt);
+static void NSFileLogWithArguments(NSString* fmt, va_list va) {
     NSDateFormatter* formatter = [NSDateFormatter new];
     [formatter setDateFormat:@"yyyy-MM-dd HH:mm:ss"];
     NSString* dateStr = [formatter stringFromDate:NSDate.date];
@@ -1856,14 +1871,27 @@ void NSFileLog(NSString* fmt, ...) {
     if (logPath.length == 0) {
         return;
     }
+    static const unsigned long long kMaxFileLogBytes = 256 * 1024;
+    NSFileManager* fm = [NSFileManager defaultManager];
+    unsigned long long fileSize = [[fm attributesOfItemAtPath:logPath error:nil][NSFileSize] unsignedLongLongValue];
+    if (fileSize > kMaxFileLogBytes) {
+        [fm createFileAtPath:logPath contents:nil attributes:nil];
+    }
     NSFileHandle* handle = [NSFileHandle fileHandleForWritingAtPath:logPath];
     if (handle == nil) {
-        [[NSFileManager defaultManager] createFileAtPath:logPath contents:nil attributes:nil];
+        [fm createFileAtPath:logPath contents:nil attributes:nil];
         handle = [NSFileHandle fileHandleForWritingAtPath:logPath];
     }
     [handle seekToEndOfFile];
     [handle writeData:[content dataUsingEncoding:NSUTF8StringEncoding]];
     [handle closeFile];
+}
+
+void NSFileErrorLog(NSString* fmt, ...) {
+    va_list va;
+    va_start(va, fmt);
+    NSFileLogWithArguments(fmt, va);
+    va_end(va);
 }
 
 NSString* getAppVer() {
@@ -2001,7 +2029,7 @@ NSArray* getFrontMostBid() {
     }
     if (allFrontMostBid.count > 0) {
         if (allFrontMostBid.count > 1) {
-            NSFileLog(@"floatwnd unexpected frontmost bid %@", allFrontMostBid);
+            NSFileErrorLog(@"floatwnd unexpected frontmost bid %@", allFrontMostBid);
         }
     }
     return allFrontMostBid;
