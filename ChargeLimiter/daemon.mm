@@ -1002,8 +1002,6 @@ static void scheduleNextDisableInflowRetryAttempt(void) {
                 return;
             }
             g_disableInflowRetryAttemptsRemaining = MAX(g_disableInflowRetryAttemptsRemaining - 1, 0);
-            int attemptIndex = kDisableInflowRetryMaxAttempts - g_disableInflowRetryAttemptsRemaining;
-            NSFileLog(@"retry disable inflow policy evaluation attempt %d/%d", attemptIndex, kDisableInflowRetryMaxAttempts);
             refreshBatteryStateAndApplyPolicy();
             if (!isDisableInflowRetryEligible(bat_info, g_policyState) || g_disableInflowRetryAttemptsRemaining <= 0) {
                 cancelDisableInflowRetry();
@@ -1024,12 +1022,10 @@ static void armDisableInflowRetryIfNeeded(NSDictionary* info, NSString* policySt
         return;
     }
     g_disableInflowRetryAttemptsRemaining = kDisableInflowRetryMaxAttempts;
-    NSFileLog(@"arm disable inflow policy reevaluation attempts=%d", g_disableInflowRetryAttemptsRemaining);
     scheduleNextDisableInflowRetryAttempt();
 }
 
 static void requestDaemonResetAndExit(void) {
-    NSFileLog(@"received reset-and-exit request");
     dispatch_async(dispatch_get_main_queue(), ^{
         resetBatteryStatusWithContext(YES, @"daemon_reset_and_exit");
         exit(0);
@@ -1067,7 +1063,7 @@ static void verifyBundleStillInstalledForCurrentMode(void) {
     if ([[NSFileManager defaultManager] fileExistsAtPath:bundlePath]) {
         return;
     }
-    NSFileLog(@"bundle missing for TrollStore path, restore and exit bundle=%@", bundlePath);
+    NSFileErrorLog(@"bundle missing for TrollStore path, restore and exit bundle=%@", bundlePath);
     resetBatteryStatusWithContext(YES, @"bundle_missing");
     exit(0);
 }
@@ -1290,7 +1286,7 @@ static int setChargeStatus(BOOL flag) {
             @"fallback_reason": @"write_failed",
             @"io_return": @(ret),
         };
-        NSFileLog(@"predictive inhibit write failed ret=%d flag=%d, fallback to legacy stop path", ret, flag);
+        NSFileErrorLog(@"predictive inhibit write failed ret=%d flag=%d, fallback to legacy stop path", ret, flag);
         markPredictiveInhibitFallbackActive(@"predictive_inhibit_write_failed", bat_info, extras, now);
         ret = writeChargeStatus(serv, flag, NO);
     }
@@ -1353,9 +1349,6 @@ static void restoreSmartChargeForReset(NSString* reason) {
     if (smartChargeStatus == 0 || smartChargeStatus < 0) {
         return;
     }
-    NSFileLog(@"smart charge reset restore permanent disable -> enable reason=%@ status=%d",
-              reason ?: @"reset",
-              smartChargeStatus);
     setSmartChargeEnable(YES);
 }
 
@@ -2324,10 +2317,6 @@ static void tryRestoreSmartChargeAfterCoordination(NSString* reason) {
     }
     if (g_smartChargeStatus == 3 && shouldRestoreSmartChargeAfterCoordination()) {
         int fromStatus = g_smartChargeStatus;
-        NSFileLog(@"smart charge restore session=%@ original=%d reason=%@",
-                  g_smartChargeCoordinationSessionID ?: @"",
-                  g_smartChargeCoordinationOriginalStatus,
-                  reason ?: @"");
         setSmartChargeEnable(YES);
         g_smartChargeStatus = getSmartChargeStatus();
         appendSmartChargeCoordinationEvent(@"smart_charge_restored",
@@ -2358,8 +2347,6 @@ static void recoverSmartChargeCoordinationOnBootstrap(void) {
     BOOL permanentlyDisableSmartCharge = getLocalBool(@"disable_smart_charge", NO);
     if (permanentlyDisableSmartCharge) {
         if (g_smartChargeStatus != 0) {
-            NSFileLog(@"smart charge bootstrap cleanup session=%@ -> permanent disable",
-                      g_smartChargeCoordinationSessionID ?: @"");
             setSmartChargeEnable(NO);
             g_smartChargeStatus = getSmartChargeStatus();
         }
@@ -2371,15 +2358,12 @@ static void recoverSmartChargeCoordinationOnBootstrap(void) {
     if (g_smartChargeStatus == 3) {
         NSDictionary* snapshot = nil;
         if (0 == getBatInfo(&snapshot)) {
-            NSFileLog(@"smart charge bootstrap re-evaluate session=%@ original=%d",
-                      g_smartChargeCoordinationSessionID ?: @"",
-                      g_smartChargeCoordinationOriginalStatus);
             applyChargePolicy(nil, snapshot);
             return;
         }
-        NSFileLog(@"smart charge bootstrap restore fallback session=%@ original=%d",
-                  g_smartChargeCoordinationSessionID ?: @"",
-                  g_smartChargeCoordinationOriginalStatus);
+        NSFileErrorLog(@"smart charge bootstrap restore fallback session=%@ original=%d",
+                       g_smartChargeCoordinationSessionID ?: @"",
+                       g_smartChargeCoordinationOriginalStatus);
         tryRestoreSmartChargeAfterCoordination(@"daemon_bootstrap_recovery");
     } else {
         finishSmartChargeCoordinationSessionWithObservedStatus(g_smartChargeStatus,
@@ -2500,12 +2484,11 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
             @"is_charging": @(is_charging),
             @"current_looks_charging": @(current_looks_charging),
         };
-        NSFileLog(@"predictive inhibit stop not reflected after %.1fs, fallback to legacy stop path",
-                  kPredictiveInhibitFallbackVerifyDelaySeconds);
+        NSFileErrorLog(@"predictive inhibit stop not reflected after %.1fs, fallback to legacy stop path",
+                       kPredictiveInhibitFallbackVerifyDelaySeconds);
         markPredictiveInhibitFallbackActive(@"predictive_inhibit_stop_unconfirmed", safeInfo, extras, now);
         setBatteryStatus(NO);
     }
-    NSString* runtimeHoldBehavior = currentHoldRuntimeBehavior();
     BOOL holdCapacityControlActive = (!disable_capacity_control && adv_hold_enabled && is_adaptor_connected);
     if (!holdCapacityControlActive || is_adaptor_new_connected) {
         resetHoldSessionState();
@@ -2541,17 +2524,11 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
             nextPolicyReason = @"external_idle";
         }
     }
-    if (is_adaptor_new_connected) {
-        NSFileLog(@"detect plug in");
-    } else if (is_adaptor_new_disconnected) {
-        NSFileLog(@"detect unplug");
-    }
     // 优先级: 电量极低 > 停充(电量>温度) > 充电(电量>温度) > 插电
     do {
         if (is_adaptor_connected && capacity.intValue <= 5) { // 电量极低,优先级=1
             // 防止误用或意外造成无法充电
             if (is_adaptor_connected && (!g_chargeCommandEnabled || !is_charging || predictive_inhibit_active)) {
-                NSFileLog(@"start charging for extremely low capacity %@", capacity);
                 setInflowStatus(YES);
                 setBatteryStatus(YES);
                 performAcccharge(YES);
@@ -2562,13 +2539,11 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
         }
         if (is_adaptor_connected && enable_temp && temperature >= charge_temp_above) { // 停充-温度高,优先级=3
             if (g_chargeCommandEnabled || current_looks_charging) {
-                NSFileLog(@"stop charging for high temperature %lf >= %lf", temperature, charge_temp_above);
                 setBatteryStatus(NO);
                 performAction(@"stop_charge");
                 performAcccharge(NO);
             }
             if (shouldIssueDisableInflowCommand(adv_disable_inflow, inflow_enabled_snapshot, previousPolicyState)) {
-                NSFileLog(@"disable inflow for high temperature %lf >= %lf", temperature, charge_temp_above);
                 setInflowStatus(NO);
             }
             nextPolicyState = adv_disable_inflow ? @"no_inflow" : @"temp_paused";
@@ -2578,10 +2553,8 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
         if (is_adaptor_connected && full_charge_window_active) { // 满充计划窗口内，只跳过电量上限控制
             if (is_adaptor_connected && (!g_chargeCommandEnabled || !is_charging || predictive_inhibit_active) && capacity.intValue < 100) {
                 if (shouldIssueEnableInflowCommand(adv_disable_inflow, inflow_enabled_snapshot, previousPolicyState)) {
-                    NSFileLog(@"enable inflow for scheduled full-charge window");
                     setInflowStatus(YES);
                 }
-                NSFileLog(@"start charging for scheduled full-charge window");
                 setBatteryStatus(YES);
                 performAction(@"start_charge");
                 performAcccharge(YES);
@@ -2593,7 +2566,6 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
         if (holdCapacityControlActive) {
             if (capacity.intValue >= charge_above) {
                 if (g_chargeCommandEnabled || current_looks_charging) {
-                    NSFileLog(@"hold stop at target %@ >= %d current=%d", capacity, charge_above, effective_current);
                     setBatteryStatus(NO);
                     performAction(@"stop_charge");
                     performAcccharge(NO);
@@ -2612,7 +2584,6 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
                 }
                 if (should_recharge_for_hold) {
                     if (!g_chargeCommandEnabled || predictive_inhibit_active || !current_looks_charging) {
-                        NSFileLog(@"hold recharge within band %@ <= %d current=%d", capacity, hold_lower, effective_current);
                         setBatteryStatus(YES);
                         performAction(@"start_charge");
                         performAcccharge(YES);
@@ -2629,13 +2600,11 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
         }
         if (is_adaptor_connected && !disable_capacity_control && capacity.intValue >= charge_above) { // 停充-电量高,优先级=2
             if (g_chargeCommandEnabled || current_looks_charging) {
-                NSFileLog(@"stop charging for high capacity %@ >= %d", capacity, charge_above);
                 setBatteryStatus(NO);
                 performAction(@"stop_charge");
                 performAcccharge(NO);
             }
             if (shouldIssueDisableInflowCommand(adv_disable_inflow, inflow_enabled_snapshot, previousPolicyState)) {
-                NSFileLog(@"disable inflow for high capacity %@ >= %d", capacity, charge_above);
                 setInflowStatus(NO);
             }
             nextPolicyState = adv_disable_inflow ? @"no_inflow" : @"stopped";
@@ -2649,10 +2618,8 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
             // 但需要确保电量也在合理范围内（低于上限）
             if (is_adaptor_connected && capacity.intValue < charge_above) {
                 if (shouldIssueEnableInflowCommand(adv_disable_inflow, inflow_enabled_snapshot, previousPolicyState)) {
-                    NSFileLog(@"enable inflow for low temperature %lf <= %lf", temperature, charge_temp_below);
                     setInflowStatus(YES);
                 }
-                NSFileLog(@"start charging for low temperature %lf <= %lf", temperature, charge_temp_below);
                 setBatteryStatus(YES);
                 performAction(@"start_charge");
                 performAcccharge(YES);
@@ -2665,10 +2632,8 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
             // 禁流模式下电量下降后恢复充电
             if (is_adaptor_connected) {
                 if (shouldIssueEnableInflowCommand(adv_disable_inflow, inflow_enabled_snapshot, previousPolicyState)) {
-                    NSFileLog(@"enable inflow for low capacity %@ <= %d", capacity, charge_below);
                     setInflowStatus(YES);
                 }
-                NSFileLog(@"start charging for low capacity %@ <= %d", capacity, charge_below);
                 setBatteryStatus(YES);
                 performAction(@"start_charge");
                 performAcccharge(YES);
@@ -2680,10 +2645,8 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
         if (is_adaptor_connected && !disable_capacity_control && mode == CL_MODE_PLUG) {
             if (is_adaptor_new_connected) { // 充电-插电,优先级=6
                 if (shouldIssueEnableInflowCommand(adv_disable_inflow, inflow_enabled_snapshot, previousPolicyState)) {
-                    NSFileLog(@"enable inflow for plug in");
                     setInflowStatus(YES);
                 }
-                NSFileLog(@"start charging for plug in");
                 setBatteryStatus(YES);
                 performAction(@"start_charge");
                 performAcccharge(YES);
@@ -2739,11 +2702,6 @@ static void evaluateFullChargeSchedule(BOOL forceApply) {
     }
     if (!forceApply && wasActive == state.active) {
         return;
-    }
-    if (wasActive != state.active) {
-        NSFileLog(@"scheduled full-charge window %@", state.active ? @"entered" : @"ended");
-    } else {
-        NSFileLog(@"scheduled full-charge config updated");
     }
     refreshBatteryStateAndApplyPolicy();
 }
@@ -2901,9 +2859,9 @@ static void syncDaemonDocumentsForRequest(NSDictionary* nsreq) {
     NSString* newDbPath = getDbPath();
     BOOL confExists = (newConf.length > 0) && [[NSFileManager defaultManager] fileExistsAtPath:newConf];
     BOOL dbExists = (newDbPath.length > 0) && [[NSFileManager defaultManager] fileExistsAtPath:newDbPath];
-    NSFileLog(@"[CL] sync app_docs old=%@ req=%@ old_conf=%@ new_docs=%@ new_conf=%@ conf_exists=%d old_db=%@ new_db=%@ db_exists=%d",
-              currentDocs ?: @"", appDocs ?: @"", oldConf ?: @"", newDocs ?: @"", newConf ?: @"", confExists,
-              oldDbPath ?: @"", newDbPath ?: @"", dbExists);
+    NSLog2(@"[CL] sync app_docs old=%@ req=%@ old_conf=%@ new_docs=%@ new_conf=%@ conf_exists=%d old_db=%@ new_db=%@ db_exists=%d",
+           currentDocs ?: @"", appDocs ?: @"", oldConf ?: @"", newDocs ?: @"", newConf ?: @"", confExists,
+           oldDbPath ?: @"", newDbPath ?: @"", dbExists);
 }
 
 NSDictionary* handleReq(NSDictionary* nsreq) {
@@ -3253,14 +3211,12 @@ static void addUPSBattery(void* refCon, io_iterator_t iterator) {
                     IOServiceAddInterestNotification(gNotifyPort, upsDevice, "IOGeneralInterest", [](void* refcon, io_service_t service, uint32_t type, void* args) {
                         @autoreleasepool {
                             if (type == kIOMessageServiceIsTerminated) {
-                                NSFileLog(@"detect ups battery unplug");
                                 releaseUPSBattery(gUPSPS);
                                 gUPSPS = nil;
                             }
                         }
                     }, nil, &noti);
                     gUPSPS.noti = noti;
-                    NSFileLog(@"detect ups battery plug in");
                 }
                 (*plugInInterface)->Release(plugInInterface);
             }
@@ -3379,7 +3335,6 @@ void detectUPSBattery() {
     @autoreleasepool {
         for (LSApplicationProxy* proxy in list) {
             if ([proxy.bundleIdentifier isEqualToString:self->bid]) {
-                NSFileLog(@"uninstalled, restore and exit");
                 resetBatteryStatusWithContext(YES, @"app_uninstall");
                 exit(0);
             }
@@ -3389,7 +3344,6 @@ void detectUPSBattery() {
 - (void)applicationsDidInstall:(NSArray<LSApplicationProxy*>*)list {
     for (LSApplicationProxy* proxy in list) {
         if ([proxy.bundleIdentifier isEqualToString:self->bid]) {
-            NSFileLog(@"updated, exit"); // 覆盖安装时旧版daemon自动退出
             exit(0);
         }
     }
@@ -3420,7 +3374,6 @@ void detectUPSBattery() {
 }
 - (void)systemTimeContextDidChange:(NSNotification*)note {
     @synchronized (Service.inst) {
-        NSFileLog(@"system time context changed %@", note.name ?: @"");
         evaluateFullChargeSchedule(NO);
     }
 }
@@ -3450,6 +3403,7 @@ void detectUPSBattery() {
         };
         BOOL status = [_webServer startWithOptions:options error:nil];
         if (!status) {
+            NSFileErrorLog(@"%@ serve failed, exit", log_prefix);
             NSLog(@"%@ serve failed, exit", log_prefix);
             exit(0);
         }
@@ -3471,6 +3425,7 @@ void detectUPSBattery() {
         }];
         BOOL status = [_webServer startOnPort:GSERV_PORT bindToLocalhost:YES];
         if (!status) {
+            NSFileErrorLog(@"%@ serve failed, exit", log_prefix);
             NSLog(@"%@ serve failed, exit", log_prefix);
             exit(0);
         }
@@ -3522,7 +3477,6 @@ int main(int argc, char** argv) { // daemon_main
         }
 
         if (argIndex >= argc) {
-            NSFileLog(@"CLv%@ start pid=%d", NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"], getpid());
             g_serv_boot = (int)time(0);
             if (g_jbtype == JBTYPE_TROLLSTORE) {
                 signal(SIGHUP, SIG_IGN);
@@ -3562,7 +3516,7 @@ int main(int argc, char** argv) { // daemon_main
                 [LSApplicationWorkspace.defaultWorkspace removeObserver:Service.inst];
             });
             [NSRunLoop.mainRunLoop run];
-            NSFileLog(@"daemon unexpected");
+            NSFileErrorLog(@"daemon unexpected");
             return 0;
         } else if (argIndex < argc) {
             if (0 == strcmp(argv[argIndex], "reset")) { // 越狱下卸载前重置

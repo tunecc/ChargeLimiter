@@ -265,12 +265,10 @@ static AppDelegate* _app = nil;
                                     BOOL floatwnd_auto = getLocalBool(@"floatwnd_auto", NO);
                                     if (floatwnd_auto) {
                                         if ([white_list containsObject:cur_bid]) {
-                                            NSFileLog(@"floatwnd unhide for %@", cur_bid);
                                             dispatch_async(dispatch_get_main_queue(), ^{
                                                 _app.webview.hidden = NO;
                                             });
                                         } else {
-                                            NSFileLog(@"floatwnd hide for %@", cur_bid);
                                             dispatch_async(dispatch_get_main_queue(), ^{
                                                 _app.webview.hidden = YES;
                                             });
