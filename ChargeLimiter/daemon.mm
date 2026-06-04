@@ -1336,6 +1336,16 @@ static void resetBatteryStatus() {
     resetBatteryStatusWithContext(NO, @"legacy_reset");
 }
 
+static BOOL shouldRestorePermanentSmartChargeDisableForResetReason(NSString* reason) {
+    return [@[
+        @"app_uninstall",
+        @"bundle_missing",
+        @"cli_reset",
+        @"cli_reset_and_exit_fallback",
+        @"daemon_reset_and_exit"
+    ] containsObject:reason ?: @""];
+}
+
 static void restoreSmartChargeForReset(NSString* reason) {
     loadSmartChargeCoordinationRuntimeState();
     tryRestoreSmartChargeAfterCoordination(reason ?: @"reset");
@@ -1346,10 +1356,10 @@ static void restoreSmartChargeForReset(NSString* reason) {
     }
 
     int smartChargeStatus = getSmartChargeStatus();
-    if (smartChargeStatus == 0 || smartChargeStatus < 0) {
+    if (smartChargeStatus < 0) {
         return;
     }
-    setSmartChargeEnable(YES);
+    setSmartChargeEnable(shouldRestorePermanentSmartChargeDisableForResetReason(reason) ? YES : NO);
 }
 
 static void restoreThermalSimulationForReset(void) {
