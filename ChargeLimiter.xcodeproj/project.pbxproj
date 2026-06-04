@@ -688,7 +688,7 @@
 					"$(inherited)",
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.13.3;
+				MARKETING_VERSION = 1.13.4;
 				MonkeyDevBuildPackageOnAnyBuild = NO;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = NO;
@@ -735,7 +735,7 @@
 					"$(inherited)",
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.13.3;
+				MARKETING_VERSION = 1.13.4;
 				MonkeyDevBuildPackageOnAnyBuild = NO;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = NO;
@@ -915,7 +915,7 @@
 					"$(inherited)",
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.13.3;
+				MARKETING_VERSION = 1.13.4;
 				MonkeyDevBuildPackageOnAnyBuild = NO;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = NO;
@@ -956,7 +956,7 @@
 					"$(inherited)",
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.13.3;
+				MARKETING_VERSION = 1.13.4;
 				MonkeyDevBuildPackageOnAnyBuild = NO;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = NO;
@@ -1000,7 +1000,7 @@
 					"$(inherited)",
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.13.3;
+				MARKETING_VERSION = 1.13.4;
 				MonkeyDevBuildPackageOnAnyBuild = NO;
 				MonkeyDevDeviceIP = 192.168.1.12;
 				MonkeyDevInstallOnAnyBuild = NO;
@@ -1045,7 +1045,7 @@
 					"$(inherited)",
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.13.3;
+				MARKETING_VERSION = 1.13.4;
 				MonkeyDevBuildPackageOnAnyBuild = NO;
 				MonkeyDevDeviceIP = 192.168.1.12;
 				MonkeyDevInstallOnAnyBuild = NO;
@@ -1090,7 +1090,7 @@
 					"$(inherited)",
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.13.3;
+				MARKETING_VERSION = 1.13.4;
 				MonkeyDevBuildPackageOnAnyBuild = NO;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = NO;
@@ -1140,7 +1140,7 @@
 					"$(inherited)",
 					"$(PROJECT_DIR)/ChargeLimiter",
 				);
-				MARKETING_VERSION = 1.13.3;
+				MARKETING_VERSION = 1.13.4;
 				MonkeyDevBuildPackageOnAnyBuild = NO;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = NO;
