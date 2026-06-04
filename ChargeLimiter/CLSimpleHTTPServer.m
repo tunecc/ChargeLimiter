@@ -11,6 +11,84 @@
 #import <netinet/in.h>
 #import <arpa/inet.h>
 #import <unistd.h>
+#include <math.h>
+
+static id CLJSONSafeObject(id object) {
+    if (object == nil || object == [NSNull null]) {
+        return [NSNull null];
+    }
+    if ([object isKindOfClass:[NSString class]]) {
+        return object;
+    }
+    if ([object isKindOfClass:[NSNumber class]]) {
+        double value = [(NSNumber *)object doubleValue];
+        return isfinite(value) ? object : @0;
+    }
+    if ([object isKindOfClass:[NSDictionary class]]) {
+        NSMutableDictionary *safeDictionary = [NSMutableDictionary dictionary];
+        [(NSDictionary *)object enumerateKeysAndObjectsUsingBlock:^(id key, id value, BOOL *stop) {
+            NSString *safeKey = [key isKindOfClass:[NSString class]] ? key : [key description];
+            if (safeKey.length == 0) {
+                return;
+            }
+            safeDictionary[safeKey] = CLJSONSafeObject(value);
+        }];
+        return safeDictionary;
+    }
+    if ([object isKindOfClass:[NSArray class]]) {
+        NSMutableArray *safeArray = [NSMutableArray arrayWithCapacity:[(NSArray *)object count]];
+        for (id value in (NSArray *)object) {
+            [safeArray addObject:CLJSONSafeObject(value)];
+        }
+        return safeArray;
+    }
+    if ([object isKindOfClass:[NSSet class]]) {
+        NSMutableArray *safeArray = [NSMutableArray arrayWithCapacity:[(NSSet *)object count]];
+        for (id value in (NSSet *)object) {
+            [safeArray addObject:CLJSONSafeObject(value)];
+        }
+        return safeArray;
+    }
+    if ([object isKindOfClass:[NSData class]]) {
+        return [(NSData *)object base64EncodedStringWithOptions:0] ?: @"";
+    }
+    if ([object isKindOfClass:[NSDate class]]) {
+        return @([(NSDate *)object timeIntervalSince1970]);
+    }
+    if ([object isKindOfClass:[NSURL class]]) {
+        return [(NSURL *)object absoluteString] ?: @"";
+    }
+    return [object description] ?: @"";
+}
+
+static NSData *CLJSONResponseData(id object, NSInteger *statusCode) {
+    id safeObject = CLJSONSafeObject(object);
+    if (![NSJSONSerialization isValidJSONObject:safeObject]) {
+        if (statusCode != NULL) {
+            *statusCode = 500;
+        }
+        safeObject = @{@"error": @"Invalid JSON response"};
+    }
+
+    NSError *jsonError = nil;
+    NSData *data = nil;
+    @try {
+        data = [NSJSONSerialization dataWithJSONObject:safeObject options:0 error:&jsonError];
+    } @catch (NSException *exception) {
+        NSLog(@"[CLSimpleHTTPServer] JSON response exception: %@", exception);
+    }
+
+    if (data == nil) {
+        if (statusCode != NULL) {
+            *statusCode = 500;
+        }
+        data = [@"{\"error\":\"Invalid JSON response\"}" dataUsingEncoding:NSUTF8StringEncoding];
+        if (jsonError != nil) {
+            NSLog(@"[CLSimpleHTTPServer] JSON response error: %@", jsonError);
+        }
+    }
+    return data;
+}
 
 @interface CLSimpleHTTPServer ()
 @property (nonatomic, assign) int serverSocket;
@@ -213,9 +291,14 @@
             }
             
             if (_postHandler) {
-                NSDictionary *result = _postHandler(jsonBody);
+                NSDictionary *result = nil;
+                @try {
+                    result = _postHandler(jsonBody);
+                } @catch (NSException *exception) {
+                    NSLog(@"[CLSimpleHTTPServer] POST handler exception: %@", exception);
+                }
                 if (result) {
-                    responseData = [NSJSONSerialization dataWithJSONObject:result options:0 error:nil];
+                    responseData = CLJSONResponseData(result, &statusCode);
                     contentType = @"application/json";
                 } else {
                     statusCode = 500;
