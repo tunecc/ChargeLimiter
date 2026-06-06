@@ -287,7 +287,7 @@ static int CLStartDaemonBestEffort(void) {
             @"full_charge_sched_interval_days": @7,
             @"full_charge_sched_start_minute": @120,
             @"full_charge_sched_duration_hours": @4,
-            @"ver": @"1.13.5",
+            @"ver": @"1.13.6",
             @"sysver": @"iOS 16.1.2",
             @"devmodel": @"iPhone14,2",
             @"sys_boot": @((NSInteger)[[NSDate date] timeIntervalSince1970] - 86400),
