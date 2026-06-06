@@ -325,6 +325,8 @@ rewrite_roothide_maintainer_script() {
     -e 's| /usr/| /rootfs/usr/|g' \
     -e 's| /var/| /rootfs/var/|g' \
     -e 's|DIR="/Library/|DIR="/rootfs/Library/|g' \
+    -e 's|/rootfs/usr/bin/jbroot|/usr/bin/jbroot|g' \
+    -e 's|/rootfs/var/mobile/Library/Preferences|/var/mobile/Library/Preferences|g' \
     -e '1s|^#![[:space:]]*/rootfs/|#! /|' \
     -e 's|/-var/jb/-|/|g' \
     -e 's|/-var/jb-|/var/jb|g' \
@@ -705,6 +707,8 @@ check_roothide_stage() {
   APP_PATH="$STAGE_PATH/Applications/ChargeLimiter.app"
   PLIST_PATH="$STAGE_PATH/Library/LaunchDaemons/com.chargelimiter.mod.plist"
   POSTINST_PATH="$STAGE_PATH/DEBIAN/postinst"
+  PRERM_PATH="$STAGE_PATH/DEBIAN/prerm"
+  POSTRM_PATH="$STAGE_PATH/DEBIAN/postrm"
 
   [ -d "$APP_PATH" ] || {
     echo "[ERR] Missing roothide app bundle: $APP_PATH" >&2
@@ -742,6 +746,44 @@ check_roothide_stage() {
     echo "[ERR] roothide postinst DAEMON_PLIST was not rewritten." >&2
     exit 1
   }
+
+  rg -F -q 'APP_DIR="/Applications/ChargeLimiter.app"' "$PRERM_PATH" || {
+    echo "[ERR] roothide prerm APP_DIR was not rewritten." >&2
+    exit 1
+  }
+
+  rg -F -q 'DAEMON_PLIST="/Library/LaunchDaemons/com.chargelimiter.mod.plist"' "$PRERM_PATH" || {
+    echo "[ERR] roothide prerm DAEMON_PLIST was not rewritten." >&2
+    exit 1
+  }
+
+  rg -F -q 'APP_DIR="/Applications/ChargeLimiter.app"' "$POSTRM_PATH" || {
+    echo "[ERR] roothide postrm APP_DIR was not rewritten." >&2
+    exit 1
+  }
+
+  for script_path in "$POSTINST_PATH" "$PRERM_PATH" "$POSTRM_PATH"; do
+    rg -F -q '/-var/jb' "$script_path" && {
+      echo "[ERR] roothide maintainer script still contains conversion placeholder: $script_path" >&2
+      exit 1
+    }
+    rg -F -q '/var/jb/Applications/ChargeLimiter.app' "$script_path" && {
+      echo "[ERR] roothide maintainer script still contains rootless app path: $script_path" >&2
+      exit 1
+    }
+    rg -F -q '/var/jb/Library/LaunchDaemons/com.chargelimiter.mod.plist' "$script_path" && {
+      echo "[ERR] roothide maintainer script still contains rootless launch daemon path: $script_path" >&2
+      exit 1
+    }
+    rg -F -q '/rootfs/usr/bin/jbroot' "$script_path" && {
+      echo "[ERR] roothide maintainer script rewrote jbroot tool path through rootfs: $script_path" >&2
+      exit 1
+    }
+    rg -F -q '/rootfs/var/mobile/Library/Preferences' "$script_path" && {
+      echo "[ERR] roothide maintainer script passed a rootfs path to jbroot: $script_path" >&2
+      exit 1
+    }
+  done
 
   # RootHidePatcher standard conversion keeps the rootless Mach-O slices and
   # rewrites the package/runtime layout around them instead of rebuilding arm64e.

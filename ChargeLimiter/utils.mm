@@ -18,6 +18,7 @@ typedef const char* (*jbroot_fn_t)(const char* path);
 static NSString* resolveJbRootFromSelfExe(void);
 static NSString* resolveRoothidePreferencesDirByAPI(void);
 static NSString* ensureValidDocumentsPath(NSString* docsPath);
+static BOOL removeLegacyFilePreferRoot(NSString* path);
 
 static NSString* normalizedAbsolutePath(NSString* path) {
     if (path.length == 0) {
@@ -286,9 +287,6 @@ static NSString* resolveStableJailbreakPath(NSString* logicalPath) {
 static NSString* resolveRuntimeConfigRootPath(void) {
     if (getJBType() == JBTYPE_TROLLSTORE) {
         return ensureValidDocumentsPath([NSHomeDirectory() stringByAppendingPathComponent:@"Documents"]);
-    }
-    if (getJBType() == JBTYPE_ROOTHIDE) {
-        return @"/var/mobile/Library/Preferences";
     }
     return resolveStableJailbreakPath(@"/var/mobile/Library/Preferences");
 }
@@ -626,8 +624,9 @@ static NSString* resolveJbRootFromSelfExe() {
     return [exe substringToIndex:tail.location];
 }
 
-static NSString* resolveRoothidePreferencesDirByAPI() {
-    if (getJBType() != JBTYPE_ROOTHIDE) {
+static NSString* resolveRoothidePathByAPI(NSString* logicalPath) {
+    NSString* normalized = normalizedAbsolutePath(logicalPath);
+    if (normalized.length == 0) {
         return nil;
     }
 
@@ -638,12 +637,34 @@ static NSString* resolveRoothidePreferencesDirByAPI() {
         if (jbrootPtr) {
             return;
         }
-        const char* candidates[] = {
-            "/usr/lib/libroothide.dylib",
-            "/var/jb/usr/lib/libroothide.dylib",
+
+        NSMutableArray<NSString*>* candidates = [NSMutableArray new];
+        NSMutableSet<NSString*>* seen = [NSMutableSet new];
+        void (^appendCandidate)(NSString*) = ^(NSString* candidate) {
+            NSString* fixed = normalizedAbsolutePath(candidate);
+            if (fixed.length == 0 || [seen containsObject:fixed]) {
+                return;
+            }
+            [seen addObject:fixed];
+            [candidates addObject:fixed];
         };
-        for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
-            void* h = dlopen(candidates[i], RTLD_LAZY);
+
+        NSString* exeDir = [getSelfExePath() stringByDeletingLastPathComponent];
+        if (exeDir.length > 0) {
+            appendCandidate([exeDir stringByAppendingPathComponent:@".jbroot/usr/lib/libroothide.dylib"]);
+        }
+
+        char resolvedJb[PATH_MAX] = {0};
+        if (realpath("/var/jb", resolvedJb) != NULL) {
+            appendCandidate([@(resolvedJb) stringByAppendingPathComponent:@"usr/lib/libroothide.dylib"]);
+        }
+
+        appendCandidate(@"/usr/lib/libroothide.dylib");
+        appendCandidate(@"/var/jb/usr/lib/libroothide.dylib");
+        appendCandidate(@"/private/var/jb/usr/lib/libroothide.dylib");
+
+        for (NSString* candidate in candidates) {
+            void* h = dlopen(candidate.fileSystemRepresentation, RTLD_LAZY);
             if (!h) {
                 continue;
             }
@@ -658,11 +679,19 @@ static NSString* resolveRoothidePreferencesDirByAPI() {
         return nil;
     }
 
-    const char* rooted = jbrootPtr("/var/mobile/Library/Preferences");
+    const char* rooted = jbrootPtr(normalized.fileSystemRepresentation);
     if (!rooted || rooted[0] != '/') {
         return nil;
     }
-    return @(rooted);
+    return normalizedAbsolutePath(@(rooted));
+}
+
+static NSString* resolveRoothidePreferencesDirByAPI() {
+    NSString* rooted = resolveRoothidePathByAPI(@"/var/mobile/Library/Preferences");
+    if (rooted.length == 0 || [rooted rangeOfString:@"/.jbroot-"].location == NSNotFound) {
+        return nil;
+    }
+    return rooted;
 }
 
 static NSArray<NSString*>* legacyContainerCachePaths() {
@@ -728,6 +757,38 @@ static void cleanupLegacyContainerCacheFilesIfNeeded() {
     });
 }
 
+static void cleanupRoothideRootfsConfigAliasesIfNeeded() {
+    if (getJBType() != JBTYPE_ROOTHIDE || g_confPath.length == 0) {
+        return;
+    }
+
+    NSFileManager* fm = [NSFileManager defaultManager];
+    BOOL isDir = NO;
+    if (![fm fileExistsAtPath:g_confPath isDirectory:&isDir] || isDir) {
+        return;
+    }
+
+    NSArray<NSString*>* rootfsConfigPaths = @[
+        [@"/var/mobile/Library/Preferences" stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME],
+        [@"/private/var/mobile/Library/Preferences" stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME],
+    ];
+    for (NSString* path in rootfsConfigPaths) {
+        NSString* normalized = normalizedAbsolutePath(path);
+        if (normalized.length == 0 || [normalized isEqualToString:g_confPath]) {
+            continue;
+        }
+        BOOL aliasIsDir = NO;
+        if (![fm fileExistsAtPath:normalized isDirectory:&aliasIsDir] || aliasIsDir) {
+            continue;
+        }
+        if (removeLegacyFilePreferRoot(normalized)) {
+            NSLog2(@"[CL] removed stale roothide rootfs config alias %@", normalized);
+        } else {
+            NSLog2(@"[CL] failed to remove stale roothide rootfs config alias %@", normalized);
+        }
+    }
+}
+
 static void ensureAppPaths() {
     static NSObject* lock = nil;
     static dispatch_once_t onceToken;
@@ -755,6 +816,7 @@ static void ensureAppPaths() {
         g_confPath = [configRoot stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME];
         g_dbPath = [sharedDataRoot stringByAppendingPathComponent:@DB_FILENAME];
         cleanupLegacyContainerCacheFilesIfNeeded();
+        cleanupRoothideRootfsConfigAliasesIfNeeded();
     }
 }
 
@@ -870,6 +932,11 @@ static NSArray<NSString*>* configFilePathCandidates(BOOL includeHistoricalRoothi
     if (getJBType() == JBTYPE_ROOTHIDE) {
         NSString* roothidePrefsDir = resolveRoothidePreferencesDirByAPI();
         appendConfigPathVariants(paths, [roothidePrefsDir stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME]);
+        NSString* apiJbRoot = deriveJbRootFromPreferencesDir(roothidePrefsDir);
+        if (apiJbRoot.length > 0) {
+            appendConfigPathVariants(paths, [[apiJbRoot stringByAppendingPathComponent:@"var/mobile/Library/Preferences"] stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME]);
+            appendConfigPathVariants(paths, [[apiJbRoot stringByAppendingPathComponent:@"private/var/mobile/Library/Preferences"] stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME]);
+        }
 
         NSString* inferredJbRoot = resolveJbRootFromSelfExe();
         if (inferredJbRoot.length > 0) {
@@ -907,6 +974,32 @@ static NSDictionary* readConfigDictionaryFromDisk(NSString** pathOut) {
     return nil;
 }
 
+static NSArray<NSString*>* configWritePathCandidates(void) {
+    ensureAppPaths();
+
+    NSMutableArray<NSString*>* paths = [NSMutableArray new];
+    appendUniqueNormalizedPath(paths, g_confPath);
+
+    if (getJBType() == JBTYPE_ROOTHIDE) {
+        NSString* roothidePrefsDir = resolveRoothidePreferencesDirByAPI();
+        appendUniqueNormalizedPath(paths, [roothidePrefsDir stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME]);
+
+        NSString* apiJbRoot = deriveJbRootFromPreferencesDir(roothidePrefsDir);
+        if (apiJbRoot.length > 0) {
+            appendUniqueNormalizedPath(paths, [[apiJbRoot stringByAppendingPathComponent:@"var/mobile/Library/Preferences"] stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME]);
+            appendUniqueNormalizedPath(paths, [[apiJbRoot stringByAppendingPathComponent:@"private/var/mobile/Library/Preferences"] stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME]);
+        }
+
+        NSString* inferredJbRoot = resolveJbRootFromSelfExe();
+        if (inferredJbRoot.length > 0) {
+            appendUniqueNormalizedPath(paths, [[inferredJbRoot stringByAppendingPathComponent:@"var/mobile/Library/Preferences"] stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME]);
+            appendUniqueNormalizedPath(paths, [[inferredJbRoot stringByAppendingPathComponent:@"private/var/mobile/Library/Preferences"] stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME]);
+        }
+    }
+
+    return paths;
+}
+
 static BOOL writeConfigDataToDisk(NSData* plistData, NSString** pathOut, NSError** errorOut) {
     if (plistData.length == 0) {
         return NO;
@@ -914,7 +1007,7 @@ static BOOL writeConfigDataToDisk(NSData* plistData, NSString** pathOut, NSError
 
     NSFileManager* fm = [NSFileManager defaultManager];
     NSError* lastError = nil;
-    for (NSString* confPath in configFilePathCandidates(NO)) {
+    for (NSString* confPath in configWritePathCandidates()) {
         if (confPath.length == 0) {
             continue;
         }
@@ -947,6 +1040,25 @@ static BOOL writeConfigDataToDisk(NSData* plistData, NSString** pathOut, NSError
     return NO;
 }
 
+static NSArray<NSString*>* currentConfigCleanupPathCandidates(void) {
+    NSMutableArray<NSString*>* paths = [NSMutableArray new];
+    BOOL isRoothide = getJBType() == JBTYPE_ROOTHIDE;
+    for (NSString* confPath in configFilePathCandidates(NO)) {
+        NSString* normalized = normalizedAbsolutePath(confPath);
+        if (normalized.length == 0) {
+            continue;
+        }
+        if (isRoothide &&
+            ![normalized containsString:@"/.jbroot-"] &&
+            ![normalized hasPrefix:@"/var/jb/"] &&
+            ![normalized hasPrefix:@"/private/var/jb/"]) {
+            continue;
+        }
+        appendUniqueNormalizedPath(paths, normalized);
+    }
+    return paths;
+}
+
 static void migrateLoadedConfigToPreferredPathIfNeeded(NSDictionary* preferences, NSString* loadedPath) {
     NSString* primaryPath = normalizedAbsolutePath(getConfPath());
     NSString* sourcePath = normalizedAbsolutePath(loadedPath);
@@ -956,6 +1068,9 @@ static void migrateLoadedConfigToPreferredPathIfNeeded(NSDictionary* preferences
 
     BOOL isDir = NO;
     if ([[NSFileManager defaultManager] fileExistsAtPath:primaryPath isDirectory:&isDir] && !isDir) {
+        if (!pathMatchesAnyStableCurrentPath(sourcePath, currentConfigCleanupPathCandidates()) && removeLegacyFilePreferRoot(sourcePath)) {
+            NSLog2(@"[CL] removed stale conf source after preferred conf already exists source=%@ target=%@", sourcePath, primaryPath);
+        }
         return;
     }
 
@@ -975,6 +1090,9 @@ static void migrateLoadedConfigToPreferredPathIfNeeded(NSDictionary* preferences
         NSLog2(@"[CL] conf migration write failed: source=%@ target=%@ err=%@", sourcePath, primaryPath, writeError);
         return;
     }
+    if (!pathMatchesAnyStableCurrentPath(sourcePath, currentConfigCleanupPathCandidates())) {
+        removeLegacyFilePreferRoot(sourcePath);
+    }
     NSLog2(@"[CL] conf migrated source=%@ written=%@", sourcePath, writtenPath ?: @"");
 }
 
@@ -982,6 +1100,7 @@ extern "C" int cleanupAppDataContainer_C(void) {
     if (getJBType() != JBTYPE_TROLLSTORE) {
         NSString* sharedRoot = getRuntimeDataRootPath();
         NSString* confPath = getConfPath();
+        NSArray<NSString*>* configCleanupPaths = currentConfigCleanupPathCandidates();
         NSFileManager* fm = [NSFileManager defaultManager];
         NSError* removeError = nil;
         if (sharedRoot.length > 0 && [fm fileExistsAtPath:sharedRoot]) {
@@ -990,14 +1109,19 @@ extern "C" int cleanupAppDataContainer_C(void) {
                 return -1;
             }
         }
-        removeError = nil;
-        if (confPath.length > 0 && [fm fileExistsAtPath:confPath]) {
-            if (![fm removeItemAtPath:confPath error:&removeError]) {
-                NSLog2(@"[CL] cleanup_data_container failed confPath=%@ err=%@", confPath, removeError);
+        for (NSString* configPath in configCleanupPaths) {
+            removeError = nil;
+            BOOL isDirectory = NO;
+            if (![fm fileExistsAtPath:configPath isDirectory:&isDirectory] || isDirectory) {
+                continue;
+            }
+            if (![fm removeItemAtPath:configPath error:&removeError]) {
+                NSLog2(@"[CL] cleanup_data_container failed confPath=%@ err=%@", configPath, removeError);
                 return -1;
             }
         }
-        NSLog2(@"[CL] cleanup_data_container removed jailbreak shared data root=%@ conf=%@", sharedRoot ?: @"", confPath ?: @"");
+        NSLog2(@"[CL] cleanup_data_container removed jailbreak shared data root=%@ conf=%@ candidates=%@",
+               sharedRoot ?: @"", confPath ?: @"", configCleanupPaths);
         return 0;
     }
 
@@ -1128,13 +1252,14 @@ static NSArray<NSString*>* legacyConfigCandidateDirs() {
 
 static NSArray<NSString*>* currentRuntimePathsForLegacyDetection(void) {
     NSMutableArray<NSString*>* paths = [NSMutableArray new];
-    NSArray<NSString*>* candidates = @[
+    NSMutableArray<NSString*>* candidates = [NSMutableArray arrayWithArray:@[
         getConfPath() ?: @"",
         getConfDirPath() ?: @"",
         getDbPath() ?: @"",
         getLogPath() ?: @"",
         getRuntimeDataRootPath() ?: @""
-    ];
+    ]];
+    [candidates addObjectsFromArray:currentConfigCleanupPathCandidates()];
     for (NSString* path in candidates) {
         if (path.length == 0) {
             continue;
@@ -1784,6 +1909,9 @@ int getJBType() {
     Dl_info di;
     dladdr((void*)getJBType, &di);
     NSString* path = @(di.dli_fname);
+    if (resolveRoothidePreferencesDirByAPI().length > 0) {
+        return JBTYPE_ROOTHIDE;
+    }
     if ([path hasPrefix:@"/Applications"]) {
         return JBTYPE_ROOT; // may be roothide for daemon
     }
@@ -2566,7 +2694,7 @@ void setSmartChargeEnable(BOOL flag) {
         NSError* writeError = nil;
         NSString* writtenPath = nil;
         if (!writeConfigDataToDisk(plistData, &writtenPath, &writeError)) {
-            NSLog2(@"[CL] conf write failed: candidates=%@ err=%@", configFilePathCandidates(NO), writeError);
+            NSLog2(@"[CL] conf write failed: candidates=%@ err=%@", configWritePathCandidates(), writeError);
             return;
         }
         NSLog2(@"[CL] conf written path=%@", writtenPath ?: @"");
@@ -2609,6 +2737,10 @@ extern "C" void setlocalKV_C(NSString* key, id val) {
 
 void reloadLocalKVFromDisk(void) {
     [[CLSettingsStore shared] reloadFromDisk];
+}
+
+extern "C" void reloadLocalKVFromDisk_C(void) {
+    reloadLocalKVFromDisk();
 }
 
 NSDictionary* getAllKV() {

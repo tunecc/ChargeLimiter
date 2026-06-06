@@ -14,6 +14,7 @@ NSString* getAppDocumentsPath_C(void);
 NSString* getConfPath_C(void);
 NSString* getConfDirPath_C(void);
 NSString* getRuntimeDataRootPath_C(void);
+void reloadLocalKVFromDisk_C(void);
 NSArray<NSString*>* getLegacyConfigDirsWithData_C(void);
 NSArray<NSString*>* getLegacyResidualFiles_C(void);
 NSDictionary* cleanupLegacyResidualFiles_C(void);
@@ -4927,6 +4928,7 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
 }
 
 - (void)migrateLegacyDataTapped {
+    reloadLocalKVFromDisk_C();
     NSArray<NSString*> *legacyDirs = getLegacyConfigDirsWithData_C();
     NSArray<NSString*> *residualFiles = getLegacyResidualFiles_C();
     if (legacyDirs.count == 0 && residualFiles.count == 0) {
@@ -5276,6 +5278,7 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
         return;
     }
 
+    reloadLocalKVFromDisk_C();
     NSArray<NSString*> *legacyDirs = getLegacyConfigDirsWithData_C();
     NSArray<NSString*> *residualFiles = getLegacyResidualFiles_C();
     if (legacyDirs.count == 0) {

@@ -115,6 +115,7 @@ extern "C" NSString* getConfPath_C(void);
 extern "C" NSString* getConfDirPath_C(void);
 extern "C" NSString* getRuntimeDataRootPath_C(void);
 extern "C" void setlocalKV_C(NSString* key, id val);
+extern "C" void reloadLocalKVFromDisk_C(void);
 extern "C" NSDictionary* getAllKV_C(void);
 extern "C" BOOL localPortOpen_C(int port);
 extern "C" int restartDaemonForApp_C(NSString* appDocs);
