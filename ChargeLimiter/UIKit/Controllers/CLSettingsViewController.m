@@ -15,11 +15,17 @@ NSString* getConfPath_C(void);
 NSString* getConfDirPath_C(void);
 NSString* getRuntimeDataRootPath_C(void);
 void reloadLocalKVFromDisk_C(void);
+void setlocalKV_C(NSString* key, id val);
+id getlocalKV_C(NSString* key);
 NSArray<NSString*>* getLegacyConfigDirsWithData_C(void);
 NSArray<NSString*>* getLegacyResidualFiles_C(void);
 NSDictionary* cleanupLegacyResidualFiles_C(void);
 NSDictionary* migrateLegacyConfigFiles_C(void);
 #import <objc/runtime.h>
+
+// 通过 CLSettingsStore 读写整数设置，确保 roothide 环境下随 jbroot 路径持久化（定义见下方）。
+static NSInteger CLLocalIntegerForKey(NSString *key, NSInteger defaultValue);
+static void CLSetLocalIntegerForKey(NSString *key, NSInteger value);
 
 #pragma mark - 紧凑型电池状态视图
 
@@ -926,7 +932,7 @@ static NSString *CLNumberedPathsText(NSArray<NSString *> *paths) {
     if (@available(iOS 10.0, *)) {
         NSNumber *lastValue = objc_getAssociatedObject(sender, "lastHapticValue");
         if (!lastValue || lastValue.integerValue != value) {
-            NSInteger style = [[NSUserDefaults standardUserDefaults] integerForKey:@"SliderHapticStyle"];
+            NSInteger style = CLLocalIntegerForKey(@"SliderHapticStyle", 0);
             if (style < 0 || style > 3) {
                 style = 2;
             }
@@ -4286,6 +4292,21 @@ static NSString *CLDaemonLanguageValueForLocaleIdentifier(NSString *identifier) 
 
 static NSString * const CLStopChargePresetDefaultsKey = @"StopChargePresetValue";
 
+// 通过 CLSettingsStore 读写设置项，确保在 roothide 环境下配置随 jbroot 路径持久化，
+// 重启/重新越狱后不会丢失。NSUserDefaults standardUserDefaults 在 roothide 下写入裸
+// rootfs 路径，无法持久化，因此这些设置统一改走 local KV。
+static NSInteger CLLocalIntegerForKey(NSString *key, NSInteger defaultValue) {
+    id raw = getlocalKV_C(key);
+    if ([raw isKindOfClass:[NSNumber class]]) {
+        return [(NSNumber *)raw integerValue];
+    }
+    return defaultValue;
+}
+
+static void CLSetLocalIntegerForKey(NSString *key, NSInteger value) {
+    setlocalKV_C(key, @(value));
+}
+
 static NSInteger CLNormalizedStopChargePresetValue(NSInteger value) {
     if (value <= 0) {
         return 0;
@@ -4300,12 +4321,11 @@ static NSInteger CLNormalizedStopChargePresetValue(NSInteger value) {
 }
 
 static NSInteger CLStoredStopChargePresetValue(void) {
-    return CLNormalizedStopChargePresetValue([[NSUserDefaults standardUserDefaults] integerForKey:CLStopChargePresetDefaultsKey]);
+    return CLNormalizedStopChargePresetValue(CLLocalIntegerForKey(CLStopChargePresetDefaultsKey, 0));
 }
 
 static void CLStoreStopChargePresetValue(NSInteger value) {
-    [[NSUserDefaults standardUserDefaults] setInteger:CLNormalizedStopChargePresetValue(value) forKey:CLStopChargePresetDefaultsKey];
-    [[NSUserDefaults standardUserDefaults] synchronize];
+    CLSetLocalIntegerForKey(CLStopChargePresetDefaultsKey, CLNormalizedStopChargePresetValue(value));
 }
 
 static NSString *CLStopChargePresetSettingsText(NSInteger value) {
@@ -4676,7 +4696,7 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
 }
 
 - (NSInteger)hapticStyleValue {
-    NSInteger style = [[NSUserDefaults standardUserDefaults] integerForKey:@"SliderHapticStyle"];
+    NSInteger style = CLLocalIntegerForKey(@"SliderHapticStyle", 0);
     if (style < 0 || style > 3) {
         return 2;
     }
@@ -4840,7 +4860,7 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
 
 - (void)hapticSegmentChanged:(UISegmentedControl *)sender {
     NSInteger value = sender.selectedSegmentIndex;
-    [[NSUserDefaults standardUserDefaults] setInteger:value forKey:@"SliderHapticStyle"];
+    CLSetLocalIntegerForKey(@"SliderHapticStyle", value);
     [self updateHapticSliderUI];
 }
 
@@ -4849,7 +4869,7 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     if (@available(iOS 13.0, *)) {
         window.overrideUserInterfaceStyle = (UIUserInterfaceStyle)style;
     }
-    [[NSUserDefaults standardUserDefaults] setInteger:style forKey:@"AppAppearance"];
+    CLSetLocalIntegerForKey(@"AppAppearance", style);
     [self updateCardValue:self.settingsCard title:CLL(@"深色模式") value:label];
 }
 
@@ -5068,7 +5088,7 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
 }
 
 - (NSString *)appearanceValueLabel {
-    NSInteger style = [[NSUserDefaults standardUserDefaults] integerForKey:@"AppAppearance"];
+    NSInteger style = CLLocalIntegerForKey(@"AppAppearance", 0);
     switch (style) {
         case 1: return CLL(@"浅色");
         case 2: return CLL(@"深色");
