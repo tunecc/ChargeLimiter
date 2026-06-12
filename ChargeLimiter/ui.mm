@@ -158,6 +158,11 @@ static AppDelegate* _app = nil;
                 if (window) {
                     window.rootViewController = mainVC;
                     [window makeKeyAndVisible];
+                    // 从持久存储读取并应用深色模式设置(AppAppearance: 0=跟随系统,1=浅色,2=深色)
+                    if (@available(iOS 13.0, *)) {
+                        NSInteger appearance = getLocalInt(@"AppAppearance", 0);
+                        window.overrideUserInterfaceStyle = (UIUserInterfaceStyle)appearance;
+                    }
                 } else {
                     // Fallback: 直接添加视图
                     mainVC.view.frame = CGRectMake(0, 0, scrSize.width, scrSize.height);
