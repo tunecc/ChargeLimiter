@@ -2540,6 +2540,41 @@ void setSmartChargeEnable(BOOL flag) {
 }
 
 /* ---------------- App ---------------- */
+
+// 旧版本把以下设置写入 NSUserDefaults standardUserDefaults，在 roothide 下该路径
+// 无法随 jbroot 持久化，重启/重新越狱后会丢失。这里在首次加载配置时把它们一次性
+// 迁移进 CLSettingsStore（com.chargelimiter.mod.plist），迁移后清理旧值避免回写。
+// 直接操作传入的 preferences 字典，不调用 setlocalKV/[CLSettingsStore shared]，
+// 以免在 store 初始化期间重入造成死锁。返回是否发生了迁移。
+static BOOL migrateLegacyUserDefaultsIntoPreferences(NSMutableDictionary* preferences) {
+    if (preferences == nil) {
+        return NO;
+    }
+    NSArray<NSString*>* legacyKeys = @[
+        @"AppLanguage",
+        @"SliderHapticStyle",
+        @"StopChargePresetValue",
+        @"AppAppearance",
+    ];
+    NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+    BOOL migrated = NO;
+    for (NSString* key in legacyKeys) {
+        id legacyValue = [defaults objectForKey:key];
+        if (legacyValue == nil) {
+            continue;
+        }
+        if (preferences[key] == nil) {
+            preferences[key] = legacyValue;
+            migrated = YES;
+        }
+        [defaults removeObjectForKey:key];
+    }
+    if (migrated) {
+        NSLog2(@"[CL] migrated legacy NSUserDefaults settings into local KV");
+    }
+    return migrated;
+}
+
 @interface CLSettingsStore : NSObject
 @property (nonatomic, strong) NSMutableDictionary* preferences;
 @property (nonatomic, strong) NSMutableDictionary* cachedChanges;
@@ -2575,6 +2610,10 @@ void setSmartChargeEnable(BOOL flag) {
                 NSLog2(@"[CL] conf loaded path=%@", loadedPath);
             }
             migrateLoadedConfigToPreferredPathIfNeeded(_preferences, loadedPath);
+        }
+        if (migrateLegacyUserDefaultsIntoPreferences(_preferences)) {
+            _isDirty = YES;
+            [self apply];
         }
     }
     return self;
@@ -2735,6 +2774,10 @@ extern "C" void setlocalKV_C(NSString* key, id val) {
     setlocalKV(key, val);
 }
 
+extern "C" id getlocalKV_C(NSString* key) {
+    return getlocalKV(key);
+}
+
 void reloadLocalKVFromDisk(void) {
     [[CLSettingsStore shared] reloadFromDisk];
 }
@@ -2856,14 +2899,14 @@ NSString *CLLocalizedString(NSString *key) {
 }
 
 CLAppLanguage CLGetAppLanguage(void) {
-    id raw = [[NSUserDefaults standardUserDefaults] objectForKey:@"AppLanguage"];
+    id raw = getlocalKV(@"AppLanguage");
     if ([raw isKindOfClass:[NSString class]]) {
         NSString *str = (NSString *)raw;
         if ([str isEqualToString:@"en"]) return CLAppLanguageEnglish;
         if ([str isEqualToString:@"zh-Hans"]) return CLAppLanguageChineseSimplified;
         return CLAppLanguageSystem;
     }
-    NSInteger val = [[NSUserDefaults standardUserDefaults] integerForKey:@"AppLanguage"];
+    NSInteger val = getLocalInt(@"AppLanguage", CLAppLanguageSystem);
     if (val < CLAppLanguageSystem || val > CLAppLanguageChineseSimplified) {
         return CLAppLanguageSystem;
     }
@@ -2890,8 +2933,7 @@ void CLApplyLanguageFromSettings(void) {
 }
 
 void CLSetAppLanguage(CLAppLanguage language) {
-    [[NSUserDefaults standardUserDefaults] setInteger:language forKey:@"AppLanguage"];
-    [[NSUserDefaults standardUserDefaults] synchronize];
+    setLocalInt(@"AppLanguage", language);
     CLApplyLanguageFromSettings();
     [[NSNotificationCenter defaultCenter] postNotificationName:CLAppLanguageDidChangeNotification object:nil];
 }
