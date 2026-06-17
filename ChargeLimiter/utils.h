@@ -101,6 +101,11 @@ void setLocalString(NSString* key, NSString* value);
 void setLocalArray(NSString* key, NSArray* value);
 void setLocalDict(NSString* key, NSDictionary* value);
 void reloadLocalKVFromDisk(void);
+BOOL hasUnsavedConfigChanges(void);  // 检查是否有未保存的配置
+
+// 配置写入失败通知
+extern NSString* const CLConfigWriteFailedNotification;
+
 /* ---------------- App ---------------- */
 
 NSString* getAppDocumentsPath();
