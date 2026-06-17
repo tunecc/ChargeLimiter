@@ -1212,29 +1212,20 @@ static NSArray<NSString*>* configFilePathCandidates(BOOL includeHistoricalRoothi
     ensureAppPathsWithLibroot();
 
     NSMutableArray<NSString*>* paths = [NSMutableArray new];
-    appendConfigPathVariants(paths, g_confPath);
 
-    if (getJBType() == JBTYPE_ROOTHIDE) {
-        NSString* roothidePrefsDir = resolveRoothidePreferencesDirByAPI();
-        appendConfigPathVariants(paths, [roothidePrefsDir stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME]);
-        NSString* apiJbRoot = deriveJbRootFromPreferencesDir(roothidePrefsDir);
-        if (apiJbRoot.length > 0) {
-            appendConfigPathVariants(paths, [[apiJbRoot stringByAppendingPathComponent:@"var/mobile/Library/Preferences"] stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME]);
-            appendConfigPathVariants(paths, [[apiJbRoot stringByAppendingPathComponent:@"private/var/mobile/Library/Preferences"] stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME]);
-        }
+    // 1. 主路径：通过 libroot 解析的当前正确路径
+    if (g_confPath.length > 0) {
+        [paths addObject:g_confPath];
+    }
 
-        NSString* inferredJbRoot = resolveJbRootFromSelfExe();
-        if (inferredJbRoot.length > 0) {
-            appendConfigPathVariants(paths, [[inferredJbRoot stringByAppendingPathComponent:@"var/mobile/Library/Preferences"] stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME]);
-            appendConfigPathVariants(paths, [[inferredJbRoot stringByAppendingPathComponent:@"private/var/mobile/Library/Preferences"] stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME]);
-        }
-
-        appendConfigPathVariants(paths, [@"/var/jb/var/mobile/Library/Preferences" stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME]);
-        appendConfigPathVariants(paths, [@"/var/jb/private/var/mobile/Library/Preferences" stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME]);
-
-        if (includeHistoricalRoothidePaths) {
-            for (NSString* dir in roothideHistoricalPreferencesDirs()) {
-                appendConfigPathVariants(paths, [dir stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME]);
+    // 2. 历史路径：仅用于读取旧配置（迁移用）
+    if (includeHistoricalRoothidePaths && getJBType() == JBTYPE_ROOTHIDE) {
+        // 只在需要迁移时包含历史路径
+        // 这些路径仅用于读取，不用于判断"当前正确路径"
+        for (NSString* dir in roothideHistoricalPreferencesDirs()) {
+            NSString* historicalPath = [dir stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME];
+            if (historicalPath.length > 0 && ![paths containsObject:historicalPath]) {
+                [paths addObject:historicalPath];
             }
         }
     }
@@ -1542,21 +1533,17 @@ static BOOL writeConfigDataToDisk(NSData* plistData, NSString** pathOut, NSError
 }
 
 static NSArray<NSString*>* currentConfigCleanupPathCandidates(void) {
+    // 现在只返回当前的主路径（通过 libroot 解析的）
+    // configFilePathCandidates(NO) 已经简化为只返回 g_confPath
     NSMutableArray<NSString*>* paths = [NSMutableArray new];
-    BOOL isRoothide = getJBType() == JBTYPE_ROOTHIDE;
+
     for (NSString* confPath in configFilePathCandidates(NO)) {
         NSString* normalized = normalizedAbsolutePath(confPath);
-        if (normalized.length == 0) {
-            continue;
+        if (normalized.length > 0) {
+            [paths addObject:normalized];
         }
-        if (isRoothide &&
-            ![normalized containsString:@"/.jbroot-"] &&
-            ![normalized hasPrefix:@"/var/jb/"] &&
-            ![normalized hasPrefix:@"/private/var/jb/"]) {
-            continue;
-        }
-        appendUniqueNormalizedPath(paths, normalized);
     }
+
     return paths;
 }
 
