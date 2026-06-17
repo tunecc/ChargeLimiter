@@ -261,14 +261,40 @@ static NSArray<NSString*>* appContainerBaseDirectories(void) {
 }
 
 // ============================================================================
-// REFACTOR: 新的简化路径解析（使用 libroot API）
+// REFACTOR: 新的简化路径解析（使用 libroot API - 运行时动态加载）
 // ============================================================================
 
 /**
- * 使用标准 libroot API 解析越狱路径
+ * libroot API 函数指针类型
+ */
+typedef char* (*libroot_jbrootpath_fn_t)(const char* path, char* resolvedPath);
+
+/**
+ * 获取 libroot API 函数指针（运行时动态加载）
+ */
+static libroot_jbrootpath_fn_t getLibrootJbrootpathFunction(void) {
+    static libroot_jbrootpath_fn_t func = NULL;
+    static dispatch_once_t onceToken;
+
+    dispatch_once(&onceToken, ^{
+        // 首先尝试从已加载的符号中查找（libroot 可能已被其他组件加载）
+        func = (libroot_jbrootpath_fn_t)dlsym(RTLD_DEFAULT, "libroot_dyn_jbrootpath");
+
+        if (func) {
+            NSLog2(@"[CL] libroot_dyn_jbrootpath found in RTLD_DEFAULT");
+        } else {
+            NSLog2(@"[CL] INFO: libroot_dyn_jbrootpath not available (normal for non-roothide environments)");
+        }
+    });
+
+    return func;
+}
+
+/**
+ * 使用标准 libroot API 解析越狱路径（运行时动态加载版本）
  *
- * 这个函数替代了之前 500+ 行的手动实现，使用 Theos 提供的标准 API。
- * libroot 会自动处理所有越狱类型（roothide/rootless/rootful）。
+ * 这个函数替代了之前 500+ 行的手动实现。
+ * 在 roothide 环境下使用 libroot API，其他环境使用原始路径。
  *
  * @param logicalPath 逻辑路径，如 "/var/mobile/Library/Preferences/config.plist"
  * @return 解析后的实际路径，在 roothide 下会是 "/.jbroot-XXX/..." 格式
@@ -291,23 +317,37 @@ static NSString* resolveJailbreakPathWithLibroot(NSString* logicalPath) {
                 stringByAppendingPathComponent:[logicalPath lastPathComponent]];
     }
 
-    // 所有越狱类型（roothide/rootless/rootful）使用 libroot API
+    // 模拟器：返回原始路径
     #if TARGET_OS_SIMULATOR
-        // 模拟器：返回原始路径
-        return logicalPath;
-    #else
-        // 真机：使用 libroot API 自动解析
-        NSString* resolved = JBROOT_PATH_NSSTRING(logicalPath);
-
-        if (resolved && resolved.length > 0) {
-            NSLog2(@"[CL] libroot resolved: %@ -> %@", logicalPath, resolved);
-            return resolved;
-        }
-
-        // libroot 不应该返回 nil，但以防万一
-        NSLog2(@"[CL] WARNING: libroot returned nil for %@, using original", logicalPath);
         return logicalPath;
     #endif
+
+    // 真机：尝试使用 libroot API
+    libroot_jbrootpath_fn_t jbrootpathFunc = getLibrootJbrootpathFunction();
+
+    if (jbrootpathFunc) {
+        // 使用 libroot API 解析路径
+        char buffer[PATH_MAX];
+        const char* resolved = jbrootpathFunc(logicalPath.fileSystemRepresentation, buffer);
+
+        if (resolved && resolved[0] != '\0') {
+            NSString* resolvedPath = @(resolved);
+            // 只在首次解析时打印日志，避免日志过多
+            static dispatch_once_t logOnce;
+            dispatch_once(&logOnce, ^{
+                NSLog2(@"[CL] Using libroot API for path resolution");
+            });
+            return resolvedPath;
+        }
+    }
+
+    // libroot 不可用（rootful/rootless 环境）或解析失败，使用原始路径
+    // 这在 rootful 越狱中是正确的行为
+    static dispatch_once_t logOnce;
+    dispatch_once(&logOnce, ^{
+        NSLog2(@"[CL] libroot unavailable, using direct paths (normal for rootful/rootless)");
+    });
+    return logicalPath;
 }
 
 // ============================================================================
@@ -962,6 +1002,74 @@ static void cleanupRoothideRootfsConfigAliasesIfNeeded() {
     }
 }
 
+// ============================================================================
+// REFACTOR: 新的简化路径初始化（使用 libroot）
+// ============================================================================
+
+/**
+ * 简化的路径初始化 - 使用 libroot API
+ *
+ * 不再需要复杂的错误处理和降级逻辑，因为 libroot API 是可靠的。
+ */
+static void ensureAppPathsWithLibroot() {
+    static NSObject* lock = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        lock = [NSObject new];
+    });
+
+    @synchronized(lock) {
+        // 如果已初始化，直接返回
+        if (g_appDocumentsPath.length > 0 && g_runtimeDataRootPath.length > 0 &&
+            g_logPath.length > 0 && g_confPath.length > 0 && g_dbPath.length > 0) {
+            return;
+        }
+
+        // 使用新的 libroot 函数获取路径
+        NSString* appDoc = resolveAppDocumentsPath();  // 这个函数不变
+        NSString* sharedDataRoot = getSharedDataRootPathWithLibroot();
+        NSString* configRoot = getConfigRootPathWithLibroot();
+
+        // libroot 不应该返回 nil，但以防万一
+        if (!appDoc || !sharedDataRoot || !configRoot) {
+            NSLog2(@"[CL] CRITICAL: Path resolution failed. appDoc=%@ sharedDataRoot=%@ configRoot=%@",
+                   appDoc, sharedDataRoot, configRoot);
+            // 降级到应用沙盒（仅在极端情况）
+            NSString* fallback = [NSHomeDirectory() stringByAppendingPathComponent:@"Documents"];
+            appDoc = appDoc ?: fallback;
+            sharedDataRoot = sharedDataRoot ?: fallback;
+            configRoot = configRoot ?: fallback;
+        }
+
+        // 创建目录
+        NSFileManager* fm = [NSFileManager defaultManager];
+        [fm createDirectoryAtPath:appDoc withIntermediateDirectories:YES attributes:nil error:nil];
+        [fm createDirectoryAtPath:sharedDataRoot withIntermediateDirectories:YES attributes:nil error:nil];
+        [fm createDirectoryAtPath:configRoot withIntermediateDirectories:YES attributes:nil error:nil];
+
+        // 设置全局变量
+        g_appDocumentsPath = appDoc;
+        g_runtimeDataRootPath = sharedDataRoot;
+        g_logPath = [sharedDataRoot stringByAppendingPathComponent:@LOG_FILENAME];
+        g_confPath = [configRoot stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME];
+        g_dbPath = [sharedDataRoot stringByAppendingPathComponent:@DB_FILENAME];
+
+        NSLog2(@"[CL] Paths initialized (libroot):");
+        NSLog2(@"  Config: %@", g_confPath);
+        NSLog2(@"  Log: %@", g_logPath);
+        NSLog2(@"  DB: %@", g_dbPath);
+
+        cleanupLegacyContainerCacheFilesIfNeeded();
+        // cleanupRoothideRootfsConfigAliasesIfNeeded() 移至 CLSettingsStore init 中调用
+    }
+}
+
+// ============================================================================
+// 旧的路径初始化（标记为废弃）
+// ============================================================================
+
+static void ensureAppPaths() __attribute__((deprecated("Use ensureAppPathsWithLibroot instead")));
+
 static void ensureAppPaths() {
     static NSObject* lock = nil;
     static dispatch_once_t onceToken;
@@ -994,7 +1102,7 @@ static void ensureAppPaths() {
 }
 
 NSString* getAppDocumentsPath() {
-    ensureAppPaths();
+    ensureAppPathsWithLibroot();
     return g_appDocumentsPath;
 }
 
@@ -1003,7 +1111,7 @@ extern "C" NSString* getAppDocumentsPath_C(void) {
 }
 
 NSString* getRuntimeDataRootPath(void) {
-    ensureAppPaths();
+    ensureAppPathsWithLibroot();
     return g_runtimeDataRootPath;
 }
 
@@ -1012,12 +1120,12 @@ extern "C" NSString* getRuntimeDataRootPath_C(void) {
 }
 
 NSString* getLogPath() {
-    ensureAppPaths();
+    ensureAppPathsWithLibroot();
     return g_logPath;
 }
 
 NSString* getConfPath() {
-    ensureAppPaths();
+    ensureAppPathsWithLibroot();
     return g_confPath;
 }
 
@@ -1026,12 +1134,12 @@ extern "C" NSString* getConfPath_C(void) {
 }
 
 NSString* getDbPath() {
-    ensureAppPaths();
+    ensureAppPathsWithLibroot();
     return g_dbPath;
 }
 
 NSString* getConfDirPath() {
-    ensureAppPaths();
+    ensureAppPathsWithLibroot();
     if (g_confPath.length == 0) {
         return nil;
     }
@@ -1097,7 +1205,7 @@ static NSArray<NSString*>* roothideHistoricalPreferencesDirs(void) {
 }
 
 static NSArray<NSString*>* configFilePathCandidates(BOOL includeHistoricalRoothidePaths) {
-    ensureAppPaths();
+    ensureAppPathsWithLibroot();
 
     NSMutableArray<NSString*>* paths = [NSMutableArray new];
     appendConfigPathVariants(paths, g_confPath);
@@ -1148,7 +1256,7 @@ static NSDictionary* readConfigDictionaryFromDisk(NSString** pathOut) {
 }
 
 static NSArray<NSString*>* configWritePathCandidates(void) {
-    ensureAppPaths();
+    ensureAppPathsWithLibroot();
     BOOL isRoothide = getJBType() == JBTYPE_ROOTHIDE;
     NSMutableArray<NSString*>* paths = [NSMutableArray new];
 
@@ -1708,7 +1816,7 @@ static NSString* latestLegacyDir(NSArray<NSString*>* legacyDirs) {
 }
 
 extern "C" NSDictionary* migrateLegacyConfigFiles_C(void) {
-    ensureAppPaths();
+    ensureAppPathsWithLibroot();
     NSString* targetConfPath = getConfPath();
     NSString* targetDbPath = getDbPath();
     if (targetConfPath.length == 0 || targetDbPath.length == 0) {
