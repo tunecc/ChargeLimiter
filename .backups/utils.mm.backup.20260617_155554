@@ -7,11 +7,6 @@
 #include <notify.h>
 #import <objc/message.h>
 
-// REFACTOR: 使用标准 libroot API 而不是手动实现
-#if !TARGET_OS_SIMULATOR
-#import <libroot/libroot.h>
-#endif
-
 static NSString* g_appDocumentsPath = nil;
 static NSString* g_logPath = nil;
 static NSString* g_confPath = nil;
@@ -260,62 +255,6 @@ static NSArray<NSString*>* appContainerBaseDirectories(void) {
     return bases;
 }
 
-// ============================================================================
-// REFACTOR: 新的简化路径解析（使用 libroot API）
-// ============================================================================
-
-/**
- * 使用标准 libroot API 解析越狱路径
- *
- * 这个函数替代了之前 500+ 行的手动实现，使用 Theos 提供的标准 API。
- * libroot 会自动处理所有越狱类型（roothide/rootless/rootful）。
- *
- * @param logicalPath 逻辑路径，如 "/var/mobile/Library/Preferences/config.plist"
- * @return 解析后的实际路径，在 roothide 下会是 "/.jbroot-XXX/..." 格式
- */
-static NSString* resolveJailbreakPathWithLibroot(NSString* logicalPath) {
-    if (!logicalPath || logicalPath.length == 0) {
-        return nil;
-    }
-
-    // TrollStore 特殊处理：使用应用沙盒
-    if (getJBType() == JBTYPE_TROLLSTORE) {
-        // 将 /var/mobile/Library 映射到 Documents
-        if ([logicalPath hasPrefix:@"/var/mobile/Library"]) {
-            NSString* relativePath = [logicalPath substringFromIndex:[@"/var/mobile/Library" length]];
-            NSString* docsPath = [NSHomeDirectory() stringByAppendingPathComponent:@"Documents"];
-            return [docsPath stringByAppendingPathComponent:relativePath];
-        }
-        // 其他路径也映射到 Documents
-        return [[NSHomeDirectory() stringByAppendingPathComponent:@"Documents"]
-                stringByAppendingPathComponent:[logicalPath lastPathComponent]];
-    }
-
-    // 所有越狱类型（roothide/rootless/rootful）使用 libroot API
-    #if TARGET_OS_SIMULATOR
-        // 模拟器：返回原始路径
-        return logicalPath;
-    #else
-        // 真机：使用 libroot API 自动解析
-        NSString* resolved = JBROOT_PATH_NSSTRING(logicalPath);
-
-        if (resolved && resolved.length > 0) {
-            NSLog2(@"[CL] libroot resolved: %@ -> %@", logicalPath, resolved);
-            return resolved;
-        }
-
-        // libroot 不应该返回 nil，但以防万一
-        NSLog2(@"[CL] WARNING: libroot returned nil for %@, using original", logicalPath);
-        return logicalPath;
-    #endif
-}
-
-// ============================================================================
-// 旧的路径解析实现（标记为废弃，保留用于对比和回退）
-// ============================================================================
-
-static NSString* resolveStableJailbreakPath(NSString* logicalPath) __attribute__((deprecated("Use resolveJailbreakPathWithLibroot instead")));
-
 static NSString* resolveStableJailbreakPath(NSString* logicalPath) {
     NSString* normalized = normalizedAbsolutePath(logicalPath);
     if (normalized.length == 0) {
@@ -371,43 +310,6 @@ static NSString* resolveStableJailbreakPath(NSString* logicalPath) {
     // roothide 环境下不应该到这里，前面已经返回 nil 了
     return normalized;
 }
-
-// ============================================================================
-// REFACTOR: 新的简化配置路径函数（使用 libroot）
-// ============================================================================
-
-/**
- * 获取配置文件的根目录（新实现）
- * 使用 libroot API，无需降级逻辑
- */
-static NSString* getConfigRootPathWithLibroot(void) {
-    return resolveJailbreakPathWithLibroot(@"/var/mobile/Library/Preferences");
-}
-
-/**
- * 获取共享数据的根目录（新实现）
- */
-static NSString* getSharedDataRootPathWithLibroot(void) {
-    return resolveJailbreakPathWithLibroot(@"/var/mobile/Library/Application Support/ChargeLimiter");
-}
-
-/**
- * 获取配置文件的完整路径（新实现）
- */
-static NSString* getConfigFilePathWithLibroot(void) {
-    NSString* prefsDir = getConfigRootPathWithLibroot();
-    if (!prefsDir) {
-        NSLog2(@"[CL] ERROR: Failed to resolve preferences directory");
-        return nil;
-    }
-    return [prefsDir stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME];
-}
-
-// ============================================================================
-// 旧的配置路径实现（标记为废弃）
-// ============================================================================
-
-static NSString* resolveRuntimeConfigRootPath(void) __attribute__((deprecated("Use getConfigRootPathWithLibroot instead")));
 
 static NSString* resolveRuntimeConfigRootPath(void) {
     if (getJBType() == JBTYPE_TROLLSTORE) {
