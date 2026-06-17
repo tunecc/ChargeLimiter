@@ -25,6 +25,10 @@ static NSString* resolveRoothidePreferencesDirByAPI(void);
 static NSString* ensureValidDocumentsPath(NSString* docsPath);
 static BOOL removeLegacyFilePreferRoot(NSString* path);
 
+// REFACTOR: 新函数前向声明
+static NSDictionary* readConfigFromDiskWithLibroot(NSString** loadedPathOut);
+static BOOL writeConfigDataToDiskWithLibroot(NSData* plistData, NSString** pathOut, NSError** errorOut);
+
 static NSString* normalizedAbsolutePath(NSString* path) {
     if (path.length == 0) {
         return nil;
@@ -1239,21 +1243,65 @@ static NSArray<NSString*>* configFilePathCandidates(BOOL includeHistoricalRoothi
 }
 
 static NSDictionary* readConfigDictionaryFromDisk(NSString** pathOut) {
-    for (NSString* confPath in configFilePathCandidates(YES)) {
-        NSDictionary* fileDict = [NSDictionary dictionaryWithContentsOfFile:confPath];
-        if (![fileDict isKindOfClass:[NSDictionary class]]) {
-            continue;
-        }
-        if (pathOut) {
-            *pathOut = confPath;
-        }
-        return fileDict;
-    }
-    if (pathOut) {
-        *pathOut = nil;
-    }
-    return nil;
+    // REFACTOR: 使用新的简化实现
+    return readConfigFromDiskWithLibroot(pathOut);
 }
+
+// ============================================================================
+// REFACTOR: 简化的配置路径函数（使用 libroot）
+// ============================================================================
+
+/**
+ * 获取配置文件写入路径（新实现 - 单一路径）
+ *
+ * 不再需要多个候选路径，libroot 已经保证返回正确的路径。
+ */
+static NSString* getConfigWritePathWithLibroot(void) {
+    ensureAppPathsWithLibroot();
+    return g_confPath;  // 已经由 libroot 解析过的正确路径
+}
+
+/**
+ * 获取配置文件读取路径列表（新实现）
+ *
+ * 返回主路径 + 可能的旧路径（用于迁移）
+ */
+static NSArray<NSString*>* getConfigReadPathsWithLibroot(void) {
+    ensureAppPathsWithLibroot();
+
+    NSMutableArray<NSString*>* paths = [NSMutableArray new];
+
+    // 1. 当前正确路径（libroot 解析的）
+    if (g_confPath.length > 0) {
+        [paths addObject:g_confPath];
+    }
+
+    // 2. 可能的旧路径（用于迁移旧配置）
+    // 只在首次读取时尝试，如果主路径不存在
+    NSFileManager* fm = [NSFileManager defaultManager];
+    if (![fm fileExistsAtPath:g_confPath]) {
+        // TrollStore 旧位置
+        NSString* oldTrollStore = [[NSHomeDirectory() stringByAppendingPathComponent:@"Documents"]
+                                   stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME];
+        if ([fm fileExistsAtPath:oldTrollStore]) {
+            [paths addObject:oldTrollStore];
+        }
+
+        // rootless 裸路径（不应该存在，但以防万一）
+        NSString* barePath = [@"/var/mobile/Library/Preferences" stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME];
+        if ([fm fileExistsAtPath:barePath]) {
+            [paths addObject:barePath];
+        }
+    }
+
+    return paths;
+}
+
+// ============================================================================
+// 旧的配置路径函数（标记为废弃）
+// ============================================================================
+
+static NSArray<NSString*>* configWritePathCandidates(void) __attribute__((deprecated("Use getConfigWritePathWithLibroot instead")));
 
 static NSArray<NSString*>* configWritePathCandidates(void) {
     ensureAppPathsWithLibroot();
@@ -1321,6 +1369,103 @@ static NSArray<NSString*>* configWritePathCandidates(void) {
 
     return paths;
 }
+
+// ============================================================================
+// REFACTOR: 简化的配置读写函数（使用 libroot）
+// ============================================================================
+
+/**
+ * 写入配置数据到磁盘（新实现 - 单一路径）
+ *
+ * 简化逻辑：只写入一个正确的位置，不再尝试多个候选路径。
+ * libroot 已经保证路径正确，所以不需要多次尝试。
+ */
+static BOOL writeConfigDataToDiskWithLibroot(NSData* plistData, NSString** pathOut, NSError** errorOut) {
+    if (!plistData || plistData.length == 0) {
+        if (errorOut) {
+            *errorOut = [NSError errorWithDomain:@"ChargeLimiter"
+                                            code:-1
+                                        userInfo:@{NSLocalizedDescriptionKey: @"Empty plist data"}];
+        }
+        return NO;
+    }
+
+    NSString* confPath = getConfigWritePathWithLibroot();
+    if (!confPath || confPath.length == 0) {
+        NSLog2(@"[CL] ERROR: Failed to get config write path");
+        if (errorOut) {
+            *errorOut = [NSError errorWithDomain:@"ChargeLimiter"
+                                            code:-2
+                                        userInfo:@{NSLocalizedDescriptionKey: @"Invalid config path"}];
+        }
+        return NO;
+    }
+
+    // 确保父目录存在
+    NSString* parent = [confPath stringByDeletingLastPathComponent];
+    NSFileManager* fm = [NSFileManager defaultManager];
+    NSError* mkdirError = nil;
+
+    if (![fm createDirectoryAtPath:parent withIntermediateDirectories:YES attributes:nil error:&mkdirError]) {
+        NSLog2(@"[CL] ERROR: Failed to create directory %@: %@", parent, mkdirError);
+        if (errorOut) {
+            *errorOut = mkdirError;
+        }
+        return NO;
+    }
+
+    // 原子写入
+    NSError* writeError = nil;
+    if ([plistData writeToFile:confPath options:NSDataWritingAtomic error:&writeError]) {
+        NSLog2(@"[CL] Config written successfully: %@ (%lu bytes)", confPath, (unsigned long)plistData.length);
+        if (pathOut) {
+            *pathOut = confPath;
+        }
+        return YES;
+    }
+
+    // 写入失败
+    NSLog2(@"[CL] ERROR: Failed to write config to %@: %@", confPath, writeError);
+    if (pathOut) {
+        *pathOut = nil;
+    }
+    if (errorOut) {
+        *errorOut = writeError;
+    }
+    return NO;
+}
+
+/**
+ * 从磁盘读取配置（新实现）
+ *
+ * 优先读取主路径，如果不存在则尝试旧路径（用于迁移）
+ */
+static NSDictionary* readConfigFromDiskWithLibroot(NSString** loadedPathOut) {
+    NSArray<NSString*>* paths = getConfigReadPathsWithLibroot();
+
+    for (NSString* path in paths) {
+        NSDictionary* dict = [NSDictionary dictionaryWithContentsOfFile:path];
+        if (dict && [dict isKindOfClass:[NSDictionary class]]) {
+            NSLog2(@"[CL] Config loaded from: %@", path);
+            if (loadedPathOut) {
+                *loadedPathOut = path;
+            }
+            return dict;
+        }
+    }
+
+    NSLog2(@"[CL] No config file found at any location");
+    if (loadedPathOut) {
+        *loadedPathOut = nil;
+    }
+    return nil;
+}
+
+// ============================================================================
+// 旧的配置读写函数（标记为废弃）
+// ============================================================================
+
+static BOOL writeConfigDataToDisk(NSData* plistData, NSString** pathOut, NSError** errorOut) __attribute__((deprecated("Use writeConfigDataToDiskWithLibroot instead")));
 
 static BOOL writeConfigDataToDisk(NSData* plistData, NSString** pathOut, NSError** errorOut) {
     if (plistData.length == 0) {
@@ -1451,7 +1596,7 @@ static void migrateLoadedConfigToPreferredPathIfNeeded(NSDictionary* preferences
     // 写入新路径
     NSError* writeError = nil;
     NSString* writtenPath = nil;
-    if (!writeConfigDataToDisk(plistData, &writtenPath, &writeError)) {
+    if (!writeConfigDataToDiskWithLibroot(plistData, &writtenPath, &writeError)) {
         NSLog2(@"[CL] conf migration write failed: source=%@ target=%@ err=%@", sourcePath, primaryPath, writeError);
         return;
     }
@@ -3127,7 +3272,7 @@ NSString* const CLConfigWriteFailedNotification = @"CLConfigWriteFailedNotificat
         }
         NSError* writeError = nil;
         NSString* writtenPath = nil;
-        if (!writeConfigDataToDisk(plistData, &writtenPath, &writeError)) {
+        if (!writeConfigDataToDiskWithLibroot(plistData, &writtenPath, &writeError)) {
             NSArray<NSString*>* candidates = configWritePathCandidates();
             NSLog2(@"[CL] conf write failed: candidates=%@ err=%@", candidates, writeError);
             // 保持 isDirty=YES，下次可重试
