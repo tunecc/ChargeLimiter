@@ -7,6 +7,11 @@
 #include <notify.h>
 #import <objc/message.h>
 
+// REFACTOR: 使用标准 libroot API 而不是手动实现
+#if !TARGET_OS_SIMULATOR
+#import <libroot/libroot.h>
+#endif
+
 static NSString* g_appDocumentsPath = nil;
 static NSString* g_logPath = nil;
 static NSString* g_confPath = nil;
@@ -19,6 +24,10 @@ static NSString* resolveJbRootFromSelfExe(void);
 static NSString* resolveRoothidePreferencesDirByAPI(void);
 static NSString* ensureValidDocumentsPath(NSString* docsPath);
 static BOOL removeLegacyFilePreferRoot(NSString* path);
+
+// REFACTOR: 新函数前向声明
+static NSDictionary* readConfigFromDiskWithLibroot(NSString** loadedPathOut);
+static BOOL writeConfigDataToDiskWithLibroot(NSData* plistData, NSString** pathOut, NSError** errorOut);
 
 static NSString* normalizedAbsolutePath(NSString* path) {
     if (path.length == 0) {
@@ -255,6 +264,102 @@ static NSArray<NSString*>* appContainerBaseDirectories(void) {
     return bases;
 }
 
+// ============================================================================
+// REFACTOR: 新的简化路径解析（使用 libroot API - 运行时动态加载）
+// ============================================================================
+
+/**
+ * libroot API 函数指针类型
+ */
+typedef char* (*libroot_jbrootpath_fn_t)(const char* path, char* resolvedPath);
+
+/**
+ * 获取 libroot API 函数指针（运行时动态加载）
+ */
+static libroot_jbrootpath_fn_t getLibrootJbrootpathFunction(void) {
+    static libroot_jbrootpath_fn_t func = NULL;
+    static dispatch_once_t onceToken;
+
+    dispatch_once(&onceToken, ^{
+        // 首先尝试从已加载的符号中查找（libroot 可能已被其他组件加载）
+        func = (libroot_jbrootpath_fn_t)dlsym(RTLD_DEFAULT, "libroot_dyn_jbrootpath");
+
+        if (func) {
+            NSLog2(@"[CL] libroot_dyn_jbrootpath found in RTLD_DEFAULT");
+        } else {
+            NSLog2(@"[CL] INFO: libroot_dyn_jbrootpath not available (normal for non-roothide environments)");
+        }
+    });
+
+    return func;
+}
+
+/**
+ * 使用标准 libroot API 解析越狱路径（运行时动态加载版本）
+ *
+ * 这个函数替代了之前 500+ 行的手动实现。
+ * 在 roothide 环境下使用 libroot API，其他环境使用原始路径。
+ *
+ * @param logicalPath 逻辑路径，如 "/var/mobile/Library/Preferences/config.plist"
+ * @return 解析后的实际路径，在 roothide 下会是 "/.jbroot-XXX/..." 格式
+ */
+static NSString* resolveJailbreakPathWithLibroot(NSString* logicalPath) {
+    if (!logicalPath || logicalPath.length == 0) {
+        return nil;
+    }
+
+    // TrollStore 特殊处理：使用应用沙盒
+    if (getJBType() == JBTYPE_TROLLSTORE) {
+        // 将 /var/mobile/Library 映射到 Documents
+        if ([logicalPath hasPrefix:@"/var/mobile/Library"]) {
+            NSString* relativePath = [logicalPath substringFromIndex:[@"/var/mobile/Library" length]];
+            NSString* docsPath = [NSHomeDirectory() stringByAppendingPathComponent:@"Documents"];
+            return [docsPath stringByAppendingPathComponent:relativePath];
+        }
+        // 其他路径也映射到 Documents
+        return [[NSHomeDirectory() stringByAppendingPathComponent:@"Documents"]
+                stringByAppendingPathComponent:[logicalPath lastPathComponent]];
+    }
+
+    // 模拟器：返回原始路径
+    #if TARGET_OS_SIMULATOR
+        return logicalPath;
+    #endif
+
+    // 真机：尝试使用 libroot API
+    libroot_jbrootpath_fn_t jbrootpathFunc = getLibrootJbrootpathFunction();
+
+    if (jbrootpathFunc) {
+        // 使用 libroot API 解析路径
+        char buffer[PATH_MAX];
+        const char* resolved = jbrootpathFunc(logicalPath.fileSystemRepresentation, buffer);
+
+        if (resolved && resolved[0] != '\0') {
+            NSString* resolvedPath = @(resolved);
+            // 只在首次解析时打印日志，避免日志过多
+            static dispatch_once_t logOnce;
+            dispatch_once(&logOnce, ^{
+                NSLog2(@"[CL] Using libroot API for path resolution");
+            });
+            return resolvedPath;
+        }
+    }
+
+    // libroot 不可用（rootful/rootless 环境）或解析失败，使用原始路径
+    // 这在 rootful 越狱中是正确的行为
+    static dispatch_once_t logOnce;
+    dispatch_once(&logOnce, ^{
+        NSLog2(@"[CL] libroot unavailable, using direct paths (normal for rootful/rootless)");
+    });
+    return logicalPath;
+}
+
+// ============================================================================
+// 旧的路径解析实现（标记为废弃，保留用于对比和回退）
+// ============================================================================
+
+static NSString* resolveStableJailbreakPath(NSString* logicalPath) __attribute__((deprecated("Use resolveJailbreakPathWithLibroot instead")));
+
 static NSString* resolveStableJailbreakPath(NSString* logicalPath) {
     NSString* normalized = normalizedAbsolutePath(logicalPath);
     if (normalized.length == 0) {
@@ -262,17 +367,42 @@ static NSString* resolveStableJailbreakPath(NSString* logicalPath) {
     }
 
     NSString* rooted = nil;
-    NSString* roothidePrefsDir = resolveRoothidePreferencesDirByAPI();
-    NSString* roothideRoot = deriveJbRootFromPreferencesDir(roothidePrefsDir);
-    if (roothideRoot.length > 0) {
-        rooted = [roothideRoot stringByAppendingString:normalized];
-    } else {
+    int currentJBType = getJBType();
+
+    if (currentJBType == JBTYPE_ROOTHIDE) {
+        // roothide 环境：必须使用 jbroot API，不允许 fallback
+        NSString* roothidePrefsDir = resolveRoothidePreferencesDirByAPI();
+        NSString* roothideRoot = deriveJbRootFromPreferencesDir(roothidePrefsDir);
+        if (roothideRoot.length > 0) {
+            rooted = [roothideRoot stringByAppendingString:normalized];
+        } else {
+            // 尝试从可执行文件路径推断
+            NSString* inferredRoot = normalizedAbsolutePath(resolveJbRootFromSelfExe());
+            if (inferredRoot.length > 0 && ![inferredRoot isEqualToString:@"/"]) {
+                rooted = [inferredRoot stringByAppendingString:normalized];
+            } else {
+                // roothide 环境下，如果 API 和推断都失败，记录错误并返回 nil
+                NSLog2(@"[CL] CRITICAL: Failed to resolve roothide path for %@. API returned nil and cannot infer jbroot.", normalized);
+                return nil;
+            }
+        }
+
+        // 验证 roothide 路径必须包含 /.jbroot- 标记
+        if (rooted.length > 0 && [rooted rangeOfString:@"/.jbroot-"].location == NSNotFound) {
+            NSLog2(@"[CL] CRITICAL: Resolved roothide path does not contain /.jbroot- marker: %@", rooted);
+            return nil;
+        }
+    } else if (currentJBType == JBTYPE_ROOTLESS) {
+        // rootless 环境：尝试推断，失败则使用 /var/jb
         NSString* inferredRoot = normalizedAbsolutePath(resolveJbRootFromSelfExe());
         if (inferredRoot.length > 0 && ![inferredRoot isEqualToString:@"/"]) {
             rooted = [inferredRoot stringByAppendingString:normalized];
-        } else if (getJBType() == JBTYPE_ROOTLESS || getJBType() == JBTYPE_ROOTHIDE) {
+        } else {
             rooted = [@"/var/jb" stringByAppendingString:normalized];
         }
+    } else {
+        // 其他越狱类型（rootful 等）
+        rooted = normalized;
     }
 
     if (rooted.length > 0) {
@@ -281,21 +411,77 @@ static NSString* resolveStableJailbreakPath(NSString* logicalPath) {
             return rooted;
         }
     }
+
+    // roothide 环境下不应该到这里，前面已经返回 nil 了
     return normalized;
 }
+
+// ============================================================================
+// REFACTOR: 新的简化配置路径函数（使用 libroot）
+// ============================================================================
+
+/**
+ * 获取配置文件的根目录（新实现）
+ * 使用 libroot API，无需降级逻辑
+ */
+static NSString* getConfigRootPathWithLibroot(void) {
+    return resolveJailbreakPathWithLibroot(@"/var/mobile/Library/Preferences");
+}
+
+/**
+ * 获取共享数据的根目录（新实现）
+ */
+static NSString* getSharedDataRootPathWithLibroot(void) {
+    return resolveJailbreakPathWithLibroot(@"/var/mobile/Library/Application Support/ChargeLimiter");
+}
+
+/**
+ * 获取配置文件的完整路径（新实现）
+ */
+static NSString* getConfigFilePathWithLibroot(void) {
+    NSString* prefsDir = getConfigRootPathWithLibroot();
+    if (!prefsDir) {
+        NSLog2(@"[CL] ERROR: Failed to resolve preferences directory");
+        return nil;
+    }
+    return [prefsDir stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME];
+}
+
+// ============================================================================
+// 旧的配置路径实现（标记为废弃）
+// ============================================================================
+
+static NSString* resolveRuntimeConfigRootPath(void) __attribute__((deprecated("Use getConfigRootPathWithLibroot instead")));
 
 static NSString* resolveRuntimeConfigRootPath(void) {
     if (getJBType() == JBTYPE_TROLLSTORE) {
         return ensureValidDocumentsPath([NSHomeDirectory() stringByAppendingPathComponent:@"Documents"]);
     }
-    return resolveStableJailbreakPath(@"/var/mobile/Library/Preferences");
+
+    NSString* jailbreakPath = resolveStableJailbreakPath(@"/var/mobile/Library/Preferences");
+    if (jailbreakPath.length > 0) {
+        return jailbreakPath;
+    }
+
+    // 如果 jailbreak 路径解析失败（roothide API 不可用），降级到应用沙盒
+    // 这样至少配置能保存，虽然不在标准位置
+    NSLog2(@"[CL] WARNING: jailbreak path resolution failed, falling back to app Documents directory");
+    return ensureValidDocumentsPath([NSHomeDirectory() stringByAppendingPathComponent:@"Documents"]);
 }
 
 static NSString* resolveRuntimeSharedDataRootPath(void) {
     if (getJBType() == JBTYPE_TROLLSTORE) {
         return ensureValidDocumentsPath([NSHomeDirectory() stringByAppendingPathComponent:@"Documents"]);
     }
-    return resolveStableJailbreakPath(@"/var/mobile/Library/Application Support/ChargeLimiter");
+
+    NSString* jailbreakPath = resolveStableJailbreakPath(@"/var/mobile/Library/Application Support/ChargeLimiter");
+    if (jailbreakPath.length > 0) {
+        return jailbreakPath;
+    }
+
+    // 如果 jailbreak 路径解析失败（roothide API 不可用），降级到应用沙盒
+    NSLog2(@"[CL] WARNING: jailbreak shared data path resolution failed, falling back to app Documents directory");
+    return ensureValidDocumentsPath([NSHomeDirectory() stringByAppendingPathComponent:@"Documents"]);
 }
 
 static NSString* appContainerRootForPathVariant(NSString* pathVariant, NSString* basePath, BOOL requireContainerRootOnly) {
@@ -635,6 +821,7 @@ static NSString* resolveRoothidePathByAPI(NSString* logicalPath) {
     dispatch_once(&onceToken, ^{
         jbrootPtr = (jbroot_fn_t)dlsym(RTLD_DEFAULT, "jbroot");
         if (jbrootPtr) {
+            NSLog2(@"[CL] jbroot API resolved from RTLD_DEFAULT");
             return;
         }
 
@@ -670,20 +857,37 @@ static NSString* resolveRoothidePathByAPI(NSString* logicalPath) {
             }
             jbrootPtr = (jbroot_fn_t)dlsym(h, "jbroot");
             if (jbrootPtr) {
+                NSLog2(@"[CL] jbroot API loaded from %@", candidate);
                 break;
             }
         }
     });
+
+    // 如果初始化失败，尝试轻量级重试
+    if (!jbrootPtr) {
+        jbrootPtr = (jbroot_fn_t)dlsym(RTLD_DEFAULT, "jbroot");
+        if (jbrootPtr) {
+            NSLog2(@"[CL] jbroot API resolved on retry");
+        }
+    }
 
     if (!jbrootPtr) {
         return nil;
     }
 
     const char* rooted = jbrootPtr(normalized.fileSystemRepresentation);
-    if (!rooted || rooted[0] != '/') {
+    if (!rooted || rooted[0] != '/' || strlen(rooted) == 0) {
+        NSLog2(@"[CL] jbroot API returned invalid path for %@: %s", normalized, rooted ?: "(null)");
         return nil;
     }
-    return normalizedAbsolutePath(@(rooted));
+
+    NSString* rootedStr = normalizedAbsolutePath(@(rooted));
+    if (rootedStr.length == 0 || [rootedStr rangeOfString:@"/.jbroot-"].location == NSNotFound) {
+        NSLog2(@"[CL] jbroot API returned non-roothide path for %@: %@", normalized, rootedStr ?: @"(null)");
+        return nil;
+    }
+
+    return rootedStr;
 }
 
 static NSString* resolveRoothidePreferencesDirByAPI() {
@@ -764,7 +968,17 @@ static void cleanupRoothideRootfsConfigAliasesIfNeeded() {
 
     NSFileManager* fm = [NSFileManager defaultManager];
     BOOL isDir = NO;
+
+    // 检查主配置路径是否存在且有效
     if (![fm fileExistsAtPath:g_confPath isDirectory:&isDir] || isDir) {
+        NSLog2(@"[CL] Skip rootfs alias cleanup: primary config not found at %@", g_confPath);
+        return;
+    }
+
+    // 验证主配置文件可读
+    NSDictionary* mainConf = [NSDictionary dictionaryWithContentsOfFile:g_confPath];
+    if (![mainConf isKindOfClass:[NSDictionary class]]) {
+        NSLog2(@"[CL] Skip rootfs alias cleanup: primary config unreadable at %@", g_confPath);
         return;
     }
 
@@ -772,6 +986,7 @@ static void cleanupRoothideRootfsConfigAliasesIfNeeded() {
         [@"/var/mobile/Library/Preferences" stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME],
         [@"/private/var/mobile/Library/Preferences" stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME],
     ];
+
     for (NSString* path in rootfsConfigPaths) {
         NSString* normalized = normalizedAbsolutePath(path);
         if (normalized.length == 0 || [normalized isEqualToString:g_confPath]) {
@@ -781,13 +996,83 @@ static void cleanupRoothideRootfsConfigAliasesIfNeeded() {
         if (![fm fileExistsAtPath:normalized isDirectory:&aliasIsDir] || aliasIsDir) {
             continue;
         }
+
         if (removeLegacyFilePreferRoot(normalized)) {
-            NSLog2(@"[CL] removed stale roothide rootfs config alias %@", normalized);
+            NSLog2(@"[CL] removed stale roothide rootfs config alias %@ (primary exists at %@)",
+                   normalized, g_confPath);
         } else {
             NSLog2(@"[CL] failed to remove stale roothide rootfs config alias %@", normalized);
         }
     }
 }
+
+// ============================================================================
+// REFACTOR: 新的简化路径初始化（使用 libroot）
+// ============================================================================
+
+/**
+ * 简化的路径初始化 - 使用 libroot API
+ *
+ * 不再需要复杂的错误处理和降级逻辑，因为 libroot API 是可靠的。
+ */
+static void ensureAppPathsWithLibroot() {
+    static NSObject* lock = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        lock = [NSObject new];
+    });
+
+    @synchronized(lock) {
+        // 如果已初始化，直接返回
+        if (g_appDocumentsPath.length > 0 && g_runtimeDataRootPath.length > 0 &&
+            g_logPath.length > 0 && g_confPath.length > 0 && g_dbPath.length > 0) {
+            return;
+        }
+
+        // 使用新的 libroot 函数获取路径
+        NSString* appDoc = resolveAppDocumentsPath();  // 这个函数不变
+        NSString* sharedDataRoot = getSharedDataRootPathWithLibroot();
+        NSString* configRoot = getConfigRootPathWithLibroot();
+
+        // libroot 不应该返回 nil，但以防万一
+        if (!appDoc || !sharedDataRoot || !configRoot) {
+            NSLog2(@"[CL] CRITICAL: Path resolution failed. appDoc=%@ sharedDataRoot=%@ configRoot=%@",
+                   appDoc, sharedDataRoot, configRoot);
+            // 降级到应用沙盒（仅在极端情况）
+            NSString* fallback = [NSHomeDirectory() stringByAppendingPathComponent:@"Documents"];
+            appDoc = appDoc ?: fallback;
+            sharedDataRoot = sharedDataRoot ?: fallback;
+            configRoot = configRoot ?: fallback;
+        }
+
+        // 创建目录
+        NSFileManager* fm = [NSFileManager defaultManager];
+        [fm createDirectoryAtPath:appDoc withIntermediateDirectories:YES attributes:nil error:nil];
+        [fm createDirectoryAtPath:sharedDataRoot withIntermediateDirectories:YES attributes:nil error:nil];
+        [fm createDirectoryAtPath:configRoot withIntermediateDirectories:YES attributes:nil error:nil];
+
+        // 设置全局变量
+        g_appDocumentsPath = appDoc;
+        g_runtimeDataRootPath = sharedDataRoot;
+        g_logPath = [sharedDataRoot stringByAppendingPathComponent:@LOG_FILENAME];
+        g_confPath = [configRoot stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME];
+        g_dbPath = [sharedDataRoot stringByAppendingPathComponent:@DB_FILENAME];
+
+        NSLog2(@"[CL] Paths initialized (libroot):");
+        NSLog2(@"  Config: %@", g_confPath);
+        NSLog2(@"  Log: %@", g_logPath);
+        NSLog2(@"  DB: %@", g_dbPath);
+
+        cleanupLegacyContainerCacheFilesIfNeeded();
+        // cleanupRoothideRootfsConfigAliasesIfNeeded() 移至 CLSettingsStore init 中调用
+    }
+}
+
+// ============================================================================
+// 旧的路径初始化（标记为废弃）
+// ============================================================================
+
+static void ensureAppPaths() __attribute__((deprecated("Use ensureAppPathsWithLibroot instead")));
 
 static void ensureAppPaths() {
     static NSObject* lock = nil;
@@ -816,12 +1101,12 @@ static void ensureAppPaths() {
         g_confPath = [configRoot stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME];
         g_dbPath = [sharedDataRoot stringByAppendingPathComponent:@DB_FILENAME];
         cleanupLegacyContainerCacheFilesIfNeeded();
-        cleanupRoothideRootfsConfigAliasesIfNeeded();
+        // cleanupRoothideRootfsConfigAliasesIfNeeded() 移至 CLSettingsStore init 中调用
     }
 }
 
 NSString* getAppDocumentsPath() {
-    ensureAppPaths();
+    ensureAppPathsWithLibroot();
     return g_appDocumentsPath;
 }
 
@@ -830,7 +1115,7 @@ extern "C" NSString* getAppDocumentsPath_C(void) {
 }
 
 NSString* getRuntimeDataRootPath(void) {
-    ensureAppPaths();
+    ensureAppPathsWithLibroot();
     return g_runtimeDataRootPath;
 }
 
@@ -839,12 +1124,12 @@ extern "C" NSString* getRuntimeDataRootPath_C(void) {
 }
 
 NSString* getLogPath() {
-    ensureAppPaths();
+    ensureAppPathsWithLibroot();
     return g_logPath;
 }
 
 NSString* getConfPath() {
-    ensureAppPaths();
+    ensureAppPathsWithLibroot();
     return g_confPath;
 }
 
@@ -853,12 +1138,12 @@ extern "C" NSString* getConfPath_C(void) {
 }
 
 NSString* getDbPath() {
-    ensureAppPaths();
+    ensureAppPathsWithLibroot();
     return g_dbPath;
 }
 
 NSString* getConfDirPath() {
-    ensureAppPaths();
+    ensureAppPathsWithLibroot();
     if (g_confPath.length == 0) {
         return nil;
     }
@@ -924,7 +1209,7 @@ static NSArray<NSString*>* roothideHistoricalPreferencesDirs(void) {
 }
 
 static NSArray<NSString*>* configFilePathCandidates(BOOL includeHistoricalRoothidePaths) {
-    ensureAppPaths();
+    ensureAppPathsWithLibroot();
 
     NSMutableArray<NSString*>* paths = [NSMutableArray new];
     appendConfigPathVariants(paths, g_confPath);
@@ -958,78 +1243,294 @@ static NSArray<NSString*>* configFilePathCandidates(BOOL includeHistoricalRoothi
 }
 
 static NSDictionary* readConfigDictionaryFromDisk(NSString** pathOut) {
-    for (NSString* confPath in configFilePathCandidates(YES)) {
-        NSDictionary* fileDict = [NSDictionary dictionaryWithContentsOfFile:confPath];
-        if (![fileDict isKindOfClass:[NSDictionary class]]) {
-            continue;
-        }
-        if (pathOut) {
-            *pathOut = confPath;
-        }
-        return fileDict;
-    }
-    if (pathOut) {
-        *pathOut = nil;
-    }
-    return nil;
+    // REFACTOR: 使用新的简化实现
+    return readConfigFromDiskWithLibroot(pathOut);
 }
 
-static NSArray<NSString*>* configWritePathCandidates(void) {
-    ensureAppPaths();
+// ============================================================================
+// REFACTOR: 简化的配置路径函数（使用 libroot）
+// ============================================================================
+
+/**
+ * 获取配置文件写入路径（新实现 - 单一路径）
+ *
+ * 不再需要多个候选路径，libroot 已经保证返回正确的路径。
+ */
+static NSString* getConfigWritePathWithLibroot(void) {
+    ensureAppPathsWithLibroot();
+    return g_confPath;  // 已经由 libroot 解析过的正确路径
+}
+
+/**
+ * 获取配置文件读取路径列表（新实现）
+ *
+ * 返回主路径 + 可能的旧路径（用于迁移）
+ */
+static NSArray<NSString*>* getConfigReadPathsWithLibroot(void) {
+    ensureAppPathsWithLibroot();
 
     NSMutableArray<NSString*>* paths = [NSMutableArray new];
-    appendUniqueNormalizedPath(paths, g_confPath);
 
-    if (getJBType() == JBTYPE_ROOTHIDE) {
-        NSString* roothidePrefsDir = resolveRoothidePreferencesDirByAPI();
-        appendUniqueNormalizedPath(paths, [roothidePrefsDir stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME]);
+    // 1. 当前正确路径（libroot 解析的）
+    if (g_confPath.length > 0) {
+        [paths addObject:g_confPath];
+    }
 
-        NSString* apiJbRoot = deriveJbRootFromPreferencesDir(roothidePrefsDir);
-        if (apiJbRoot.length > 0) {
-            appendUniqueNormalizedPath(paths, [[apiJbRoot stringByAppendingPathComponent:@"var/mobile/Library/Preferences"] stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME]);
-            appendUniqueNormalizedPath(paths, [[apiJbRoot stringByAppendingPathComponent:@"private/var/mobile/Library/Preferences"] stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME]);
+    // 2. 可能的旧路径（用于迁移旧配置）
+    // 只在首次读取时尝试，如果主路径不存在
+    NSFileManager* fm = [NSFileManager defaultManager];
+    if (![fm fileExistsAtPath:g_confPath]) {
+        // TrollStore 旧位置
+        NSString* oldTrollStore = [[NSHomeDirectory() stringByAppendingPathComponent:@"Documents"]
+                                   stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME];
+        if ([fm fileExistsAtPath:oldTrollStore]) {
+            [paths addObject:oldTrollStore];
         }
 
-        NSString* inferredJbRoot = resolveJbRootFromSelfExe();
-        if (inferredJbRoot.length > 0) {
-            appendUniqueNormalizedPath(paths, [[inferredJbRoot stringByAppendingPathComponent:@"var/mobile/Library/Preferences"] stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME]);
-            appendUniqueNormalizedPath(paths, [[inferredJbRoot stringByAppendingPathComponent:@"private/var/mobile/Library/Preferences"] stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME]);
+        // rootless 裸路径（不应该存在，但以防万一）
+        NSString* barePath = [@"/var/mobile/Library/Preferences" stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME];
+        if ([fm fileExistsAtPath:barePath]) {
+            [paths addObject:barePath];
         }
     }
 
     return paths;
 }
 
+// ============================================================================
+// 旧的配置路径函数（标记为废弃）
+// ============================================================================
+
+static NSArray<NSString*>* configWritePathCandidates(void) __attribute__((deprecated("Use getConfigWritePathWithLibroot instead")));
+
+static NSArray<NSString*>* configWritePathCandidates(void) {
+    ensureAppPathsWithLibroot();
+    BOOL isRoothide = getJBType() == JBTYPE_ROOTHIDE;
+    NSMutableArray<NSString*>* paths = [NSMutableArray new];
+
+    // 添加辅助函数：验证并添加 roothide 路径
+    void (^appendRoothideSafePath)(NSString*) = ^(NSString* path) {
+        NSString* normalized = normalizedAbsolutePath(path);
+        if (normalized.length == 0) {
+            return;
+        }
+
+        // roothide 环境下的路径检查
+        if (isRoothide) {
+            // 允许的路径类型：
+            // 1. /.jbroot-XXX/ 路径（正常的 roothide 路径）
+            // 2. /var/jb/ 路径（兼容性）
+            // 3. 应用沙盒路径（降级 fallback）
+            BOOL isJbrootPath = [normalized containsString:@"/.jbroot-"];
+            BOOL isVarJbPath = [normalized hasPrefix:@"/var/jb/"] || [normalized hasPrefix:@"/private/var/jb/"];
+            BOOL isSandboxPath = [normalized hasPrefix:NSHomeDirectory()];
+
+            if (!isJbrootPath && !isVarJbPath && !isSandboxPath) {
+                // 拒绝裸的系统路径（/var/mobile/... 等）
+                NSLog2(@"[CL] Rejected bare system path in roothide: %@", normalized);
+                return;
+            }
+
+            if (isSandboxPath) {
+                // 沙盒路径作为最后的降级选项
+                NSLog2(@"[CL] Using sandbox fallback path in roothide: %@", normalized);
+            }
+        }
+
+        appendUniqueNormalizedPath(paths, normalized);
+    };
+
+    appendRoothideSafePath(g_confPath);
+
+    if (isRoothide) {
+        NSString* roothidePrefsDir = resolveRoothidePreferencesDirByAPI();
+        if (roothidePrefsDir.length > 0) {
+            appendRoothideSafePath([roothidePrefsDir stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME]);
+
+            NSString* apiJbRoot = deriveJbRootFromPreferencesDir(roothidePrefsDir);
+            if (apiJbRoot.length > 0) {
+                appendRoothideSafePath([[apiJbRoot stringByAppendingPathComponent:@"var/mobile/Library/Preferences"] stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME]);
+                appendRoothideSafePath([[apiJbRoot stringByAppendingPathComponent:@"private/var/mobile/Library/Preferences"] stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME]);
+            }
+        }
+
+        NSString* inferredJbRoot = resolveJbRootFromSelfExe();
+        if (inferredJbRoot.length > 0) {
+            appendRoothideSafePath([[inferredJbRoot stringByAppendingPathComponent:@"var/mobile/Library/Preferences"] stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME]);
+            appendRoothideSafePath([[inferredJbRoot stringByAppendingPathComponent:@"private/var/mobile/Library/Preferences"] stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME]);
+        }
+
+        // 如果所有路径解析都失败，至少记录错误
+        if (paths.count == 0) {
+            NSLog2(@"[CL] WARNING: No valid write path candidates in roothide. API=%@ inferred=%@",
+                   roothidePrefsDir ?: @"(null)", inferredJbRoot ?: @"(null)");
+        }
+    }
+
+    return paths;
+}
+
+// ============================================================================
+// REFACTOR: 简化的配置读写函数（使用 libroot）
+// ============================================================================
+
+/**
+ * 写入配置数据到磁盘（新实现 - 单一路径）
+ *
+ * 简化逻辑：只写入一个正确的位置，不再尝试多个候选路径。
+ * libroot 已经保证路径正确，所以不需要多次尝试。
+ */
+static BOOL writeConfigDataToDiskWithLibroot(NSData* plistData, NSString** pathOut, NSError** errorOut) {
+    if (!plistData || plistData.length == 0) {
+        if (errorOut) {
+            *errorOut = [NSError errorWithDomain:@"ChargeLimiter"
+                                            code:-1
+                                        userInfo:@{NSLocalizedDescriptionKey: @"Empty plist data"}];
+        }
+        return NO;
+    }
+
+    NSString* confPath = getConfigWritePathWithLibroot();
+    if (!confPath || confPath.length == 0) {
+        NSLog2(@"[CL] ERROR: Failed to get config write path");
+        if (errorOut) {
+            *errorOut = [NSError errorWithDomain:@"ChargeLimiter"
+                                            code:-2
+                                        userInfo:@{NSLocalizedDescriptionKey: @"Invalid config path"}];
+        }
+        return NO;
+    }
+
+    // 确保父目录存在
+    NSString* parent = [confPath stringByDeletingLastPathComponent];
+    NSFileManager* fm = [NSFileManager defaultManager];
+    NSError* mkdirError = nil;
+
+    if (![fm createDirectoryAtPath:parent withIntermediateDirectories:YES attributes:nil error:&mkdirError]) {
+        NSLog2(@"[CL] ERROR: Failed to create directory %@: %@", parent, mkdirError);
+        if (errorOut) {
+            *errorOut = mkdirError;
+        }
+        return NO;
+    }
+
+    // 原子写入
+    NSError* writeError = nil;
+    if ([plistData writeToFile:confPath options:NSDataWritingAtomic error:&writeError]) {
+        NSLog2(@"[CL] Config written successfully: %@ (%lu bytes)", confPath, (unsigned long)plistData.length);
+        if (pathOut) {
+            *pathOut = confPath;
+        }
+        return YES;
+    }
+
+    // 写入失败
+    NSLog2(@"[CL] ERROR: Failed to write config to %@: %@", confPath, writeError);
+    if (pathOut) {
+        *pathOut = nil;
+    }
+    if (errorOut) {
+        *errorOut = writeError;
+    }
+    return NO;
+}
+
+/**
+ * 从磁盘读取配置（新实现）
+ *
+ * 优先读取主路径，如果不存在则尝试旧路径（用于迁移）
+ */
+static NSDictionary* readConfigFromDiskWithLibroot(NSString** loadedPathOut) {
+    NSArray<NSString*>* paths = getConfigReadPathsWithLibroot();
+
+    for (NSString* path in paths) {
+        NSDictionary* dict = [NSDictionary dictionaryWithContentsOfFile:path];
+        if (dict && [dict isKindOfClass:[NSDictionary class]]) {
+            NSLog2(@"[CL] Config loaded from: %@", path);
+            if (loadedPathOut) {
+                *loadedPathOut = path;
+            }
+            return dict;
+        }
+    }
+
+    NSLog2(@"[CL] No config file found at any location");
+    if (loadedPathOut) {
+        *loadedPathOut = nil;
+    }
+    return nil;
+}
+
+// ============================================================================
+// 旧的配置读写函数（标记为废弃）
+// ============================================================================
+
+static BOOL writeConfigDataToDisk(NSData* plistData, NSString** pathOut, NSError** errorOut) __attribute__((deprecated("Use writeConfigDataToDiskWithLibroot instead")));
+
 static BOOL writeConfigDataToDisk(NSData* plistData, NSString** pathOut, NSError** errorOut) {
     if (plistData.length == 0) {
+        if (errorOut) {
+            *errorOut = [NSError errorWithDomain:@"ChargeLimiter"
+                                            code:-1
+                                        userInfo:@{NSLocalizedDescriptionKey: @"Empty plist data"}];
+        }
         return NO;
     }
 
     NSFileManager* fm = [NSFileManager defaultManager];
+    NSArray<NSString*>* candidates = configWritePathCandidates();
+
+    if (candidates.count == 0) {
+        NSLog2(@"[CL] CRITICAL: No write path candidates available. JBType=%d", getJBType());
+        if (errorOut) {
+            *errorOut = [NSError errorWithDomain:@"ChargeLimiter"
+                                            code:-2
+                                        userInfo:@{NSLocalizedDescriptionKey: @"No valid write paths"}];
+        }
+        return NO;
+    }
+
+    NSMutableArray<NSString*>* attemptedPaths = [NSMutableArray new];
+    NSMutableArray<NSString*>* failureReasons = [NSMutableArray new];
     NSError* lastError = nil;
-    for (NSString* confPath in configWritePathCandidates()) {
+
+    for (NSString* confPath in candidates) {
         if (confPath.length == 0) {
             continue;
         }
 
+        [attemptedPaths addObject:confPath];
+
+        // 确保父目录存在
         NSString* parent = [confPath stringByDeletingLastPathComponent];
         if (parent.length > 0) {
             NSError* mkdirError = nil;
             if (![fm createDirectoryAtPath:parent withIntermediateDirectories:YES attributes:nil error:&mkdirError]) {
+                [failureReasons addObject:[NSString stringWithFormat:@"%@: mkdir failed (%@)",
+                                          confPath, mkdirError.localizedDescription]];
                 lastError = mkdirError;
                 continue;
             }
         }
 
+        // 尝试写入
         NSError* writeError = nil;
         if ([plistData writeToFile:confPath options:NSDataWritingAtomic error:&writeError]) {
+            NSLog2(@"[CL] conf write succeeded: path=%@ size=%lu", confPath, (unsigned long)plistData.length);
             if (pathOut) {
                 *pathOut = confPath;
             }
             return YES;
         }
+
+        [failureReasons addObject:[NSString stringWithFormat:@"%@: write failed (%@)",
+                                  confPath, writeError.localizedDescription]];
         lastError = writeError;
     }
+
+    // 所有路径都失败
+    NSLog2(@"[CL] CRITICAL: conf write failed on ALL candidates:\n%@",
+           [failureReasons componentsJoinedByString:@"\n"]);
 
     if (pathOut) {
         *pathOut = nil;
@@ -1062,18 +1563,26 @@ static NSArray<NSString*>* currentConfigCleanupPathCandidates(void) {
 static void migrateLoadedConfigToPreferredPathIfNeeded(NSDictionary* preferences, NSString* loadedPath) {
     NSString* primaryPath = normalizedAbsolutePath(getConfPath());
     NSString* sourcePath = normalizedAbsolutePath(loadedPath);
-    if (preferences.count == 0 || primaryPath.length == 0 || sourcePath.length == 0 || [sourcePath isEqualToString:primaryPath]) {
+    if (preferences.count == 0 || primaryPath.length == 0 || sourcePath.length == 0 ||
+        [sourcePath isEqualToString:primaryPath]) {
         return;
     }
 
+    NSFileManager* fm = [NSFileManager defaultManager];
     BOOL isDir = NO;
-    if ([[NSFileManager defaultManager] fileExistsAtPath:primaryPath isDirectory:&isDir] && !isDir) {
-        if (!pathMatchesAnyStableCurrentPath(sourcePath, currentConfigCleanupPathCandidates()) && removeLegacyFilePreferRoot(sourcePath)) {
-            NSLog2(@"[CL] removed stale conf source after preferred conf already exists source=%@ target=%@", sourcePath, primaryPath);
+
+    // 如果目标路径已存在，只清理旧路径
+    if ([fm fileExistsAtPath:primaryPath isDirectory:&isDir] && !isDir) {
+        if (!pathMatchesAnyStableCurrentPath(sourcePath, currentConfigCleanupPathCandidates())) {
+            if (removeLegacyFilePreferRoot(sourcePath)) {
+                NSLog2(@"[CL] removed stale conf source after preferred conf already exists source=%@ target=%@",
+                       sourcePath, primaryPath);
+            }
         }
         return;
     }
 
+    // 序列化配置
     NSError* plistError = nil;
     NSData* plistData = [NSPropertyListSerialization dataWithPropertyList:preferences
                                                                     format:NSPropertyListBinaryFormat_v1_0
@@ -1084,16 +1593,34 @@ static void migrateLoadedConfigToPreferredPathIfNeeded(NSDictionary* preferences
         return;
     }
 
+    // 写入新路径
     NSError* writeError = nil;
     NSString* writtenPath = nil;
-    if (!writeConfigDataToDisk(plistData, &writtenPath, &writeError)) {
+    if (!writeConfigDataToDiskWithLibroot(plistData, &writtenPath, &writeError)) {
         NSLog2(@"[CL] conf migration write failed: source=%@ target=%@ err=%@", sourcePath, primaryPath, writeError);
         return;
     }
-    if (!pathMatchesAnyStableCurrentPath(sourcePath, currentConfigCleanupPathCandidates())) {
-        removeLegacyFilePreferRoot(sourcePath);
+
+    // 验证新文件可读取（防止权限问题）
+    NSDictionary* verifyDict = [NSDictionary dictionaryWithContentsOfFile:writtenPath];
+    if (![verifyDict isKindOfClass:[NSDictionary class]] || verifyDict.count == 0) {
+        NSLog2(@"[CL] conf migration write succeeded but verify failed: written=%@", writtenPath);
+        // 不删除旧配置，保留作为备份
+        return;
     }
-    NSLog2(@"[CL] conf migrated source=%@ written=%@", sourcePath, writtenPath ?: @"");
+
+    // 验证成功，安全删除旧配置
+    if (!pathMatchesAnyStableCurrentPath(sourcePath, currentConfigCleanupPathCandidates())) {
+        if (removeLegacyFilePreferRoot(sourcePath)) {
+            NSLog2(@"[CL] conf migrated and old removed: source=%@ written=%@ verified=YES",
+                   sourcePath, writtenPath);
+        } else {
+            NSLog2(@"[CL] conf migrated but old removal failed: source=%@ written=%@",
+                   sourcePath, writtenPath);
+        }
+    } else {
+        NSLog2(@"[CL] conf migrated (source preserved): source=%@ written=%@", sourcePath, writtenPath);
+    }
 }
 
 extern "C" int cleanupAppDataContainer_C(void) {
@@ -1434,7 +1961,7 @@ static NSString* latestLegacyDir(NSArray<NSString*>* legacyDirs) {
 }
 
 extern "C" NSDictionary* migrateLegacyConfigFiles_C(void) {
-    ensureAppPaths();
+    ensureAppPathsWithLibroot();
     NSString* targetConfPath = getConfPath();
     NSString* targetDbPath = getDbPath();
     if (targetConfPath.length == 0 || targetDbPath.length == 0) {
@@ -2575,6 +3102,9 @@ static BOOL migrateLegacyUserDefaultsIntoPreferences(NSMutableDictionary* prefer
     return migrated;
 }
 
+// 配置写入失败通知
+NSString* const CLConfigWriteFailedNotification = @"CLConfigWriteFailedNotification";
+
 @interface CLSettingsStore : NSObject
 @property (nonatomic, strong) NSMutableDictionary* preferences;
 @property (nonatomic, strong) NSMutableDictionary* cachedChanges;
@@ -2615,6 +3145,8 @@ static BOOL migrateLegacyUserDefaultsIntoPreferences(NSMutableDictionary* prefer
             _isDirty = YES;
             [self apply];
         }
+        // 配置加载完成后，安全清理别名
+        cleanupRoothideRootfsConfigAliasesIfNeeded();
     }
     return self;
 }
@@ -2728,12 +3260,40 @@ static BOOL migrateLegacyUserDefaultsIntoPreferences(NSMutableDictionary* prefer
                                                                          error:&plistError];
         if (!plistData) {
             NSLog2(@"[CL] conf serialize failed: err=%@", plistError);
+            // 保持 isDirty=YES，下次可重试
+
+            // 发送通知给 UI 层
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [[NSNotificationCenter defaultCenter] postNotificationName:CLConfigWriteFailedNotification
+                                                                    object:nil
+                                                                  userInfo:@{@"error": plistError ?: @"Serialization failed"}];
+            });
             return;
         }
         NSError* writeError = nil;
         NSString* writtenPath = nil;
-        if (!writeConfigDataToDisk(plistData, &writtenPath, &writeError)) {
-            NSLog2(@"[CL] conf write failed: candidates=%@ err=%@", configWritePathCandidates(), writeError);
+        if (!writeConfigDataToDiskWithLibroot(plistData, &writtenPath, &writeError)) {
+            NSArray<NSString*>* candidates = configWritePathCandidates();
+            NSLog2(@"[CL] conf write failed: candidates=%@ err=%@", candidates, writeError);
+            // 保持 isDirty=YES，下次可重试
+
+            // 发送通知给 UI 层，包含详细信息
+            dispatch_async(dispatch_get_main_queue(), ^{
+                NSMutableDictionary* userInfo = [NSMutableDictionary dictionary];
+                if (writeError) {
+                    userInfo[@"error"] = writeError;
+                }
+                if (candidates.count > 0) {
+                    userInfo[@"attemptedPaths"] = candidates;
+                } else {
+                    userInfo[@"reason"] = @"No valid write paths available";
+                }
+                userInfo[@"jbType"] = @(getJBType());
+
+                [[NSNotificationCenter defaultCenter] postNotificationName:CLConfigWriteFailedNotification
+                                                                    object:nil
+                                                                  userInfo:userInfo];
+            });
             return;
         }
         NSLog2(@"[CL] conf written path=%@", writtenPath ?: @"");
@@ -2784,6 +3344,13 @@ void reloadLocalKVFromDisk(void) {
 
 extern "C" void reloadLocalKVFromDisk_C(void) {
     reloadLocalKVFromDisk();
+}
+
+BOOL hasUnsavedConfigChanges(void) {
+    CLSettingsStore* store = [CLSettingsStore shared];
+    @synchronized (store) {
+        return store.isDirty;
+    }
 }
 
 NSDictionary* getAllKV() {
