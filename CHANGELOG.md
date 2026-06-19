@@ -4,6 +4,30 @@
 
 写法参考了 Keep a Changelog 和一些成熟项目常见的结构：每个版本先说明主线，再按少量分类列出用户真正会感知到的变化，尽量详细，但不写成长文。
 
+## v1.13.8 - 2026-06-19
+
+这一版把配置文件改存到 app 数据容器，并集成 libroot 重构越狱路径解析，根治清后台重开 / 重新越狱后配置丢失的问题。
+
+### Changed
+
+- 配置文件改存到 app 数据容器（`/var/mobile/Containers/Data/Application/<UUID>/ChargeLimiter/`），不再放在 jbroot 的 Preferences 目录。app 数据容器是 iOS 系统路径，不依赖 jbroot，roothide 重新越狱（jbroot 路径变化）或 libroot 偶发漂移时配置都不会丢失。roothide / rootless / TrollStore 统一此存储位置。
+- 数据库与日志仍保留在 jbroot（`jbroot:/var/ChargeLimiter`），因为写入频繁，jbroot 下权限统一更稳妥。
+- 路径解析改用 libroot 标准 API（`libroot_dyn_jbrootpath`，运行时动态加载），替代手动拼接 jbroot 路径。
+- 工程与 Makefile 链接 `-lroot`，补充库搜索路径。
+- roothide 安装包维护脚本去重 `jbroot` 调用。
+- 精简路径解析代码：移除配置路径冻结机制、jbroot 配置别名清理、data-root 配置清理等不再需要的逻辑（配置已不在 jbroot）。
+
+### Fixed
+
+- 修复清掉软件后台再打开时配置文件被删除或清空的问题。根因是配置路径解析偶发漂移，叠加自动迁移/清理逻辑把当前配置误判为旧配置删除，以及 daemon 重载读不到配置后用空副本覆盖盘。现在配置改存 app 数据容器（稳定不漂移），自动迁移与清理不再删除配置（只记日志），`reloadFromDisk` 读不到时保留内存副本不再清空，从 `NSUserDefaults` 迁移后不再删除旧值（保留备份），配置读取失败时不再写盘。
+- 修复因路径解析偶发漂移导致偶尔读不到配置、软件设置变回默认值的问题（配置改存 app 数据容器后路径不再漂移）。
+
+### Notes
+
+- 旧版本存放在 jbroot Preferences 的配置，首次启动会自动迁移到 app 数据容器。
+- 语言、滑动震动、深色模式、停充预设等设置迁移后保留 `NSUserDefaults` 备份，不再因写盘失败永久丢失。
+- 数据库（历史统计）与日志仍在 jbroot，重新越狱后可能需要重新积累；如需也迁到 app 数据容器，后续版本再处理。
+
 ## v1.13.7 - 2026-06-12
 
 这一版重点修复 roothide 环境下软件设置在重启后被重置的问题。
