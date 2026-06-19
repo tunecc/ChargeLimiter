@@ -330,6 +330,7 @@ rewrite_roothide_maintainer_script() {
     -e '1s|^#![[:space:]]*/rootfs/|#! /|' \
     -e 's|/-var/jb/-|/|g' \
     -e 's|/-var/jb-|/var/jb|g' \
+    -e 's|/usr/bin/jbroot /usr/bin/jbroot|/usr/bin/jbroot|g' \
     "$target_file" > "$tmp_file"
   mv "$tmp_file" "$target_file"
   chmod 755 "$target_file"

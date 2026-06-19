@@ -219,7 +219,13 @@ static NSArray<NSString *> *CLRoothideAliasPaths(NSString *path) {
 
     NSMutableArray<NSString *> *aliases = [NSMutableArray array];
     NSUInteger searchStart = marker.location + 1;
-    for (NSString *suffix in @[@"/var/mobile/", @"/private/var/mobile/"]) {
+    NSArray<NSString *> *suffixes = @[
+        @"/var/mobile/",
+        @"/private/var/mobile/",
+        @"/var/ChargeLimiter",
+        @"/private/var/ChargeLimiter"
+    ];
+    for (NSString *suffix in suffixes) {
         NSRange suffixRange = [normalized rangeOfString:suffix
                                                 options:0
                                                   range:NSMakeRange(searchStart, normalized.length - searchStart)];
