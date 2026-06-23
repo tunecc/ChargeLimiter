@@ -1679,6 +1679,11 @@ static NSArray<NSString*>* legacyResidualFilesInDir(NSString* dir) {
 
     NSFileManager* fm = [NSFileManager defaultManager];
     NSArray<NSString*>* currentRuntimePaths = currentRuntimePathsForLegacyDetection();
+
+    // 调试日志：输出当前运行时路径
+    NSLog2(@"[CL] legacyResidualFilesInDir: checking dir=%@", dir);
+    NSLog2(@"[CL] legacyResidualFilesInDir: currentRuntimePaths=%@", currentRuntimePaths);
+
     for (NSString* file in legacyResidualFileNames()) {
         for (NSString* sourceFile in legacySourceFileNamesForTargetFile(file)) {
             NSString* path = [dir stringByAppendingPathComponent:sourceFile];
@@ -1686,7 +1691,13 @@ static NSArray<NSString*>* legacyResidualFilesInDir(NSString* dir) {
             if (![fm fileExistsAtPath:path isDirectory:&isDir] || isDir) {
                 continue;
             }
-            if (pathMatchesAnyStableCurrentPath(path, currentRuntimePaths)) {
+
+            BOOL isCurrentPath = pathMatchesAnyStableCurrentPath(path, currentRuntimePaths);
+
+            // 调试日志：输出匹配结果
+            NSLog2(@"[CL] legacyResidualFilesInDir: path=%@ isCurrentPath=%d", path, isCurrentPath);
+
+            if (isCurrentPath) {
                 continue;
             }
 
@@ -1702,6 +1713,7 @@ static NSArray<NSString*>* legacyResidualFilesInDir(NSString* dir) {
 
             if (![files containsObject:path]) {
                 [files addObject:path];
+                NSLog2(@"[CL] legacyResidualFilesInDir: added residual file=%@", path);
             }
         }
     }
