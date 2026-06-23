@@ -19,7 +19,7 @@ static NSString* g_dbPath = nil;
 static NSString* g_appDocumentsPathOverride = nil;
 static NSString* g_runtimeDataRootPath = nil;
 static NSString* const kLegacyContainerCacheFileName = @"com.chargelimiter.mod.containerpath";
-static NSString* const kRoothideDataRoot = @"/var/mobile/Library/ChargeLimiter";
+static NSString* const kRoothideDataRoot = @"/var/ChargeLimiter";
 static NSString* const kRoothideLegacySharedDataRoot = @"/var/mobile/Library/Application Support/ChargeLimiter";
 typedef const char* (*jbroot_fn_t)(const char* path);
 static NSString* resolveAppBundleIdentifier(void);
@@ -443,21 +443,29 @@ static NSString* getSharedDataRootPathWithLibroot(void);
 
 /**
  * 获取配置文件的根目录。
- * 所有环境：配置文件统一使用 app 数据容器（不依赖 jbroot）。
- * 数据库和日志文件仍使用共享数据根目录（越狱环境在 jbroot 下）。
+ *
+ * 设计原则：
+ * - 越狱环境：配置/数据库/日志统一放在共享数据根目录（jbroot 或系统路径），
+ *   因为 daemon 需要访问配置文件，而 daemon 无法访问 app 数据容器。
+ * - TrollStore：使用 app 数据容器（没有 daemon，只有 app 访问）。
  */
 static NSString* getConfigRootPathWithLibroot(void) {
-    // 所有环境都使用 app 数据容器存储配置文件
-    // 这样配置文件不依赖 jbroot，避免权限问题和路径漂移
-    NSString* bid = resolveAppBundleIdentifier();
-    NSString* containerRoot = resolveExistingDataContainerRoot(bid);
-    if (containerRoot.length == 0) {
-        containerRoot = NSHomeDirectory();
+    // TrollStore：使用 app 数据容器
+    if (getJBType() == JBTYPE_TROLLSTORE) {
+        NSString* bid = resolveAppBundleIdentifier();
+        NSString* containerRoot = resolveExistingDataContainerRoot(bid);
+        if (containerRoot.length == 0) {
+            containerRoot = NSHomeDirectory();
+        }
+        if (containerRoot.length == 0) {
+            return nil;
+        }
+        return [containerRoot stringByAppendingPathComponent:@"ChargeLimiter"];
     }
-    if (containerRoot.length == 0) {
-        return nil;
-    }
-    return [containerRoot stringByAppendingPathComponent:@"ChargeLimiter"];
+
+    // 越狱环境：配置文件与数据库/日志统一到共享数据根目录
+    // daemon 需要访问配置，必须放在 daemon 可访问的位置（jbroot 或系统共享路径）
+    return getSharedDataRootPathWithLibroot();
 }
 
 /**
