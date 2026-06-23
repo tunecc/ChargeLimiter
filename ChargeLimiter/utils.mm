@@ -443,16 +443,12 @@ static NSString* getSharedDataRootPathWithLibroot(void);
 
 /**
  * 获取配置文件的根目录。
- * 越狱环境：配置文件与数据文件统一到共享数据根目录。
- * TrollStore：使用 app 数据容器（独立路径）。
+ * 所有环境：配置文件统一使用 app 数据容器（不依赖 jbroot）。
+ * 数据库和日志文件仍使用共享数据根目录（越狱环境在 jbroot 下）。
  */
 static NSString* getConfigRootPathWithLibroot(void) {
-    // 越狱环境：配置文件与数据文件统一到共享数据根目录
-    if (getJBType() != JBTYPE_TROLLSTORE) {
-        return getSharedDataRootPathWithLibroot();
-    }
-
-    // TrollStore：使用 app 数据容器（独立路径）
+    // 所有环境都使用 app 数据容器存储配置文件
+    // 这样配置文件不依赖 jbroot，避免权限问题和路径漂移
     NSString* bid = resolveAppBundleIdentifier();
     NSString* containerRoot = resolveExistingDataContainerRoot(bid);
     if (containerRoot.length == 0) {
@@ -3057,15 +3053,10 @@ NSString* const CLConfigWriteFailedNotification = @"CLConfigWriteFailedNotificat
             migrateLoadedConfigToPreferredPathIfNeeded(_preferences, loadedPath);
         }
         if (migrateLegacyUserDefaultsIntoPreferences(_preferences)) {
-            // 仅在配置文件读取成功时才 apply，避免读不到时用残缺 preferences
-            // （只有从 UserDefaults 迁移的 legacyKeys）覆盖盘上配置导致其他设置丢失。
-            // 读不到时 legacyKeys 已在内存、UserDefaults 保留备份，不影响当前会话。
-            if ([fileDict isKindOfClass:[NSDictionary class]] && fileDict.count > 0) {
-                _isDirty = YES;
-                [self apply];
-            } else {
-                NSLog2(@"[CL] skip apply after legacy migrate: config unreadable, keep disk unchanged");
-            }
+            // 从 NSUserDefaults 迁移到配置文件后立即 apply 写入磁盘
+            // 这样确保首次安装或配置文件丢失后，用户设置的配置能够持久化
+            _isDirty = YES;
+            [self apply];
         }
     }
     return self;
