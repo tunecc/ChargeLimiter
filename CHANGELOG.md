@@ -4,6 +4,33 @@
 
 写法参考了 Keep a Changelog 和一些成熟项目常见的结构：每个版本先说明主线，再按少量分类列出用户真正会感知到的变化，尽量详细，但不写成长文。
 
+## v1.13.9 - 2026-06-23
+
+这一版修复了 v1.13.8 引入的配置持久化问题，彻底解决杀后台重开后设置丢失的问题。
+
+### Fixed
+
+- **修复配置持久化失败问题**：v1.13.8 将配置文件移到 app 数据容器后，在 roothide 环境下因路径解析错误导致配置文件被写入到只读的 Bundle 目录，无法保存。现在统一将所有越狱环境的配置、数据库、日志放在 daemon 可访问的共享目录 `/var/mobile/ChargeLimiter/`，彻底解决写入权限问题。
+- 修复配置迁移逻辑：从 NSUserDefaults 迁移配置后立即写盘，确保数据持久化。
+- 修复杀后台重开后停充预设、滑动震动等设置丢失的问题。
+
+### Added
+
+- **自动清理空目录**：迁移或删除旧版数据后，自动清理遗留的空 ChargeLimiter 目录，保持系统整洁。
+
+### Changed
+
+- **重新调整数据路径策略**：
+  - **越狱环境**（rootless / rootful / roothide）：配置文件、数据库、日志统一存放在 `/var/mobile/ChargeLimiter/`（jbroot 解析后的共享目录），确保 app 和 daemon 都能访问。
+  - **TrollStore**：继续使用 app 数据容器 `<容器>/ChargeLimiter/`，不受越狱路径影响。
+- 自动从旧路径迁移数据（`/var/mobile/Library/ChargeLimiter/`、`/var/mobile/Library/Application Support/ChargeLimiter/`、`/var/ChargeLimiter/` 等），保证升级平滑。
+
+### Notes
+
+- 相比 v1.13.8 的 app 数据容器方案，本版回归到共享目录方案，原因是 roothide 的 libroot 路径解析会将某些路径错误解析到只读的 Bundle 目录，而 daemon 需要访问配置文件，必须放在共享位置。
+- 旧版本的配置文件会自动迁移，不会丢失数据。
+- 迁移后的空目录会自动清理，无需手动删除。
+
 ## v1.13.8 - 2026-06-19
 
 这一版把配置文件改存到 app 数据容器，并集成 libroot 重构越狱路径解析，根治清后台重开 / 重新越狱后配置丢失的问题。
