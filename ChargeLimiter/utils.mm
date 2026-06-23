@@ -1565,6 +1565,48 @@ static BOOL removeLegacyFilePreferRoot(NSString* path) {
     return NO;
 }
 
+static BOOL removeEmptyDirectoryIfChargeLimiterRelated(NSString* dirPath) {
+    if (dirPath.length == 0) {
+        return NO;
+    }
+
+    // 只清理 ChargeLimiter 相关的目录
+    NSString* lastComponent = [dirPath lastPathComponent];
+    if (![lastComponent isEqualToString:@"ChargeLimiter"]) {
+        return NO;
+    }
+
+    NSFileManager* fm = [NSFileManager defaultManager];
+    BOOL isDir = NO;
+    if (![fm fileExistsAtPath:dirPath isDirectory:&isDir] || !isDir) {
+        return NO;
+    }
+
+    // 检查目录是否为空
+    NSError* error = nil;
+    NSArray<NSString*>* contents = [fm contentsOfDirectoryAtPath:dirPath error:&error];
+    if (error || contents.count > 0) {
+        return NO;
+    }
+
+    // 目录为空，尝试删除
+    NSError* removeError = nil;
+    if ([fm removeItemAtPath:dirPath error:&removeError]) {
+        NSLog2(@"[CL] Removed empty ChargeLimiter directory: %@", dirPath);
+        return YES;
+    }
+
+    // 使用 root 权限删除
+    int rc = spawn(@[@"/bin/rmdir", dirPath], nil, nil, nil, SPAWN_FLAG_ROOT, nil);
+    if (rc == 0 && ![fm fileExistsAtPath:dirPath]) {
+        NSLog2(@"[CL] Removed empty ChargeLimiter directory (with root): %@", dirPath);
+        return YES;
+    }
+
+    NSLog2(@"[CL] Failed to remove empty directory: %@ (error: %@)", dirPath, removeError);
+    return NO;
+}
+
 static NSArray<NSString*>* legacyConfigCandidateDirs() {
     NSMutableArray<NSString*>* dirs = [NSMutableArray new];
 
@@ -1768,16 +1810,28 @@ extern "C" NSArray<NSString*>* getLegacyResidualFiles_C(void) {
 extern "C" NSDictionary* cleanupLegacyResidualFiles_C(void) {
     NSArray<NSString*>* files = legacyResidualFiles();
     NSMutableArray<NSString*>* errors = [NSMutableArray new];
+    NSMutableSet<NSString*>* parentDirsToCheck = [NSMutableSet new];
     NSInteger removed = 0;
     NSInteger failed = 0;
     for (NSString* path in files) {
         if (removeLegacyFilePreferRoot(path)) {
             removed++;
+            // 记录父目录，稍后检查是否为空
+            NSString* parentDir = [path stringByDeletingLastPathComponent];
+            if (parentDir.length > 0) {
+                [parentDirsToCheck addObject:parentDir];
+            }
         } else {
             failed++;
             [errors addObject:[NSString stringWithFormat:@"%@ remove failed", path]];
         }
     }
+
+    // 清理空的 ChargeLimiter 目录
+    for (NSString* parentDir in parentDirsToCheck) {
+        removeEmptyDirectoryIfChargeLimiterRelated(parentDir);
+    }
+
     return @{
         @"removed": @(removed),
         @"failed": @(failed),
@@ -1912,6 +1966,7 @@ extern "C" NSDictionary* migrateLegacyConfigFiles_C(void) {
         BOOL ok = [fm copyItemAtPath:chosenSrc toPath:dst error:&copyError];
         if (ok) {
             // Cleanup all legacy duplicates of this file after successful migration.
+            NSMutableSet<NSString*>* parentDirsToCheck = [NSMutableSet new];
             for (NSString* dir in legacyDirs) {
                 for (NSString* sourceFile in legacySourceFileNamesForTargetFile(file)) {
                     NSString* src = [dir stringByAppendingPathComponent:sourceFile];
@@ -1922,6 +1977,12 @@ extern "C" NSDictionary* migrateLegacyConfigFiles_C(void) {
                     if (!removeLegacyFilePreferRoot(src)) {
                         failed++;
                         [errors addObject:[NSString stringWithFormat:@"%@ remove failed", src]];
+                    } else {
+                        // 记录父目录，稍后检查是否为空
+                        NSString* parentDir = [src stringByDeletingLastPathComponent];
+                        if (parentDir.length > 0) {
+                            [parentDirsToCheck addObject:parentDir];
+                        }
                     }
                 }
             }
@@ -1932,8 +1993,19 @@ extern "C" NSDictionary* migrateLegacyConfigFiles_C(void) {
             }
             NSString* legacyLog = [sourceDir stringByAppendingPathComponent:@LOG_FILENAME];
             if ([fm fileExistsAtPath:legacyLog]) {
-                removeLegacyFilePreferRoot(legacyLog);
+                if (removeLegacyFilePreferRoot(legacyLog)) {
+                    NSString* logParent = [legacyLog stringByDeletingLastPathComponent];
+                    if (logParent.length > 0) {
+                        [parentDirsToCheck addObject:logParent];
+                    }
+                }
             }
+
+            // 清理空的 ChargeLimiter 目录
+            for (NSString* parentDir in parentDirsToCheck) {
+                removeEmptyDirectoryIfChargeLimiterRelated(parentDir);
+            }
+
             continue;
         }
 
