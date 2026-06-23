@@ -428,12 +428,21 @@ static NSString* resolveJailbreakPathWithLibroot(NSString* logicalPath) {
 // REFACTOR: 新的简化配置路径函数（使用 libroot）
 // ============================================================================
 
+// Forward declaration
+static NSString* getSharedDataRootPathWithLibroot(void);
+
 /**
  * 获取配置文件的根目录。
- * roothide 配置按用户期望固定存放在 jbroot:/var/mobile/Library/Preferences。
+ * 越狱环境：配置文件与数据文件统一到共享数据根目录。
+ * TrollStore：使用 app 数据容器（独立路径）。
  */
 static NSString* getConfigRootPathWithLibroot(void) {
-    // 配置文件统一放 app 数据容器（不依赖 jbroot，roothide 重新越狱 / libroot 漂移都不影响）
+    // 越狱环境：配置文件与数据文件统一到共享数据根目录
+    if (getJBType() != JBTYPE_TROLLSTORE) {
+        return getSharedDataRootPathWithLibroot();
+    }
+
+    // TrollStore：使用 app 数据容器（独立路径）
     NSString* bid = resolveAppBundleIdentifier();
     NSString* containerRoot = resolveExistingDataContainerRoot(bid);
     if (containerRoot.length == 0) {
