@@ -453,7 +453,7 @@ static NSString* getSharedDataRootPathWithLibroot(void) {
     if (getJBType() == JBTYPE_ROOTHIDE) {
         return resolveRoothideDataRootByAPI();
     }
-    return resolveJailbreakPathWithLibroot(@"/var/mobile/Library/Application Support/ChargeLimiter");
+    return resolveJailbreakPathWithLibroot(@"/var/mobile/Library/ChargeLimiter");
 }
 
 /**
