@@ -19,7 +19,7 @@ static NSString* g_dbPath = nil;
 static NSString* g_appDocumentsPathOverride = nil;
 static NSString* g_runtimeDataRootPath = nil;
 static NSString* const kLegacyContainerCacheFileName = @"com.chargelimiter.mod.containerpath";
-static NSString* const kRoothideDataRoot = @"/var/ChargeLimiter";
+static NSString* const kRoothideDataRoot = @"/var/mobile/ChargeLimiter";
 static NSString* const kRoothideLegacySharedDataRoot = @"/var/mobile/Library/Application Support/ChargeLimiter";
 typedef const char* (*jbroot_fn_t)(const char* path);
 static NSString* resolveAppBundleIdentifier(void);
@@ -70,9 +70,7 @@ static NSArray<NSString*>* roothideAliasPathsForPath(NSString* path) {
     NSUInteger searchStart = marker.location + 1;
     NSArray<NSString*>* suffixes = @[
         @"/var/mobile/",
-        @"/private/var/mobile/",
-        @"/var/ChargeLimiter",
-        @"/private/var/ChargeLimiter"
+        @"/private/var/mobile/"
     ];
     for (NSString* suffix in suffixes) {
         NSRange suffixRange = [normalized rangeOfString:suffix
@@ -470,13 +468,13 @@ static NSString* getConfigRootPathWithLibroot(void) {
 
 /**
  * 获取共享数据的根目录。
- * roothide 仅将日志/数据库等共享运行数据放在 jbroot:/var/ChargeLimiter。
+ * roothide 仅将日志/数据库等共享运行数据放在 jbroot:/var/mobile/ChargeLimiter。
  */
 static NSString* getSharedDataRootPathWithLibroot(void) {
     if (getJBType() == JBTYPE_ROOTHIDE) {
         return resolveRoothideDataRootByAPI();
     }
-    return resolveJailbreakPathWithLibroot(@"/var/mobile/Library/ChargeLimiter");
+    return resolveJailbreakPathWithLibroot(@"/var/mobile/ChargeLimiter");
 }
 
 /**
@@ -1258,7 +1256,7 @@ static NSArray<NSString*>* getConfigReadPathsWithLibroot(void) {
         return paths;
     }
 
-    // 2. roothide 旧路径：仅迁移历史 Preferences/Application Support，不迁移 /var/ChargeLimiter
+    // 2. roothide 旧路径：仅迁移历史 Preferences/Application Support，不迁移 /var/mobile/ChargeLimiter
     if (getJBType() == JBTYPE_ROOTHIDE) {
         for (NSString* dir in roothideLegacySharedDataDirs()) {
             NSString* oldSharedPath = [dir stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME];
