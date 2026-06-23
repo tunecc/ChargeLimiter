@@ -1618,6 +1618,40 @@ static NSArray<NSString*>* currentRuntimePathsForLegacyDetection(void) {
     return paths;
 }
 
+static BOOL isNSUserDefaultsOnlyPlist(NSString* path) {
+    // 检查 plist 文件是否只包含 NSUserDefaults 写入的辅助键（非配置数据）
+    // 如果是，则不应将其视为"残留配置文件"
+    //
+    // 注意：从本版本开始，NSUserDefaults 数据已改为存储在 com.chargelimiter.mod.appdata.plist，
+    // 这个函数主要用于兼容旧版本遗留的 com.chargelimiter.mod.plist 文件。
+    NSDictionary* dict = [NSDictionary dictionaryWithContentsOfFile:path];
+    if (![dict isKindOfClass:[NSDictionary class]] || dict.count == 0) {
+        return NO;
+    }
+
+    // 旧版本 NSUserDefaults 辅助键列表（迁移检查、版本更新检查等）
+    // 这些键在旧版本中会被写入 standardUserDefaults，即 com.chargelimiter.mod.plist
+    NSSet* userDefaultsOnlyKeys = [NSSet setWithArray:@[
+        @"LegacyMigrationCheckedToken",
+        @"CLUpdateCheckLastDate",
+        @"CLUpdateCheckLatestVersion",
+        @"CLUpdateCheckLatestURL",
+        @"CLUpdateCheckLatestNotes",
+        @"CLUpdateCheckLastError",
+        @"CLUpdateCheckLastAlertedVersion",
+        @"AppleLanguages",  // 语言设置
+    ]];
+
+    // 检查是否所有的键都是 NSUserDefaults 辅助键
+    for (NSString* key in dict.allKeys) {
+        if (![userDefaultsOnlyKeys containsObject:key]) {
+            return NO;  // 发现非辅助键，说明包含真实配置数据
+        }
+    }
+
+    return YES;  // 所有键都是辅助键
+}
+
 static NSArray<NSString*>* legacyResidualFilesInDir(NSString* dir) {
     NSMutableArray<NSString*>* files = [NSMutableArray new];
     if (dir.length == 0) {
@@ -1636,6 +1670,17 @@ static NSArray<NSString*>* legacyResidualFilesInDir(NSString* dir) {
             if (pathMatchesAnyStableCurrentPath(path, currentRuntimePaths)) {
                 continue;
             }
+
+            // 如果是配置文件，检查是否只包含 NSUserDefaults 辅助键
+            if ([sourceFile isEqualToString:@CONFIG_PLIST_FILENAME] ||
+                [sourceFile isEqualToString:@LEGACY_CONF_FILENAME]) {
+                if (isNSUserDefaultsOnlyPlist(path)) {
+                    // 只包含辅助键，不视为残留配置文件
+                    NSLog2(@"[CL] Skipping NSUserDefaults-only plist: %@", path);
+                    continue;
+                }
+            }
+
             if (![files containsObject:path]) {
                 [files addObject:path];
             }
@@ -2881,6 +2926,29 @@ void setSmartChargeEnable(BOOL flag) {
 
 /* ---------------- App ---------------- */
 
+/**
+ * 获取使用 app 数据容器路径的 NSUserDefaults
+ *
+ * 替代 [NSUserDefaults standardUserDefaults]，避免在 rootless 环境下
+ * 写入到 /var/jb/var/mobile/Library/Preferences/ 造成配置文件分散。
+ *
+ * 使用 suite name 方式，plist 文件会存储在 app 数据容器的 Library/Preferences/ 下。
+ */
+extern "C" NSUserDefaults* getAppUserDefaults(void) {
+    static NSUserDefaults* appDefaults = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        // 使用自定义 suite name，确保数据存储在 app 容器而不是系统 Preferences
+        // 注意：这会在 app 容器的 Library/Preferences/ 下创建 com.chargelimiter.mod.appdata.plist
+        appDefaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.chargelimiter.mod.appdata"];
+        if (appDefaults == nil) {
+            NSLog2(@"[CL] WARNING: Failed to create app suite NSUserDefaults, falling back to standard");
+            appDefaults = [NSUserDefaults standardUserDefaults];
+        }
+    });
+    return appDefaults;
+}
+
 // 旧版本把以下设置写入 NSUserDefaults standardUserDefaults，在 roothide 下该路径
 // 无法随 jbroot 持久化，重启/重新越狱后会丢失。这里在首次加载配置时把它们一次性
 // 迁移进 CLSettingsStore（com.chargelimiter.mod.plist），迁移后清理旧值避免回写。
@@ -2896,7 +2964,8 @@ static BOOL migrateLegacyUserDefaultsIntoPreferences(NSMutableDictionary* prefer
         @"StopChargePresetValue",
         @"AppAppearance",
     ];
-    NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+    NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];  // 读取旧数据
+
     BOOL migrated = NO;
     for (NSString* key in legacyKeys) {
         id legacyValue = [defaults objectForKey:key];
@@ -3271,7 +3340,7 @@ static void CLSetLocalizationBundle(NSString *languageCode) {
 }
 
 static void CLSetAppleLanguages(NSArray<NSString *> *languages) {
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSUserDefaults *defaults = getAppUserDefaults();
     if (languages.count > 0) {
         [defaults setObject:languages forKey:@"AppleLanguages"];
     } else {

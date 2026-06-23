@@ -10,6 +10,7 @@
 #import "../CLAPIClient.h"
 #import "../CLSymbolImageSupport.h"
 #import "../../CLLocalization.h"
+NSUserDefaults* getAppUserDefaults(void);
 NSString* getAppDocumentsPath_C(void);
 NSString* getConfPath_C(void);
 NSString* getConfDirPath_C(void);
@@ -3217,7 +3218,7 @@ static UIViewController *CLTopVisibleViewController(void) {
 }
 
 - (void)loadPersistedState {
-    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    NSUserDefaults *defaults = getAppUserDefaults();
     id savedDate = [defaults objectForKey:CLUpdateCheckLastDateKey];
     if ([savedDate isKindOfClass:[NSDate class]]) {
         self.lastCheckDate = savedDate;
@@ -3251,7 +3252,7 @@ static UIViewController *CLTopVisibleViewController(void) {
 }
 
 - (void)persistState {
-    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    NSUserDefaults *defaults = getAppUserDefaults();
     if (self.lastCheckDate) {
         [defaults setObject:self.lastCheckDate forKey:CLUpdateCheckLastDateKey];
     } else {
@@ -5289,7 +5290,7 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
 
 - (void)promptLegacyMigrationIfNeeded {
     static NSString * const kLegacyMigrationCheckedTokenKey = @"LegacyMigrationCheckedToken";
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSUserDefaults *defaults = getAppUserDefaults();
     NSString *shortVer = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
     NSString *buildVer = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleVersion"];
     if (![shortVer isKindOfClass:[NSString class]]) {

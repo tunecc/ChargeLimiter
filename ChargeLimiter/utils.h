@@ -115,6 +115,7 @@ NSString* getDbPath();
 NSString* getConfDirPath();
 NSString* getRuntimeDataRootPath(void);
 void setAppDocumentsPathOverride(NSString* docsPath);
+extern "C" NSUserDefaults* getAppUserDefaults(void);  // 获取使用 app 数据容器的 NSUserDefaults
 extern "C" int cleanupAppDataContainer_C(void);
 extern "C" NSString* getConfPath_C(void);
 extern "C" NSString* getConfDirPath_C(void);
