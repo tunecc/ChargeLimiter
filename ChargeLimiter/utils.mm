@@ -179,11 +179,13 @@ static void appendStablePathVariants(NSMutableArray<NSString*>* variants, NSStri
         [seen addObject:current];
         [variants addObject:current];
 
+        // 1. 符号链接解析
         NSString* resolved = normalizedAbsolutePath([current stringByResolvingSymlinksInPath]);
         if (resolved.length > 0 && ![seen containsObject:resolved]) {
             [queue addObject:resolved];
         }
 
+        // 2. /private/ 前缀变体
         if ([current hasPrefix:@"/private/"]) {
             NSString* stripped = normalizedAbsolutePath([current substringFromIndex:@"/private".length]);
             if (stripped.length > 0 && ![seen containsObject:stripped]) {
@@ -193,6 +195,14 @@ static void appendStablePathVariants(NSMutableArray<NSString*>* variants, NSStri
             NSString* prefixed = normalizedAbsolutePath([@"/private" stringByAppendingString:current]);
             if (prefixed.length > 0 && ![seen containsObject:prefixed]) {
                 [queue addObject:prefixed];
+            }
+        }
+
+        // 3. roothide 别名路径变体
+        for (NSString* alias in roothideAliasPathsForPath(current)) {
+            NSString* normalizedAlias = normalizedAbsolutePath(alias);
+            if (normalizedAlias.length > 0 && ![seen containsObject:normalizedAlias]) {
+                [queue addObject:normalizedAlias];
             }
         }
     }
