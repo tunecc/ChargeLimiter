@@ -19,7 +19,7 @@ static NSString* g_dbPath = nil;
 static NSString* g_appDocumentsPathOverride = nil;
 static NSString* g_runtimeDataRootPath = nil;
 static NSString* const kLegacyContainerCacheFileName = @"com.chargelimiter.mod.containerpath";
-static NSString* const kRoothideDataRoot = @"/var/ChargeLimiter";
+static NSString* const kRoothideDataRoot = @"/var/mobile/Library/ChargeLimiter";
 static NSString* const kRoothideLegacySharedDataRoot = @"/var/mobile/Library/Application Support/ChargeLimiter";
 typedef const char* (*jbroot_fn_t)(const char* path);
 static NSString* resolveAppBundleIdentifier(void);
