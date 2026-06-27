@@ -3097,6 +3097,7 @@ NSString* const CLConfigWriteFailedNotification = @"CLConfigWriteFailedNotificat
 @interface CLSettingsStore : NSObject
 @property (nonatomic, strong) NSMutableDictionary* preferences;
 @property (nonatomic, strong) NSMutableDictionary* cachedChanges;
+@property (nonatomic, strong) NSMutableSet<NSString*>* removedKeys;
 @property (nonatomic, assign) BOOL isDirty;
 + (instancetype)shared;
 - (id)readValueForKey:(NSString*)key defaultValue:(id)defaultValue;
@@ -3120,6 +3121,7 @@ NSString* const CLConfigWriteFailedNotification = @"CLConfigWriteFailedNotificat
     if (self) {
         _preferences = [NSMutableDictionary new];
         _cachedChanges = [NSMutableDictionary new];
+        _removedKeys = [NSMutableSet new];
         _isDirty = NO;
         NSString* loadedPath = nil;
         NSDictionary* fileDict = readConfigDictionaryFromDisk(&loadedPath);
@@ -3133,6 +3135,7 @@ NSString* const CLConfigWriteFailedNotification = @"CLConfigWriteFailedNotificat
         if (migrateLegacyUserDefaultsIntoPreferences(_preferences)) {
             // 从 NSUserDefaults 迁移到配置文件后立即 apply 写入磁盘
             // 这样确保首次安装或配置文件丢失后，用户设置的配置能够持久化
+            [_cachedChanges addEntriesFromDictionary:_preferences];
             _isDirty = YES;
             [self apply];
         }
@@ -3229,9 +3232,11 @@ NSString* const CLConfigWriteFailedNotification = @"CLConfigWriteFailedNotificat
         if (value) {
             self.cachedChanges[key] = value;
             self.preferences[key] = value;
+            [self.removedKeys removeObject:key];
         } else {
-            [self.cachedChanges removeObjectForKey:key];
             [self.preferences removeObjectForKey:key];
+            [self.cachedChanges removeObjectForKey:key];
+            [self.removedKeys addObject:key];
         }
         self.isDirty = YES;
     }
@@ -3242,8 +3247,22 @@ NSString* const CLConfigWriteFailedNotification = @"CLConfigWriteFailedNotificat
         if (!self.isDirty) {
             return;
         }
+        NSMutableDictionary* mergedPreferences = nil;
+        NSString* loadedPath = nil;
+        NSDictionary* fileDict = readConfigDictionaryFromDisk(&loadedPath);
+        if ([fileDict isKindOfClass:[NSDictionary class]]) {
+            mergedPreferences = [fileDict mutableCopy];
+        } else {
+            mergedPreferences = [NSMutableDictionary dictionaryWithDictionary:self.preferences ?: @{}];
+        }
+        for (NSString* key in self.removedKeys) {
+            [mergedPreferences removeObjectForKey:key];
+        }
+        if (self.cachedChanges.count > 0) {
+            [mergedPreferences addEntriesFromDictionary:self.cachedChanges];
+        }
         NSError* plistError = nil;
-        NSData* plistData = [NSPropertyListSerialization dataWithPropertyList:self.preferences
+        NSData* plistData = [NSPropertyListSerialization dataWithPropertyList:mergedPreferences
                                                                         format:NSPropertyListBinaryFormat_v1_0
                                                                        options:0
                                                                          error:&plistError];
@@ -3280,8 +3299,11 @@ NSString* const CLConfigWriteFailedNotification = @"CLConfigWriteFailedNotificat
             });
             return;
         }
+        [self.preferences removeAllObjects];
+        [self.preferences addEntriesFromDictionary:mergedPreferences];
         NSLog2(@"[CL] conf written path=%@", writtenPath ?: @"");
         [self.cachedChanges removeAllObjects];
+        [self.removedKeys removeAllObjects];
         self.isDirty = NO;
     }
 }
@@ -3303,10 +3325,117 @@ NSString* const CLConfigWriteFailedNotification = @"CLConfigWriteFailedNotificat
             NSLog2(@"[CL] conf reload skipped (unreadable/empty), keep in-memory preferences");
         }
         [self.cachedChanges removeAllObjects];
+        [self.removedKeys removeAllObjects];
         self.isDirty = NO;
     }
 }
 @end
+
+#if TARGET_OS_SIMULATOR || defined(CL_TEST_MODE)
+static void CLAssignSelfTestStoragePaths(NSString *rootPath) {
+    g_appDocumentsPath = [rootPath copy];
+    g_runtimeDataRootPath = [rootPath copy];
+    g_logPath = [[rootPath stringByAppendingPathComponent:@LOG_FILENAME] copy];
+    g_confPath = [[rootPath stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME] copy];
+    g_dbPath = [[rootPath stringByAppendingPathComponent:@DB_FILENAME] copy];
+}
+
+extern "C" BOOL CLRunLocalizationPersistenceSelfTest(NSString **failureReason) {
+    NSArray<NSString *> *legacyKeys = @[
+        @"AppLanguage",
+        @"SliderHapticStyle",
+        @"StopChargePresetValue",
+        @"AppAppearance",
+    ];
+    NSUserDefaults *legacyDefaults = [NSUserDefaults standardUserDefaults];
+    NSMutableDictionary<NSString *, id> *legacyBackup = [NSMutableDictionary dictionary];
+    for (NSString *key in legacyKeys) {
+        id value = [legacyDefaults objectForKey:key];
+        if (value != nil) {
+            legacyBackup[key] = value;
+            [legacyDefaults removeObjectForKey:key];
+        }
+    }
+    [legacyDefaults synchronize];
+
+    NSString *originalAppDocumentsPath = g_appDocumentsPath;
+    NSString *originalRuntimeDataRootPath = g_runtimeDataRootPath;
+    NSString *originalLogPath = g_logPath;
+    NSString *originalConfPath = g_confPath;
+    NSString *originalDbPath = g_dbPath;
+    NSString *originalAppDocumentsPathOverride = g_appDocumentsPathOverride;
+
+    NSString *tempRoot = [NSTemporaryDirectory() stringByAppendingPathComponent:
+                          [NSString stringWithFormat:@"chargelimiter-selftest-%@", NSUUID.UUID.UUIDString]];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSError *dirError = nil;
+    if (![fm createDirectoryAtPath:tempRoot withIntermediateDirectories:YES attributes:nil error:&dirError]) {
+        if (failureReason) {
+            *failureReason = [NSString stringWithFormat:@"failed to create temp dir: %@", dirError];
+        }
+        return NO;
+    }
+
+    BOOL passed = NO;
+    @try {
+        g_appDocumentsPathOverride = nil;
+        CLAssignSelfTestStoragePaths(tempRoot);
+
+        CLSettingsStore *appStore = [CLSettingsStore new];
+        CLSettingsStore *daemonStore = [CLSettingsStore new];
+
+        [appStore setValue:@(CLAppLanguageEnglish) forKey:@"AppLanguage"];
+        [appStore apply];
+
+        NSDictionary *afterAppWrite = [NSDictionary dictionaryWithContentsOfFile:g_confPath];
+        if (![afterAppWrite[@"AppLanguage"] isEqual:@(CLAppLanguageEnglish)]) {
+            if (failureReason) {
+                *failureReason = [NSString stringWithFormat:@"app write missing AppLanguage: %@", afterAppWrite ?: @{}];
+            }
+            return NO;
+        }
+
+        [daemonStore setValue:@"en" forKey:@"lang"];
+        [daemonStore apply];
+
+        NSDictionary *afterDaemonWrite = [NSDictionary dictionaryWithContentsOfFile:g_confPath];
+        if (![afterDaemonWrite[@"lang"] isEqual:@"en"]) {
+            if (failureReason) {
+                *failureReason = [NSString stringWithFormat:@"daemon write missing lang: %@", afterDaemonWrite ?: @{}];
+            }
+            return NO;
+        }
+        if (![afterDaemonWrite[@"AppLanguage"] isEqual:@(CLAppLanguageEnglish)]) {
+            if (failureReason) {
+                *failureReason = [NSString stringWithFormat:@"daemon write overwrote AppLanguage: %@", afterDaemonWrite ?: @{}];
+            }
+            return NO;
+        }
+
+        passed = YES;
+        return YES;
+    } @finally {
+        g_appDocumentsPathOverride = originalAppDocumentsPathOverride;
+        g_appDocumentsPath = originalAppDocumentsPath;
+        g_runtimeDataRootPath = originalRuntimeDataRootPath;
+        g_logPath = originalLogPath;
+        g_confPath = originalConfPath;
+        g_dbPath = originalDbPath;
+
+        [fm removeItemAtPath:tempRoot error:nil];
+
+        for (NSString *key in legacyKeys) {
+            [legacyDefaults removeObjectForKey:key];
+        }
+        [legacyBackup enumerateKeysAndObjectsUsingBlock:^(NSString *key, id value, BOOL *stop) {
+            [legacyDefaults setObject:value forKey:key];
+        }];
+        [legacyDefaults synchronize];
+    }
+
+    return passed;
+}
+#endif
 
 id getlocalKV(NSString* key) {
     return [[CLSettingsStore shared] readValueForKey:key defaultValue:nil];
