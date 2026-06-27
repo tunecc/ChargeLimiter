@@ -124,6 +124,7 @@ extern "C" void setlocalKV_C(NSString* key, id val);
 extern "C" id getlocalKV_C(NSString* key);
 extern "C" void reloadLocalKVFromDisk_C(void);
 extern "C" NSDictionary* getAllKV_C(void);
+extern "C" BOOL ensureLocalConfigFileExists_C(NSString** pathOut, NSError** errorOut);
 extern "C" BOOL localPortOpen_C(int port);
 extern "C" int restartDaemonForApp_C(NSString* appDocs);
 extern "C" NSArray<NSString*>* getLegacyConfigDirsWithData_C(void);
