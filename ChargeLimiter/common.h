@@ -14,7 +14,12 @@
 
 #import <Foundation/Foundation.h>
 #import <IOKit/IOKitLib.h>
+#if !TARGET_OS_SIMULATOR
 #import <IOKit/hid/IOHIDService.h>
+#else
+typedef const struct __IOHIDService* IOHIDServiceRef;
+typedef const struct __IOHIDEvent* IOHIDEventRef;
+#endif
 #import <UIKit/UIKit.h>
 
 #define NSLog2(FORMAT, ...) os_log(OS_LOG_DEFAULT,"%{public}@", [NSString stringWithFormat:FORMAT, ##__VA_ARGS__])
