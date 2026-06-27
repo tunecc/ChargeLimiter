@@ -18,6 +18,7 @@ NSString* getRuntimeDataRootPath_C(void);
 void reloadLocalKVFromDisk_C(void);
 void setlocalKV_C(NSString* key, id val);
 id getlocalKV_C(NSString* key);
+BOOL ensureLocalConfigFileExists_C(NSString** pathOut, NSError** errorOut);
 NSArray<NSString*>* getLegacyConfigDirsWithData_C(void);
 NSArray<NSString*>* getLegacyResidualFiles_C(void);
 NSDictionary* cleanupLegacyResidualFiles_C(void);
@@ -4932,7 +4933,18 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     }
 
     if (![fm fileExistsAtPath:confPath]) {
-        [@{} writeToFile:confPath atomically:YES];
+        NSError *ensureError = nil;
+        NSString *ensuredPath = nil;
+        if (!ensureLocalConfigFileExists_C(&ensuredPath, &ensureError)) {
+            NSString *message = ensureError.localizedDescription.length > 0 ? ensureError.localizedDescription : CLL(@"未能定位配置文件");
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"无法打开") message:message preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:CLL(@"确定") style:UIAlertActionStyleDefault handler:nil]];
+            [self presentViewController:alert animated:YES completion:nil];
+            return;
+        }
+        if (ensuredPath.length > 0) {
+            confPath = ensuredPath;
+        }
     }
 
     CLOpenPathInFilza(self, confPath);

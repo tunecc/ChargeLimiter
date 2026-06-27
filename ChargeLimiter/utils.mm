@@ -22,6 +22,7 @@ static NSString* const kLegacyContainerCacheFileName = @"com.chargelimiter.mod.c
 static NSString* const kRoothideDataRoot = @"/var/mobile/ChargeLimiter";
 static NSString* const kRoothideLegacySharedDataRoot = @"/var/mobile/Library/Application Support/ChargeLimiter";
 typedef const char* (*jbroot_fn_t)(const char* path);
+@class CLSettingsStore;
 static NSString* resolveAppBundleIdentifier(void);
 static NSString* resolveExistingDataContainerRoot(NSString* bid);
 static NSString* resolveJbRootFromSelfExe(void);
@@ -39,6 +40,13 @@ static NSDate* fileModifyDate(NSString* path);
 // REFACTOR: 新函数前向声明
 static NSDictionary* readConfigFromDiskWithLibroot(NSString** loadedPathOut);
 static BOOL writeConfigDataToDiskWithLibroot(NSData* plistData, NSString** pathOut, NSError** errorOut);
+static BOOL writeMergedConfigDictionaryToDisk(NSDictionary* fallbackPreferences,
+                                              NSDictionary* pendingChanges,
+                                              NSSet<NSString*>* removedKeys,
+                                              NSString** pathOut,
+                                              NSError** errorOut,
+                                              NSMutableDictionary** mergedPreferencesOut);
+static BOOL ensureStoreConfigFileExists(CLSettingsStore* store, NSString** pathOut, NSError** errorOut);
 
 static NSString* normalizedAbsolutePath(NSString* path) {
     if (path.length == 0) {
@@ -1380,6 +1388,69 @@ static NSDictionary* readConfigFromDiskWithLibroot(NSString** loadedPathOut) {
     return nil;
 }
 
+static BOOL writeMergedConfigDictionaryToDisk(NSDictionary* fallbackPreferences,
+                                              NSDictionary* pendingChanges,
+                                              NSSet<NSString*>* removedKeys,
+                                              NSString** pathOut,
+                                              NSError** errorOut,
+                                              NSMutableDictionary** mergedPreferencesOut) {
+    NSMutableDictionary* mergedPreferences = nil;
+    NSString* loadedPath = nil;
+    NSDictionary* fileDict = readConfigDictionaryFromDisk(&loadedPath);
+    if ([fileDict isKindOfClass:[NSDictionary class]]) {
+        mergedPreferences = [fileDict mutableCopy];
+    } else if ([fallbackPreferences isKindOfClass:[NSDictionary class]]) {
+        mergedPreferences = [fallbackPreferences mutableCopy];
+    } else {
+        mergedPreferences = [NSMutableDictionary new];
+    }
+
+    for (NSString* key in removedKeys) {
+        [mergedPreferences removeObjectForKey:key];
+    }
+    if ([pendingChanges isKindOfClass:[NSDictionary class]] && pendingChanges.count > 0) {
+        [mergedPreferences addEntriesFromDictionary:pendingChanges];
+    }
+
+    NSError* plistError = nil;
+    NSData* plistData = [NSPropertyListSerialization dataWithPropertyList:mergedPreferences
+                                                                    format:NSPropertyListBinaryFormat_v1_0
+                                                                   options:0
+                                                                     error:&plistError];
+    if (!plistData) {
+        if (pathOut) {
+            *pathOut = nil;
+        }
+        if (errorOut) {
+            *errorOut = plistError;
+        }
+        return NO;
+    }
+
+    NSError* writeError = nil;
+    NSString* writtenPath = nil;
+    if (!writeConfigDataToDiskWithLibroot(plistData, &writtenPath, &writeError)) {
+        if (pathOut) {
+            *pathOut = nil;
+        }
+        if (errorOut) {
+            *errorOut = writeError;
+        }
+        return NO;
+    }
+
+    if (pathOut) {
+        *pathOut = writtenPath;
+    }
+    if (errorOut) {
+        *errorOut = nil;
+    }
+    if (mergedPreferencesOut) {
+        *mergedPreferencesOut = mergedPreferences;
+    }
+    return YES;
+}
+
 static NSArray<NSString*>* currentConfigCleanupPathCandidates(void) {
     // 现在只返回当前的主路径（通过 libroot 解析的）
     // configFilePathCandidates(NO) 已经简化为只返回 g_confPath
@@ -1418,21 +1489,9 @@ static void migrateLoadedConfigToPreferredPathIfNeeded(NSDictionary* preferences
         return;
     }
 
-    // 序列化配置
-    NSError* plistError = nil;
-    NSData* plistData = [NSPropertyListSerialization dataWithPropertyList:preferences
-                                                                    format:NSPropertyListBinaryFormat_v1_0
-                                                                   options:0
-                                                                     error:&plistError];
-    if (!plistData) {
-        NSLog2(@"[CL] conf migration serialize failed: source=%@ target=%@ err=%@", sourcePath, primaryPath, plistError);
-        return;
-    }
-
-    // 写入新路径
     NSError* writeError = nil;
     NSString* writtenPath = nil;
-    if (!writeConfigDataToDiskWithLibroot(plistData, &writtenPath, &writeError)) {
+    if (!writeMergedConfigDictionaryToDisk(preferences, preferences, nil, &writtenPath, &writeError, nil)) {
         NSLog2(@"[CL] conf migration write failed: source=%@ target=%@ err=%@", sourcePath, primaryPath, writeError);
         return;
     }
@@ -3106,6 +3165,59 @@ NSString* const CLConfigWriteFailedNotification = @"CLConfigWriteFailedNotificat
 - (void)reloadFromDisk;
 @end
 
+static BOOL ensureStoreConfigFileExists(CLSettingsStore* store, NSString** pathOut, NSError** errorOut) {
+    if (store == nil) {
+        if (pathOut) {
+            *pathOut = nil;
+        }
+        if (errorOut) {
+            *errorOut = [NSError errorWithDomain:@"ChargeLimiter"
+                                            code:-3
+                                        userInfo:@{NSLocalizedDescriptionKey: @"Missing settings store"}];
+        }
+        return NO;
+    }
+
+    @synchronized (store) {
+        NSString* existingPath = getConfigWritePathWithLibroot();
+        BOOL isDir = NO;
+        if (existingPath.length > 0 &&
+            [[NSFileManager defaultManager] fileExistsAtPath:existingPath isDirectory:&isDir] &&
+            !isDir) {
+            if (pathOut) {
+                *pathOut = existingPath;
+            }
+            if (errorOut) {
+                *errorOut = nil;
+            }
+            return YES;
+        }
+
+        NSMutableDictionary* mergedPreferences = nil;
+        NSString* writtenPath = nil;
+        NSError* writeError = nil;
+        if (!writeMergedConfigDictionaryToDisk(store.preferences, nil, nil, &writtenPath, &writeError, &mergedPreferences)) {
+            if (pathOut) {
+                *pathOut = nil;
+            }
+            if (errorOut) {
+                *errorOut = writeError;
+            }
+            return NO;
+        }
+
+        [store.preferences removeAllObjects];
+        [store.preferences addEntriesFromDictionary:mergedPreferences];
+        if (pathOut) {
+            *pathOut = writtenPath;
+        }
+        if (errorOut) {
+            *errorOut = nil;
+        }
+        return YES;
+    }
+}
+
 @implementation CLSettingsStore
 + (instancetype)shared {
     static CLSettingsStore* inst = nil;
@@ -3248,36 +3360,14 @@ NSString* const CLConfigWriteFailedNotification = @"CLConfigWriteFailedNotificat
             return;
         }
         NSMutableDictionary* mergedPreferences = nil;
-        NSString* loadedPath = nil;
-        NSDictionary* fileDict = readConfigDictionaryFromDisk(&loadedPath);
-        if ([fileDict isKindOfClass:[NSDictionary class]]) {
-            mergedPreferences = [fileDict mutableCopy];
-        } else {
-            mergedPreferences = [NSMutableDictionary dictionaryWithDictionary:self.preferences ?: @{}];
-        }
-        for (NSString* key in self.removedKeys) {
-            [mergedPreferences removeObjectForKey:key];
-        }
-        if (self.cachedChanges.count > 0) {
-            [mergedPreferences addEntriesFromDictionary:self.cachedChanges];
-        }
-        NSError* plistError = nil;
-        NSData* plistData = [NSPropertyListSerialization dataWithPropertyList:mergedPreferences
-                                                                        format:NSPropertyListBinaryFormat_v1_0
-                                                                       options:0
-                                                                         error:&plistError];
-        if (!plistData) {
-            NSLog2(@"[CL] conf serialize failed: err=%@", plistError);
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [[NSNotificationCenter defaultCenter] postNotificationName:CLConfigWriteFailedNotification
-                                                                    object:nil
-                                                                  userInfo:@{@"error": plistError ?: @"Serialization failed"}];
-            });
-            return;
-        }
         NSError* writeError = nil;
         NSString* writtenPath = nil;
-        if (!writeConfigDataToDiskWithLibroot(plistData, &writtenPath, &writeError)) {
+        if (!writeMergedConfigDictionaryToDisk(self.preferences,
+                                               self.cachedChanges,
+                                               self.removedKeys,
+                                               &writtenPath,
+                                               &writeError,
+                                               &mergedPreferences)) {
             NSString* attemptedPath = getConfigWritePathWithLibroot() ?: @"";
             NSArray<NSString*>* attemptedPaths = attemptedPath.length > 0 ? @[attemptedPath] : @[];
             NSLog2(@"[CL] conf write failed: attemptedPath=%@ err=%@", attemptedPath, writeError);
@@ -3412,6 +3502,73 @@ extern "C" BOOL CLRunLocalizationPersistenceSelfTest(NSString **failureReason) {
             return NO;
         }
 
+        CLSettingsStore *fileBootstrapStore = [CLSettingsStore new];
+        [fileBootstrapStore setValue:@(CLAppLanguageChineseSimplified) forKey:@"AppLanguage"];
+        [fileBootstrapStore apply];
+        [fm removeItemAtPath:g_confPath error:nil];
+
+        NSError *ensureError = nil;
+        NSString *ensuredPath = nil;
+        if (!ensureStoreConfigFileExists(fileBootstrapStore, &ensuredPath, &ensureError)) {
+            if (failureReason) {
+                *failureReason = [NSString stringWithFormat:@"ensure config bootstrap failed: %@", ensureError];
+            }
+            return NO;
+        }
+
+        NSDictionary *afterBootstrapWrite = [NSDictionary dictionaryWithContentsOfFile:g_confPath];
+        if (![afterBootstrapWrite[@"AppLanguage"] isEqual:@(CLAppLanguageChineseSimplified)]) {
+            if (failureReason) {
+                *failureReason = [NSString stringWithFormat:@"ensure config bootstrap lost AppLanguage: %@", afterBootstrapWrite ?: @{}];
+            }
+            return NO;
+        }
+
+        NSDictionary *seedPrimary = @{@"lang": @"en"};
+        NSError *seedSerializeError = nil;
+        NSData *seedPrimaryData = [NSPropertyListSerialization dataWithPropertyList:seedPrimary
+                                                                             format:NSPropertyListBinaryFormat_v1_0
+                                                                            options:0
+                                                                              error:&seedSerializeError];
+        if (!seedPrimaryData) {
+            if (failureReason) {
+                *failureReason = [NSString stringWithFormat:@"failed to serialize merge seed: %@", seedSerializeError];
+            }
+            return NO;
+        }
+        NSError *seedWriteError = nil;
+        NSString *seedWritePath = nil;
+        if (!writeConfigDataToDiskWithLibroot(seedPrimaryData, &seedWritePath, &seedWriteError)) {
+            if (failureReason) {
+                *failureReason = [NSString stringWithFormat:@"failed to write merge seed: %@", seedWriteError];
+            }
+            return NO;
+        }
+
+        NSError *mergeError = nil;
+        NSString *mergePath = nil;
+        NSDictionary *migrationBackfill = @{@"AppLanguage": @(CLAppLanguageEnglish)};
+        if (!writeMergedConfigDictionaryToDisk(migrationBackfill, migrationBackfill, nil, &mergePath, &mergeError, nil)) {
+            if (failureReason) {
+                *failureReason = [NSString stringWithFormat:@"merged write failed: %@", mergeError];
+            }
+            return NO;
+        }
+
+        NSDictionary *afterMergedWrite = [NSDictionary dictionaryWithContentsOfFile:g_confPath];
+        if (![afterMergedWrite[@"lang"] isEqual:@"en"]) {
+            if (failureReason) {
+                *failureReason = [NSString stringWithFormat:@"merged write lost existing lang: %@", afterMergedWrite ?: @{}];
+            }
+            return NO;
+        }
+        if (![afterMergedWrite[@"AppLanguage"] isEqual:@(CLAppLanguageEnglish)]) {
+            if (failureReason) {
+                *failureReason = [NSString stringWithFormat:@"merged write missing AppLanguage: %@", afterMergedWrite ?: @{}];
+            }
+            return NO;
+        }
+
         passed = YES;
         return YES;
     } @finally {
@@ -3479,6 +3636,10 @@ NSDictionary* getAllKV() {
 
 extern "C" NSDictionary* getAllKV_C(void) {
     return getAllKV();
+}
+
+extern "C" BOOL ensureLocalConfigFileExists_C(NSString** pathOut, NSError** errorOut) {
+    return ensureStoreConfigFileExists([CLSettingsStore shared], pathOut, errorOut);
 }
 
 extern "C" BOOL localPortOpen_C(int port) {
