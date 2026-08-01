@@ -516,6 +516,11 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
 @property (nonatomic, strong) UIScrollView *scrollView;
 @property (nonatomic, strong) UIStackView *mainStack;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, UILabel *> *valueLabels;
+@property (nonatomic, assign) BOOL probeRunning;
+@property (nonatomic, copy) NSString *lastProbeSummaryText;
+@property (nonatomic, copy) NSDictionary *lastProbePayload;
+@property (nonatomic, weak) UIButton *probeButton; // 若沿用 picker row，可改存 row view
+@property (nonatomic, strong) UILabel *probeResultLabel;
 @end
 
 @implementation CLPolicyDiagnosticsViewController
@@ -687,6 +692,40 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
     [self addDiagnosticRowToCard:timelineCard key:@"policy_event_history" icon:@"clock" title:CLL(@"最近持久化策略事件") color:[UIColor systemPurpleColor]];
     [self addTipRowToCard:timelineCard text:CLL(@"这里展示已持久化的最近策略事件，daemon 重启后也会尽量保留。")];
     [self.mainStack addArrangedSubview:timelineCard];
+
+    CLAdvSettingsCard *probeCard = [[CLAdvSettingsCard alloc] init];
+    [probeCard addSectionHeader:CLL(@"停充控制探针")];
+    [probeCard addPickerRowWithIcon:@"waveform.path.ecg"
+                              title:CLL(@"运行停充控制探针")
+                              value:CLL(@"运行")
+                              color:[UIColor systemTealColor]
+                                tag:910
+                             target:self
+                             action:@selector(runChargeControlProbeTapped:)];
+    [probeCard addSeparator];
+    [probeCard addPickerRowWithIcon:@"doc.on.doc"
+                              title:CLL(@"复制探针结果")
+                              value:CLL(@"复制")
+                              color:[UIColor systemBlueColor]
+                                tag:911
+                             target:self
+                             action:@selector(copyChargeControlProbeResultTapped:)];
+    UILabel *probeResult = [probeCard addValueRowWithIcon:@"text.alignleft"
+                                                    title:CLL(@"最近探针结论")
+                                                    value:CLL(@"尚未运行")
+                                                    color:[UIColor systemGrayColor]];
+    self.probeResultLabel = probeResult;
+    [self addTipRowToCard:probeCard
+                     text:CLL(@"建议插电后运行。将短暂尝试停充并自动恢复，用于确认 iOS 控制面是否真正生效。")];
+    UIView *probeTipRow = probeCard.contentStack.arrangedSubviews.lastObject;
+    for (UIView *subview in probeTipRow.subviews) {
+        if ([subview isKindOfClass:[UILabel class]]) {
+            ((UILabel *)subview).numberOfLines = 0;
+            break;
+        }
+    }
+    [self.mainStack addArrangedSubview:probeCard];
+    [self restoreProbeResultLabelText];
 
     CLAdvSettingsCard *exportCard = [[CLAdvSettingsCard alloc] init];
     [exportCard addSectionHeader:CLL(@"导出与校准")];
@@ -1098,6 +1137,120 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
                                                             preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:CLL(@"确定") style:UIAlertActionStyleDefault handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)restoreProbeResultLabelText {
+    if (self.probeResultLabel == nil) {
+        return;
+    }
+    if (self.probeRunning) {
+        self.probeResultLabel.text = CLL(@"运行中…");
+        return;
+    }
+    NSDictionary *data = self.lastProbePayload;
+    if (![data isKindOfClass:[NSDictionary class]]) {
+        self.probeResultLabel.text = CLL(@"尚未运行");
+        return;
+    }
+    NSDictionary *summary = [data[@"summary"] isKindOfClass:[NSDictionary class]] ? data[@"summary"] : nil;
+    if ([summary[@"any_effective"] boolValue]) {
+        self.probeResultLabel.text = [NSString stringWithFormat:@"%@: %@",
+                                      CLL(@"发现有效路径"),
+                                      summary[@"best_path"] ?: @"-"];
+    } else {
+        self.probeResultLabel.text = [NSString stringWithFormat:@"%@: %@",
+                                      CLL(@"未发现有效路径"),
+                                      summary[@"dominant_failure"] ?: @"-"];
+    }
+}
+
+- (NSString *)chargeControlProbeExportTextFromPayload:(NSDictionary *)payload {
+    if (![payload isKindOfClass:[NSDictionary class]]) {
+        return CLL(@"尚无探针结果");
+    }
+    NSMutableArray<NSString *> *lines = [NSMutableArray array];
+    [lines addObject:CLL(@"停充控制探针结果")];
+    [lines addObject:[NSString stringWithFormat:@"device: %@", payload[@"device"] ?: @"-"]];
+    [lines addObject:[NSString stringWithFormat:@"sysver: %@", payload[@"sysver"] ?: @"-"]];
+    [lines addObject:[NSString stringWithFormat:@"jb_type: %@", payload[@"jb_type"] ?: @"-"]];
+    [lines addObject:[NSString stringWithFormat:@"use_smart: %@", payload[@"use_smart"] ?: @"-"]];
+    NSDictionary *summary = [payload[@"summary"] isKindOfClass:[NSDictionary class]] ? payload[@"summary"] : @{};
+    [lines addObject:[NSString stringWithFormat:@"any_effective: %@", summary[@"any_effective"] ?: @"-"]];
+    [lines addObject:[NSString stringWithFormat:@"best_path: %@", summary[@"best_path"] ?: @"-"]];
+    [lines addObject:[NSString stringWithFormat:@"dominant_failure: %@", summary[@"dominant_failure"] ?: @"-"]];
+    if (summary[@"power_note"]) {
+        [lines addObject:[NSString stringWithFormat:@"power_note: %@", summary[@"power_note"]]];
+    }
+    [lines addObject:@""];
+    [lines addObject:CLL(@"分项结果")];
+    NSArray *results = [payload[@"results"] isKindOfClass:[NSArray class]] ? payload[@"results"] : @[];
+    for (NSDictionary *item in results) {
+        if (![item isKindOfClass:[NSDictionary class]]) {
+            continue;
+        }
+        [lines addObject:[NSString stringWithFormat:@"- %@ / %@ => %@ (write_ret=%@, prop_changed=%@, current_stopped=%@)",
+                          item[@"service"] ?: @"-",
+                          item[@"path"] ?: @"-",
+                          item[@"verdict"] ?: @"-",
+                          item[@"write_ret"] ?: @"-",
+                          item[@"prop_changed"] ?: @"-",
+                          item[@"current_stopped"] ?: @"-"]];
+    }
+    [lines addObject:@""];
+    [lines addObject:CLL(@"完整 JSON")];
+    NSError *err = nil;
+    NSData *jsonData = [NSJSONSerialization dataWithJSONObject:payload options:NSJSONWritingPrettyPrinted error:&err];
+    if (jsonData && !err) {
+        NSString *json = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+        if (json.length > 0) {
+            [lines addObject:json];
+        }
+    }
+    return [lines componentsJoinedByString:@"\n"];
+}
+
+- (void)runChargeControlProbeTapped:(UITapGestureRecognizer *)tap {
+    if (self.probeRunning) {
+        return;
+    }
+    UIAlertController *confirm = [UIAlertController alertControllerWithTitle:CLL(@"运行停充控制探针")
+                                                                     message:CLL(@"将短暂尝试多种停充写法并自动恢复。建议插着充电器运行。")
+                                                              preferredStyle:UIAlertControllerStyleAlert];
+    __weak typeof(self) weakSelf = self;
+    [confirm addAction:[UIAlertAction actionWithTitle:CLL(@"取消") style:UIAlertActionStyleCancel handler:nil]];
+    [confirm addAction:[UIAlertAction actionWithTitle:CLL(@"运行") style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        strongSelf.probeRunning = YES;
+        strongSelf.probeResultLabel.text = CLL(@"运行中…");
+        [[CLAPIClient shared] runChargeControlProbeWithWaitMs:500 restore:YES completion:^(NSDictionary * _Nullable response, NSError * _Nullable error) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                strongSelf.probeRunning = NO;
+                if (error || response == nil || [response[@"status"] intValue] != 0) {
+                    strongSelf.probeResultLabel.text = CLL(@"探针失败");
+                    [strongSelf presentInfoAlertWithTitle:CLL(@"探针失败")
+                                                  message:(error.localizedDescription ?: [response[@"msg"] description] ?: CLL(@"daemon 未响应"))];
+                    return;
+                }
+                NSDictionary *data = [response[@"data"] isKindOfClass:[NSDictionary class]] ? response[@"data"] : nil;
+                strongSelf.lastProbePayload = data;
+                NSString *exportText = [strongSelf chargeControlProbeExportTextFromPayload:data];
+                strongSelf.lastProbeSummaryText = exportText;
+                [strongSelf restoreProbeResultLabelText];
+            });
+        }];
+    }]];
+    [self presentViewController:confirm animated:YES completion:nil];
+}
+
+- (void)copyChargeControlProbeResultTapped:(UITapGestureRecognizer *)tap {
+    NSString *text = self.lastProbeSummaryText;
+    if (text.length == 0) {
+        [self presentInfoAlertWithTitle:CLL(@"尚无结果") message:CLL(@"请先运行停充控制探针。")];
+        return;
+    }
+    [UIPasteboard generalPasteboard].string = text;
+    [self presentInfoAlertWithTitle:CLL(@"已复制") message:CLL(@"探针结果已复制到剪贴板。")];
 }
 
 - (void)copyDiagnosticSummaryTapped:(UITapGestureRecognizer *)tap {
