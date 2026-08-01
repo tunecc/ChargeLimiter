@@ -53,12 +53,41 @@ class Ios17OverridePathsTests(unittest.TestCase):
 
     def test_setchargestatus_has_override_branch_and_legacy_fallback(self):
         start = self.source.find("static int setChargeStatus(BOOL flag)")
-        body = self.source[start:start+1600]
+        end = self.source.find("static NSString* desiredThermalSimulationModeForCurrentState")
+        if end < 0:
+            end = self.source.find("static int setBatteryStatus")
+        body = self.source[start:end if end > start else start + 1600]
         self.assertIn("CLCanUseOverrideChargeControl()", body)
-        self.assertIn("writeChargeStatusOverride(serv, flag)", body)
+        # polarity: setChargeStatus flag is charge-enabled; helper takes stop
+        self.assertIn("writeChargeStatusOverride(serv, !flag)", body)
+        self.assertNotIn("writeChargeStatusOverride(serv, flag)", body)
         # 旧回退仍在
         self.assertIn("shouldUsePredictiveInhibitChargePath()", body)
         self.assertIn("writeChargeStatus(serv, flag", body)
+
+    def test_setchargestatus_override_polarity_and_state_sync(self):
+        """Contract: override call uses !flag (stop) and syncs g_chargeCommandEnabled."""
+        start = self.source.find("static int setChargeStatus(BOOL flag)")
+        end = self.source.find("static NSString* desiredThermalSimulationModeForCurrentState")
+        if end < 0:
+            end = self.source.find("static int setBatteryStatus")
+        self.assertGreater(start, -1)
+        self.assertGreater(end, start)
+        body = self.source[start:end]
+
+        self.assertIn("writeChargeStatusOverride(serv, !flag)", body)
+        # Must not pass charge-enabled flag directly as stop
+        self.assertNotIn("writeChargeStatusOverride(serv, flag)", body)
+
+        # Override success block must sync g_chargeCommandEnabled before early return
+        override_idx = body.find("writeChargeStatusOverride(serv, !flag)")
+        self.assertGreater(override_idx, -1)
+        success_block = body[override_idx:]
+        success_ret = success_block.find("return 0;")
+        self.assertGreater(success_ret, -1)
+        early_success = success_block[:success_ret]
+        self.assertIn("g_chargeCommandEnabled = flag;", early_success)
+        self.assertIn("g_lastChargeCommandTs = time(0);", early_success)
 
     def test_setinflowstatus_has_override_branch_and_legacy_fallback(self):
         start = self.source.find("static int setInflowStatus(BOOL flag)")
