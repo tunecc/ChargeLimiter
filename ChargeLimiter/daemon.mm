@@ -1170,6 +1170,19 @@ static kern_return_t setInflowStatusOverride(io_service_t serv, BOOL flag) {
 static io_service_t getIOPMPSServ() {
     static io_service_t serv = IO_OBJECT_NULL;
     if (serv == IO_OBJECT_NULL) {
+        // iOS 17+ 优先匹配新的 AppleSmartBatteryManager（KEXT AppleSmartBatteryManagerEmbedded）。
+        // 旧 AppleSmartBattery / IOPMPowerSource 在 iOS 17 上要么不存在、要么是
+        // 抽象 service（setProperties 对任意写返回 0 不动作）。
+        if (CLIsIOS17OrLater()) {
+            serv = IOServiceGetMatchingService(
+                kIOMasterPortDefault,
+                IOServiceMatching(CLSmartBatteryManagerServiceName().UTF8String));
+            if (serv != IO_OBJECT_NULL) {
+                g_use_smart = YES;
+                return serv;
+            }
+            // iOS 17 但未命中 manager（罕见，如越狱环境 IOService 名被改）：继续回退。
+        }
         BOOL adv_prefer_smart = getLocalBool(@"adv_prefer_smart", NO);
         if (adv_prefer_smart) {
             serv = IOServiceGetMatchingService(kIOMasterPortDefault, IOServiceMatching("AppleSmartBattery")); // >=iPhone8
