@@ -600,14 +600,28 @@ static int CLStartDaemonBestEffort(void) {
 - (void)runChargeControlProbeWithWaitMs:(NSInteger)waitMs
                                 restore:(BOOL)restore
                              completion:(CLAPICallback)completion {
+    [self runChargeControlProbeWithWaitMs:waitMs restore:restore paths:nil services:nil completion:completion];
+}
+
+- (void)runChargeControlProbeWithWaitMs:(NSInteger)waitMs
+                                restore:(BOOL)restore
+                                  paths:(NSArray<NSString *> *)paths
+                               services:(NSArray<NSString *> *)services
+                             completion:(CLAPICallback)completion {
     NSInteger normalizedWait = waitMs;
     if (normalizedWait < 200) normalizedWait = 200;
     if (normalizedWait > 2000) normalizedWait = 2000;
-    NSDictionary *params = @{
+    NSMutableDictionary *params = [@{
         @"api": @"charge_control_probe",
         @"wait_ms": @(normalizedWait),
         @"restore": @(restore),
-    };
+    } mutableCopy];
+    if ([paths isKindOfClass:[NSArray class]] && paths.count > 0) {
+        params[@"paths"] = paths;
+    }
+    if ([services isKindOfClass:[NSArray class]] && services.count > 0) {
+        params[@"services"] = services;
+    }
     // Probe matrix can exceed the shared 5s session; use a dedicated long-lived session.
     // Never restart daemon on probe timeout (would interrupt an in-flight matrix).
     NSURLSessionConfiguration *probeConfig = [NSURLSessionConfiguration defaultSessionConfiguration];
