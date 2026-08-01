@@ -1272,6 +1272,23 @@ static int setInflowStatus(BOOL flag) {
     if (serv == IO_OBJECT_NULL) {
         return -1;
     }
+    // iOS 17+: 禁流用 InflowOverride 替代 ExternalConnected。
+    if (CLCanUseOverrideChargeControl()) {
+        kern_return_t ret = setInflowStatusOverride(serv, flag);
+        if (ret == 0) {
+            g_lastInflowCommandTs = time(0);
+            return 0;
+        }
+        NSFileErrorLog(@"override inflow write failed ret=%d flag=%d, fallback to legacy ExternalConnected", ret, flag);
+        appendPolicyEventHistory(@"charge_path_event",
+                                 g_policyState ?: @"",
+                                 g_policyState ?: @"",
+                                 @"override_inflow_write_failed",
+                                 bat_info,
+                                 @{ @"inflow_flag": @(flag), @"io_return": @(ret) },
+                                 time(0));
+        // 落到下方旧 ExternalConnected 逻辑
+    }
     // iPhone>=8 ExternalConnected重置可消除120秒延迟,且更新系统充电图标
     NSMutableDictionary* props = [NSMutableDictionary new];
     props[@"ExternalConnected"] = @(flag);
@@ -1620,6 +1637,28 @@ static int setChargeStatus(BOOL flag) {
     io_service_t serv = getIOPMPSServ();
     if (serv == IO_OBJECT_NULL) {
         return -1;
+    }
+    // iOS 17+: 优先走 override 控制面（ChargingOverride + PredictiveChargingInhibit）。
+    // 旧 IsCharging/PredictiveChargingInhibit(legacy) 写法在 iOS 17 已被 setProperties 忽略。
+    if (CLCanUseOverrideChargeControl()) {
+        kern_return_t ret = writeChargeStatusOverride(serv, flag);
+        if (ret == 0) {
+            g_lastChargeCommandTs = time(0);
+            return 0;
+        }
+        // override 写失败：记事件后回退旧逻辑，不直接失败。
+        NSDictionary* extras = @{
+            @"charge_flag": @(flag),
+            @"fallback_reason": @"override_write_failed",
+            @"io_return": @(ret),
+        };
+        NSFileErrorLog(@"override charge write failed ret=%d flag=%d, fallback to legacy path", ret, flag);
+        appendPolicyEventHistory(@"charge_path_event",
+                                 g_policyState ?: @"",
+                                 g_policyState ?: @"",
+                                 @"override_charge_write_failed",
+                                 bat_info, extras, time(0));
+        // 落到下方旧逻辑
     }
     BOOL usePredictiveInhibit = shouldUsePredictiveInhibitChargePath();
     kern_return_t ret = writeChargeStatus(serv, flag, usePredictiveInhibit);
