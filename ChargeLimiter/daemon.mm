@@ -1355,10 +1355,17 @@ static kern_return_t writeChargeStatus(io_service_t serv, BOOL flag, BOOL usePre
 
 // Charge control probe helpers (diagnostic-only; user-triggered)
 static NSArray* CLProbeDefaultPaths(void) {
-    return @[@"legacy_is_charging", @"predictive_inhibit", @"external_connected_off"];
+    return @[
+        @"charging_override",
+        @"predictive_inhibit_override",
+        @"inflow_override",
+        @"legacy_is_charging",
+        @"predictive_inhibit",
+        @"external_connected_off",
+    ];
 }
 static NSArray* CLProbeDefaultServices(void) {
-    return @[@"auto", @"IOPMPowerSource", @"AppleSmartBattery"];
+    return @[@"auto", @"AppleSmartBatteryManager", @"IOPMPowerSource", @"AppleSmartBattery"];
 }
 
 static NSString* CLProbeVerdictForResult(kern_return_t writeRet,
@@ -1403,6 +1410,28 @@ static BOOL CLProbePropChangedForPath(NSString* path,
     if ([path isEqualToString:@"external_connected_off"]) {
         return ![safeAfter[@"ExternalConnected"] boolValue] &&
                [safeBefore[@"ExternalConnected"] boolValue];
+    }
+    if ([path isEqualToString:@"charging_override"]) {
+        // override 停充成功标志：after IsCharging 转 NO 或 PredictiveChargingInhibit 转 YES
+        //（取决于内核实现；任一变化即视为 prop_changed）。
+        BOOL afterCharging = [safeAfter[@"IsCharging"] boolValue];
+        BOOL afterInhibit = [safeAfter[@"PredictiveChargingInhibit"] boolValue];
+        BOOL beforeCharging = [safeBefore[@"IsCharging"] boolValue];
+        BOOL beforeInhibit = [safeBefore[@"PredictiveChargingInhibit"] boolValue];
+        return (!afterCharging && beforeCharging) || (afterInhibit && !beforeInhibit);
+    }
+    if ([path isEqualToString:@"predictive_inhibit_override"]) {
+        return [safeAfter[@"PredictiveChargingInhibit"] boolValue] &&
+               ![safeBefore[@"PredictiveChargingInhibit"] boolValue];
+    }
+    if ([path isEqualToString:@"inflow_override"]) {
+        // InflowOverride 禁流成功的可观察信号：InstantAmperage/Amperage 由正转 0/负
+        //（属性层 InflowOverride 本身不一定回读，故以电流 transition 为准）。
+        int beforeCur = getEffectiveBatteryCurrent(safeBefore);
+        int afterCur = getEffectiveBatteryCurrent(safeAfter);
+        BOOL beforeLooks = currentLooksCharging(beforeCur);
+        BOOL afterLooks = currentLooksCharging(afterCur);
+        return beforeLooks && !afterLooks;
     }
     return NO;
 }
@@ -1470,6 +1499,10 @@ static NSString* CLProbeResolvedServiceName(NSString* requested, io_service_t se
         return requested ?: @"";
     }
     if ([requested isEqualToString:@"auto"]) {
+        // iOS 17+: auto 解析为 AppleSmartBatteryManager；否则沿用旧语义。
+        if (CLCanUseOverrideChargeControl()) {
+            return CLSmartBatteryManagerServiceName();
+        }
         return g_use_smart ? @"AppleSmartBattery" : @"IOPMPowerSource";
     }
     return requested ?: @"";
@@ -1499,6 +1532,18 @@ static kern_return_t CLProbeWritePath(io_service_t serv, NSString* path, BOOL st
         props[@"PredictiveChargingInhibit"] = @(stop ? YES : NO);
     } else if ([path isEqualToString:@"external_connected_off"]) {
         props[@"ExternalConnected"] = @(stop ? NO : YES);
+    } else if ([path isEqualToString:@"charging_override"]) {
+        // iOS 17 override 停充：写 ChargingOverride + PredictiveChargingInhibit。
+        // stop=YES → 两者 YES；stop=NO → 两者 NO。
+        NSNumber* v = @(stop ? YES : NO);
+        props[@"ChargingOverride"] = v;
+        props[@"PredictiveChargingInhibit"] = v;
+    } else if ([path isEqualToString:@"predictive_inhibit_override"]) {
+        // 单独写 PredictiveChargingInhibit（override 语义），用于隔离变量。
+        props[@"PredictiveChargingInhibit"] = @(stop ? YES : NO);
+    } else if ([path isEqualToString:@"inflow_override"]) {
+        // iOS 17 禁流：InflowOverride。stop=YES → 禁流(NO)；stop=NO → 恢复(YES)。
+        props[@"InflowOverride"] = @(stop ? NO : YES);
     } else {
         return KERN_INVALID_ARGUMENT;
     }
