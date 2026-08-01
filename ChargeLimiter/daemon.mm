@@ -1099,6 +1099,60 @@ static void refreshTrollStoreBundleCheckTimer(void) {
 }
 
 
+// === iOS 17+ charge control override plane ============================
+// iOS 17 重构了停充控制面：AppleSmartBatteryManager 的 setProperties 只接受
+// ChargingOverride / PredictiveChargingInhibit / OBCChargingInhibit /
+// InflowOverride 等 override key，不再接受 IsCharging / ExternalConnected。
+// 旧路径匹配到的 IOPMPowerSource 抽象 service 对任意写返回 0 不动作。
+static BOOL CLIsIOS17OrLater(void) {
+    // getSysVer 返回形如 "17.1" / "16.6" / ""
+    NSString* v = getSysVer() ?: @"";
+    NSArray* parts = [v componentsSeparatedByString:@"."];
+    NSInteger major = 0;
+    if (parts.count >= 1 && [parts[0] respondsToSelector:@selector(integerValue)]) {
+        major = [parts[0] integerValue];
+    }
+    return major >= 17;
+}
+
+static NSString* CLSmartBatteryManagerServiceName(void) {
+    return @"AppleSmartBatteryManager";
+}
+
+// 进程内缓存：首次 true 后不再重试匹配，避免每次写都做 IOServiceGetMatchingService。
+// 缓存失败不致命，调用方回退旧逻辑。
+static SInt8 g_overrideChargeControlCached = -1; // -1=未知, 0=否, 1=是
+
+static BOOL CLCanUseOverrideChargeControl(void) {
+    if (g_overrideChargeControlCached != -1) {
+        return g_overrideChargeControlCached == 1;
+    }
+    if (!CLIsIOS17OrLater()) {
+        g_overrideChargeControlCached = 0;
+        return NO;
+    }
+    io_service_t serv = IOServiceGetMatchingService(
+        kIOMasterPortDefault,
+        IOServiceMatching(CLSmartBatteryManagerServiceName().UTF8String));
+    BOOL ok = (serv != IO_OBJECT_NULL);
+    if (ok) {
+        IOObjectRelease(serv);
+    }
+    g_overrideChargeControlCached = ok ? 1 : 0;
+    return ok;
+}
+
+// Task 2 填充实现骨架占位（先空实现，保证 Task 1 测试通过函数名存在）。
+static kern_return_t writeChargeStatusOverride(io_service_t serv, BOOL stop) {
+    (void)serv; (void)stop;
+    return KERN_NOT_SUPPORTED; // 占位，Task 2 实现
+}
+
+static kern_return_t setInflowStatusOverride(io_service_t serv, BOOL flag) {
+    (void)serv; (void)flag;
+    return KERN_NOT_SUPPORTED; // 占位，Task 2 实现
+}
+
 static io_service_t getIOPMPSServ() {
     static io_service_t serv = IO_OBJECT_NULL;
     if (serv == IO_OBJECT_NULL) {
