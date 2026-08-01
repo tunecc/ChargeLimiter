@@ -1686,8 +1686,10 @@ static int setChargeStatus(BOOL flag) {
     // iOS 17+: 优先走 override 控制面（ChargingOverride + PredictiveChargingInhibit）。
     // 旧 IsCharging/PredictiveChargingInhibit(legacy) 写法在 iOS 17 已被 setProperties 忽略。
     if (CLCanUseOverrideChargeControl()) {
-        kern_return_t ret = writeChargeStatusOverride(serv, flag);
+        // flag = charge-enabled; override helper takes stop = !chargeEnabled
+        kern_return_t ret = writeChargeStatusOverride(serv, !flag);
         if (ret == 0) {
+            g_chargeCommandEnabled = flag;
             g_lastChargeCommandTs = time(0);
             return 0;
         }
