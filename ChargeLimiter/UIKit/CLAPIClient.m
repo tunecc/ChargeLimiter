@@ -393,7 +393,11 @@ static int CLStartDaemonBestEffort(void) {
 
 #pragma mark - 基础请求
 
-- (void)sendRequestInternal:(NSDictionary *)params allowRetry:(BOOL)allowRetry completion:(CLAPICallback)completion {
+- (void)sendRequestInternal:(NSDictionary *)params
+                 allowRetry:(BOOL)allowRetry
+          allowDaemonRestart:(BOOL)allowDaemonRestart
+                    session:(NSURLSession *)session
+                 completion:(CLAPICallback)completion {
     NSMutableDictionary *effectiveParams = [params mutableCopy];
 #if !CL_USE_MOCK_DATA
     NSString *appDocs = CLProcessLooksLikeTrollStore() ? getAppDocumentsPath_C() : nil;
@@ -407,7 +411,7 @@ static int CLStartDaemonBestEffort(void) {
         NSString *api = effectiveParams[@"api"];
         NSDictionary *response = [self mockResponseForAPI:api params:effectiveParams];
         NSLog(@"[CL-Mock] API: %@ -> %@", api, response[@"status"]);
-        
+
         // 模拟网络延迟
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             if (completion) {
@@ -416,12 +420,13 @@ static int CLStartDaemonBestEffort(void) {
         });
         return;
     }
-    
+
     // 真实请求
+    NSURLSession *activeSession = session ?: self.session;
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:self.baseURL];
     request.HTTPMethod = @"POST";
     [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
-    
+
     NSError *jsonError = nil;
     NSData *jsonData = [NSJSONSerialization dataWithJSONObject:effectiveParams options:0 error:&jsonError];
     if (jsonError) {
@@ -434,12 +439,17 @@ static int CLStartDaemonBestEffort(void) {
         return;
     }
     request.HTTPBody = jsonData;
-    
-    NSURLSessionDataTask *task = [self.session dataTaskWithRequest:request completionHandler:^(NSData * _Nullable data, NSURLResponse * _Nullable response, NSError * _Nullable error) {
+
+    NSURLSessionDataTask *task = [activeSession dataTaskWithRequest:request completionHandler:^(NSData * _Nullable data, NSURLResponse * _Nullable response, NSError * _Nullable error) {
         if (error) {
             NSLog(@"[CL-API] 请求错误: %@", error);
 #if !CL_USE_MOCK_DATA
-            BOOL canRetry = allowRetry && (error.code == NSURLErrorCannotConnectToHost || error.code == NSURLErrorNetworkConnectionLost || error.code == NSURLErrorTimedOut);
+            BOOL reconnectable = (error.code == NSURLErrorCannotConnectToHost ||
+                                  error.code == NSURLErrorNetworkConnectionLost ||
+                                  error.code == NSURLErrorTimedOut);
+            // allowDaemonRestart=NO (e.g. charge_control_probe): never kill/restart daemon,
+            // including on TimedOut — a long matrix is not "daemon dead".
+            BOOL canRetry = allowRetry && allowDaemonRestart && reconnectable;
             if (canRetry) {
                 int rc = CLStartDaemonBestEffort();
                 dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
@@ -453,7 +463,11 @@ static int CLStartDaemonBestEffort(void) {
                     }
                     NSLog(@"[CL-API] retry after daemon start rc=%d portOpened=%d", rc, opened);
                     dispatch_async(dispatch_get_main_queue(), ^{
-                        [self sendRequestInternal:params allowRetry:NO completion:completion];
+                        [self sendRequestInternal:params
+                                       allowRetry:NO
+                                allowDaemonRestart:NO
+                                          session:session
+                                       completion:completion];
                     });
                 });
                 return;
@@ -466,7 +480,7 @@ static int CLStartDaemonBestEffort(void) {
             }
             return;
         }
-        
+
         if (!data) {
             NSLog(@"[CL-API] 无响应数据");
             if (completion) {
@@ -476,7 +490,7 @@ static int CLStartDaemonBestEffort(void) {
             }
             return;
         }
-        
+
         NSError *parseError = nil;
         NSDictionary *responseDict = [NSJSONSerialization JSONObjectWithData:data options:0 error:&parseError];
         if (parseError) {
@@ -488,7 +502,7 @@ static int CLStartDaemonBestEffort(void) {
             }
             return;
         }
-        
+
         if (completion) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 completion(responseDict, nil);
@@ -499,7 +513,11 @@ static int CLStartDaemonBestEffort(void) {
 }
 
 - (void)sendRequest:(NSDictionary *)params completion:(CLAPICallback)completion {
-    [self sendRequestInternal:params allowRetry:YES completion:completion];
+    [self sendRequestInternal:params
+                   allowRetry:YES
+            allowDaemonRestart:YES
+                      session:self.session
+                   completion:completion];
 }
 
 #pragma mark - 便捷方法
@@ -577,6 +595,30 @@ static int CLStartDaemonBestEffort(void) {
 
 - (void)clearStatisticsWithCompletion:(CLAPICallback)completion {
     [self sendRequest:@{@"api": @"clear_statistics"} completion:completion];
+}
+
+- (void)runChargeControlProbeWithWaitMs:(NSInteger)waitMs
+                                restore:(BOOL)restore
+                             completion:(CLAPICallback)completion {
+    NSInteger normalizedWait = waitMs;
+    if (normalizedWait < 200) normalizedWait = 200;
+    if (normalizedWait > 2000) normalizedWait = 2000;
+    NSDictionary *params = @{
+        @"api": @"charge_control_probe",
+        @"wait_ms": @(normalizedWait),
+        @"restore": @(restore),
+    };
+    // Probe matrix can exceed the shared 5s session; use a dedicated long-lived session.
+    // Never restart daemon on probe timeout (would interrupt an in-flight matrix).
+    NSURLSessionConfiguration *probeConfig = [NSURLSessionConfiguration defaultSessionConfiguration];
+    probeConfig.timeoutIntervalForRequest = 30.0;
+    probeConfig.timeoutIntervalForResource = 60.0;
+    NSURLSession *probeSession = [NSURLSession sessionWithConfiguration:probeConfig];
+    [self sendRequestInternal:params
+                   allowRetry:NO
+            allowDaemonRestart:NO
+                      session:probeSession
+                   completion:completion];
 }
 
 - (void)checkDaemonAliveWithCompletion:(void (^)(BOOL))completion {
