@@ -517,6 +517,7 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
 @property (nonatomic, strong) UIStackView *mainStack;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, UILabel *> *valueLabels;
 @property (nonatomic, assign) BOOL probeRunning;
+@property (nonatomic, assign) BOOL lastProbeFailed;
 @property (nonatomic, copy) NSString *lastProbeSummaryText;
 @property (nonatomic, copy) NSDictionary *lastProbePayload;
 @property (nonatomic, weak) UIButton *probeButton; // 若沿用 picker row，可改存 row view
@@ -1147,6 +1148,10 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
         self.probeResultLabel.text = CLL(@"运行中…");
         return;
     }
+    if (self.lastProbeFailed) {
+        self.probeResultLabel.text = CLL(@"探针失败");
+        return;
+    }
     NSDictionary *data = self.lastProbePayload;
     if (![data isKindOfClass:[NSDictionary class]]) {
         self.probeResultLabel.text = CLL(@"尚未运行");
@@ -1227,12 +1232,18 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
             dispatch_async(dispatch_get_main_queue(), ^{
                 strongSelf.probeRunning = NO;
                 if (error || response == nil || [response[@"status"] intValue] != 0) {
-                    strongSelf.probeResultLabel.text = CLL(@"探针失败");
-                    [strongSelf presentInfoAlertWithTitle:CLL(@"探针失败")
-                                                  message:(error.localizedDescription ?: [response[@"msg"] description] ?: CLL(@"daemon 未响应"))];
+                    NSString *errMsg = error.localizedDescription
+                        ?: [response[@"msg"] description]
+                        ?: CLL(@"daemon 未响应");
+                    strongSelf.lastProbeFailed = YES;
+                    strongSelf.lastProbePayload = nil;
+                    strongSelf.lastProbeSummaryText = [NSString stringWithFormat:@"%@\n%@", CLL(@"探针失败"), errMsg];
+                    [strongSelf restoreProbeResultLabelText];
+                    [strongSelf presentInfoAlertWithTitle:CLL(@"探针失败") message:errMsg];
                     return;
                 }
                 NSDictionary *data = [response[@"data"] isKindOfClass:[NSDictionary class]] ? response[@"data"] : nil;
+                strongSelf.lastProbeFailed = NO;
                 strongSelf.lastProbePayload = data;
                 NSString *exportText = [strongSelf chargeControlProbeExportTextFromPayload:data];
                 strongSelf.lastProbeSummaryText = exportText;
