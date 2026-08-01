@@ -1241,6 +1241,91 @@ static kern_return_t writeChargeStatus(io_service_t serv, BOOL flag, BOOL usePre
     return IORegistryEntrySetCFProperties(serv, (__bridge CFTypeRef)props);
 }
 
+// Charge control probe helpers (diagnostic-only; full executor in later task)
+// Known verdicts include @"restore_failed" for restore-path failures.
+static NSArray* CLProbeDefaultPaths(void) {
+    return @[@"legacy_is_charging", @"predictive_inhibit", @"external_connected_off"];
+}
+static NSArray* CLProbeDefaultServices(void) {
+    return @[@"auto", @"IOPMPowerSource", @"AppleSmartBattery"];
+}
+
+static NSString* CLProbeVerdictForResult(kern_return_t writeRet,
+                                         BOOL propChanged,
+                                         BOOL currentStopped,
+                                         BOOL serviceMissing) {
+    if (serviceMissing) {
+        return @"service_missing";
+    }
+    if (writeRet != KERN_SUCCESS) {
+        return @"write_rejected";
+    }
+    if (propChanged && currentStopped) {
+        return @"effective";
+    }
+    if (propChanged && !currentStopped) {
+        return @"prop_only";
+    }
+    return @"write_noop";
+}
+
+static BOOL CLProbePropChangedForPath(NSString* path,
+                                      NSDictionary* before,
+                                      NSDictionary* after) {
+    NSDictionary* safeBefore = before ?: @{};
+    NSDictionary* safeAfter = after ?: @{};
+    (void)safeBefore;
+    if ([path isEqualToString:@"legacy_is_charging"]) {
+        return ![safeAfter[@"IsCharging"] boolValue] &&
+               ![safeAfter[@"PredictiveChargingInhibit"] boolValue];
+    }
+    if ([path isEqualToString:@"predictive_inhibit"]) {
+        return [safeAfter[@"PredictiveChargingInhibit"] boolValue] == YES;
+    }
+    if ([path isEqualToString:@"external_connected_off"]) {
+        return [safeAfter[@"ExternalConnected"] boolValue] == NO;
+    }
+    return NO;
+}
+
+static NSDictionary* CLProbeSummarizeResults(NSArray* results, BOOL hasExternalPower) {
+    BOOL anyEffective = NO;
+    NSString* bestPath = nil;
+    NSMutableDictionary* failCounts = [NSMutableDictionary dictionary];
+    for (NSDictionary* item in results ?: @[]) {
+        NSString* verdict = [item[@"verdict"] description] ?: @"write_noop";
+        if ([verdict isEqualToString:@"effective"]) {
+            anyEffective = YES;
+            if (bestPath == nil) {
+                NSString* service = [item[@"service"] description] ?: @"";
+                NSString* path = [item[@"path"] description] ?: @"";
+                bestPath = [NSString stringWithFormat:@"%@|%@", service, path];
+            }
+            continue;
+        }
+        NSNumber* count = failCounts[verdict] ?: @0;
+        failCounts[verdict] = @(count.integerValue + 1);
+    }
+    NSString* dominantFailure = @"none";
+    NSInteger bestCount = -1;
+    for (NSString* key in failCounts) {
+        NSInteger c = [failCounts[key] integerValue];
+        if (c > bestCount) {
+            bestCount = c;
+            dominantFailure = key;
+        }
+    }
+    NSMutableDictionary* summary = [@{
+        @"any_effective": @(anyEffective),
+        @"best_path": bestPath ?: [NSNull null],
+        @"dominant_failure": dominantFailure,
+    } mutableCopy];
+    if (!hasExternalPower) {
+        summary[@"power_note"] = @"no_external_power";
+    }
+    return summary;
+}
+
 static void markPredictiveInhibitFallbackActive(NSString* reason, NSDictionary* info, NSDictionary* extras, time_t now) {
     if (g_predictiveInhibitFallbackActive) {
         return;
@@ -3115,6 +3200,17 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
         int status = setInflowStatus(flag.boolValue);
         return @{
             @"status": @(status)
+        };
+    } else if ([api isEqualToString:@"charge_control_probe"]) {
+        // Keep helper symbols referenced until full probe executor lands.
+        (void)CLProbeDefaultPaths();
+        (void)CLProbeDefaultServices();
+        (void)CLProbeVerdictForResult;
+        (void)CLProbePropChangedForPath;
+        (void)CLProbeSummarizeResults;
+        return @{
+            @"status": @-11,
+            @"msg": @"not_implemented",
         };
     }
     return @{
