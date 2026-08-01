@@ -520,7 +520,6 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
 @property (nonatomic, assign) BOOL lastProbeFailed;
 @property (nonatomic, copy) NSString *lastProbeSummaryText;
 @property (nonatomic, copy) NSDictionary *lastProbePayload;
-@property (nonatomic, weak) UIButton *probeButton; // 若沿用 picker row，可改存 row view
 @property (nonatomic, strong) UILabel *probeResultLabel;
 @end
 
@@ -1193,13 +1192,22 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
         if (![item isKindOfClass:[NSDictionary class]]) {
             continue;
         }
-        [lines addObject:[NSString stringWithFormat:@"- %@ / %@ => %@ (write_ret=%@, prop_changed=%@, current_stopped=%@)",
-                          item[@"service"] ?: @"-",
-                          item[@"path"] ?: @"-",
-                          item[@"verdict"] ?: @"-",
-                          item[@"write_ret"] ?: @"-",
-                          item[@"prop_changed"] ?: @"-",
-                          item[@"current_stopped"] ?: @"-"]];
+        NSMutableString *itemLine = [NSMutableString stringWithFormat:
+            @"- %@ / %@ => %@ (write_ret=%@, prop_changed=%@, current_stopped=%@",
+            item[@"service"] ?: @"-",
+            item[@"path"] ?: @"-",
+            item[@"verdict"] ?: @"-",
+            item[@"write_ret"] ?: @"-",
+            item[@"prop_changed"] ?: @"-",
+            item[@"current_stopped"] ?: @"-"];
+        if (item[@"current_baseline_not_charging"] != nil) {
+            [itemLine appendFormat:@", current_baseline_not_charging=%@", item[@"current_baseline_not_charging"]];
+        }
+        if (item[@"restore_ret"] != nil) {
+            [itemLine appendFormat:@", restore_ret=%@", item[@"restore_ret"]];
+        }
+        [itemLine appendString:@")"];
+        [lines addObject:itemLine];
     }
     [lines addObject:@""];
     [lines addObject:CLL(@"完整 JSON")];
@@ -1228,7 +1236,7 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
         if (!strongSelf) return;
         strongSelf.probeRunning = YES;
         strongSelf.probeResultLabel.text = CLL(@"运行中…");
-        [[CLAPIClient shared] runChargeControlProbeWithWaitMs:500 restore:YES completion:^(NSDictionary * _Nullable response, NSError * _Nullable error) {
+        [[CLAPIClient shared] runChargeControlProbeWithWaitMs:300 restore:YES completion:^(NSDictionary * _Nullable response, NSError * _Nullable error) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 strongSelf.probeRunning = NO;
                 if (error || response == nil || [response[@"status"] intValue] != 0) {
