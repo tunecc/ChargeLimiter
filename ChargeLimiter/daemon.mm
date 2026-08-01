@@ -1142,15 +1142,29 @@ static BOOL CLCanUseOverrideChargeControl(void) {
     return ok;
 }
 
-// Task 2 填充实现骨架占位（先空实现，保证 Task 1 测试通过函数名存在）。
+// iOS 17 停充：ChargingOverride + PredictiveChargingInhibit 同时写。
+// stop=YES → 两者写 YES（停充）；stop=NO → 两者写 NO（恢复）。
+// 与旧 writeChargeStatus 不同：不写 IsCharging（iOS 17 已不接受）。
 static kern_return_t writeChargeStatusOverride(io_service_t serv, BOOL stop) {
-    (void)serv; (void)stop;
-    return KERN_NOT_SUPPORTED; // 占位，Task 2 实现
+    if (serv == IO_OBJECT_NULL) {
+        return KERN_INVALID_ARGUMENT;
+    }
+    NSNumber* value = @(stop ? YES : NO);
+    NSMutableDictionary* props = [NSMutableDictionary dictionary];
+    props[@"ChargingOverride"] = value;
+    props[@"PredictiveChargingInhibit"] = value;
+    return IORegistryEntrySetCFProperties(serv, (__bridge CFTypeRef)props);
 }
 
+// iOS 17 禁流：InflowOverride 替代 ExternalConnected。
+// flag=YES → 允许流入；flag=NO → 禁流。
 static kern_return_t setInflowStatusOverride(io_service_t serv, BOOL flag) {
-    (void)serv; (void)flag;
-    return KERN_NOT_SUPPORTED; // 占位，Task 2 实现
+    if (serv == IO_OBJECT_NULL) {
+        return KERN_INVALID_ARGUMENT;
+    }
+    NSMutableDictionary* props = [NSMutableDictionary dictionary];
+    props[@"InflowOverride"] = @(flag ? YES : NO);
+    return IORegistryEntrySetCFProperties(serv, (__bridge CFTypeRef)props);
 }
 
 static io_service_t getIOPMPSServ() {
