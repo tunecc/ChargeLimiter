@@ -145,6 +145,16 @@ static int g_holdAdaptiveAverageCurrentmA = 0;
 static time_t g_lastHoldRuntimeBehaviorChangeTs = 0;
 static NSMutableArray<NSNumber*>* g_holdCurrentSamples = nil;
 static BOOL g_predictiveInhibitFallbackActive = NO;
+static BOOL g_chargeControlProbeRunning = NO;
+static NSObject *g_probeLock = nil;
+
+static NSObject *CLProbeGetLock(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        g_probeLock = [[NSObject alloc] init];
+    });
+    return g_probeLock;
+}
 
 static const int kHoldDefaultMonitorIntervalMinutes = 3;
 static const int kHoldMinMonitorIntervalMinutes = 1;
@@ -217,6 +227,7 @@ static void cancelDisableInflowRetry(void);
 static void armDisableInflowRetryIfNeeded(NSDictionary* info, NSString* policyState, BOOL allowStart);
 static void syncSmartChargeCoordination(NSDictionary* info, BOOL isAdaptorConnected);
 static int getEffectiveBatteryCurrent(NSDictionary* info);
+static BOOL currentLooksCharging(int current);
 static void appendPolicyEventHistory(NSString* eventType, NSString* fromState, NSString* toState, NSString* reason, NSDictionary* info, NSDictionary* extras, time_t now);
 static void insertPolicyEventDBData(NSDictionary* event);
 static void migrateStoredPolicyEventsToDBIfNeeded(NSArray* history);
@@ -1173,6 +1184,9 @@ static int getBatInfo(NSDictionary* __strong* pinfo, BOOL slim=YES) {
 }
 
 static int setInflowStatus(BOOL flag) {
+    if (g_chargeControlProbeRunning) {
+        return 0; // 探针期间忽略自动写
+    }
     io_service_t serv = getIOPMPSServ();
     if (serv == IO_OBJECT_NULL) {
         return -1;
@@ -1241,6 +1255,252 @@ static kern_return_t writeChargeStatus(io_service_t serv, BOOL flag, BOOL usePre
     return IORegistryEntrySetCFProperties(serv, (__bridge CFTypeRef)props);
 }
 
+// Charge control probe helpers (diagnostic-only; user-triggered)
+static NSArray* CLProbeDefaultPaths(void) {
+    return @[@"legacy_is_charging", @"predictive_inhibit", @"external_connected_off"];
+}
+static NSArray* CLProbeDefaultServices(void) {
+    return @[@"auto", @"IOPMPowerSource", @"AppleSmartBattery"];
+}
+
+static NSString* CLProbeVerdictForResult(kern_return_t writeRet,
+                                         BOOL propChanged,
+                                         BOOL currentStopped,
+                                         BOOL serviceMissing) {
+    if (serviceMissing) {
+        return @"service_missing";
+    }
+    if (writeRet != KERN_SUCCESS) {
+        return @"write_rejected";
+    }
+    if (propChanged && currentStopped) {
+        return @"effective";
+    }
+    if (propChanged && !currentStopped) {
+        return @"prop_only";
+    }
+    return @"write_noop";
+}
+
+static BOOL CLProbePropChangedForPath(NSString* path,
+                                      NSDictionary* before,
+                                      NSDictionary* after) {
+    NSDictionary* safeBefore = before ?: @{};
+    NSDictionary* safeAfter = after ?: @{};
+    if ([path isEqualToString:@"legacy_is_charging"]) {
+        // Require a real toward-stop transition, not merely already-stopped after.
+        BOOL afterStopped = ![safeAfter[@"IsCharging"] boolValue] &&
+                            ![safeAfter[@"PredictiveChargingInhibit"] boolValue];
+        if (!afterStopped) {
+            return NO;
+        }
+        BOOL beforeCharging = [safeBefore[@"IsCharging"] boolValue];
+        BOOL beforeInhibit = [safeBefore[@"PredictiveChargingInhibit"] boolValue];
+        return beforeCharging || beforeInhibit;
+    }
+    if ([path isEqualToString:@"predictive_inhibit"]) {
+        return [safeAfter[@"PredictiveChargingInhibit"] boolValue] &&
+               ![safeBefore[@"PredictiveChargingInhibit"] boolValue];
+    }
+    if ([path isEqualToString:@"external_connected_off"]) {
+        return ![safeAfter[@"ExternalConnected"] boolValue] &&
+               [safeBefore[@"ExternalConnected"] boolValue];
+    }
+    return NO;
+}
+
+static NSDictionary* CLProbeSummarizeResults(NSArray* results, BOOL hasExternalPower) {
+    BOOL anyEffective = NO;
+    NSString* bestPath = nil;
+    NSMutableDictionary* failCounts = [NSMutableDictionary dictionary];
+    for (NSDictionary* item in results ?: @[]) {
+        NSString* verdict = [item[@"verdict"] description] ?: @"write_noop";
+        if ([verdict isEqualToString:@"effective"]) {
+            anyEffective = YES;
+            if (bestPath == nil) {
+                NSString* service = [item[@"service"] description] ?: @"";
+                NSString* path = [item[@"path"] description] ?: @"";
+                bestPath = [NSString stringWithFormat:@"%@|%@", service, path];
+            }
+            continue;
+        }
+        NSNumber* count = failCounts[verdict] ?: @0;
+        failCounts[verdict] = @(count.integerValue + 1);
+    }
+    NSString* dominantFailure = @"none";
+    NSInteger bestCount = -1;
+    for (NSString* key in failCounts) {
+        NSInteger c = [failCounts[key] integerValue];
+        if (c > bestCount) {
+            bestCount = c;
+            dominantFailure = key;
+        }
+    }
+    NSMutableDictionary* summary = [@{
+        @"any_effective": @(anyEffective),
+        @"best_path": bestPath ?: [NSNull null],
+        @"dominant_failure": dominantFailure,
+    } mutableCopy];
+    if (!hasExternalPower) {
+        summary[@"power_note"] = @"no_external_power";
+    }
+    return summary;
+}
+
+static io_service_t CLProbeCopyServiceNamed(NSString* serviceName) {
+    if ([serviceName isEqualToString:@"auto"]) {
+        io_service_t serv = getIOPMPSServ();
+        if (serv != IO_OBJECT_NULL) {
+            // getIOPMPSServ 返回缓存对象，调用方不要 IOObjectRelease
+            return serv;
+        }
+        return IO_OBJECT_NULL;
+    }
+    if (serviceName.length == 0) {
+        return IO_OBJECT_NULL;
+    }
+    return IOServiceGetMatchingService(kIOMasterPortDefault,
+                                       IOServiceMatching(serviceName.UTF8String));
+}
+
+static BOOL CLProbeServiceNeedsRelease(NSString* serviceName) {
+    return ![serviceName isEqualToString:@"auto"];
+}
+
+static NSString* CLProbeResolvedServiceName(NSString* requested, io_service_t serv) {
+    if (serv == IO_OBJECT_NULL) {
+        return requested ?: @"";
+    }
+    if ([requested isEqualToString:@"auto"]) {
+        return g_use_smart ? @"AppleSmartBattery" : @"IOPMPowerSource";
+    }
+    return requested ?: @"";
+}
+
+static NSDictionary* CLProbeSnapshotFromInfo(NSDictionary* info) {
+    NSDictionary* safe = info ?: @{};
+    return @{
+        @"IsCharging": @([safe[@"IsCharging"] boolValue]),
+        @"PredictiveChargingInhibit": @([safe[@"PredictiveChargingInhibit"] boolValue]),
+        @"ExternalConnected": @([safe[@"ExternalConnected"] boolValue]),
+        @"ExternalChargeCapable": @([safe[@"ExternalChargeCapable"] boolValue]),
+        @"CurrentCapacity": @([safe[@"CurrentCapacity"] intValue]),
+        @"InstantAmperage": @(getEffectiveBatteryCurrent(safe)),
+        @"Amperage": @([safe[@"Amperage"] intValue]),
+        @"AdapterDetails": safe[@"AdapterDetails"] ?: [NSNull null],
+    };
+}
+
+static kern_return_t CLProbeWritePath(io_service_t serv, NSString* path, BOOL stop) {
+    NSMutableDictionary* props = [NSMutableDictionary dictionary];
+    if ([path isEqualToString:@"legacy_is_charging"]) {
+        props[@"IsCharging"] = @(stop ? NO : YES);
+        props[@"PredictiveChargingInhibit"] = @NO;
+    } else if ([path isEqualToString:@"predictive_inhibit"]) {
+        props[@"IsCharging"] = @YES;
+        props[@"PredictiveChargingInhibit"] = @(stop ? YES : NO);
+    } else if ([path isEqualToString:@"external_connected_off"]) {
+        props[@"ExternalConnected"] = @(stop ? NO : YES);
+    } else {
+        return KERN_INVALID_ARGUMENT;
+    }
+    return IORegistryEntrySetCFProperties(serv, (__bridge CFTypeRef)props);
+}
+
+static NSDictionary* CLProbeRunOne(NSString* serviceName, NSString* path, NSInteger waitMs, BOOL restore) {
+    NSString* requestedName = serviceName ?: @"";
+    NSString* safePath = path ?: @"";
+    io_service_t serv = CLProbeCopyServiceNamed(requestedName);
+    NSString* resolvedName = CLProbeResolvedServiceName(requestedName, serv);
+    BOOL needsRelease = CLProbeServiceNeedsRelease(requestedName);
+
+    if (serv == IO_OBJECT_NULL) {
+        NSDictionary* emptySnap = CLProbeSnapshotFromInfo(@{});
+        return @{
+            @"service": resolvedName,
+            @"requested_service": requestedName,
+            @"path": safePath,
+            @"write_ret": @(KERN_FAILURE),
+            @"before": emptySnap,
+            @"after": emptySnap,
+            @"restored": [NSNull null],
+            @"prop_changed": @NO,
+            @"current_stopped": @NO,
+            @"verdict": @"service_missing",
+        };
+    }
+
+    NSDictionary* beforeInfo = nil;
+    getBatInfoWithServ(serv, &beforeInfo);
+    NSDictionary* beforeSnap = CLProbeSnapshotFromInfo(beforeInfo);
+
+    kern_return_t writeRet = CLProbeWritePath(serv, safePath, YES);
+    if (waitMs > 0) {
+        usleep((useconds_t)(waitMs * 1000));
+    }
+
+    NSDictionary* afterInfo = nil;
+    getBatInfoWithServ(serv, &afterInfo);
+    NSDictionary* afterSnap = CLProbeSnapshotFromInfo(afterInfo);
+
+    id restoredSnap = [NSNull null];
+    BOOL didRestore = NO;
+    kern_return_t restoreRet = KERN_SUCCESS;
+    if (restore) {
+        didRestore = YES;
+        restoreRet = CLProbeWritePath(serv, safePath, NO);
+        NSDictionary* restoredInfo = nil;
+        getBatInfoWithServ(serv, &restoredInfo);
+        restoredSnap = CLProbeSnapshotFromInfo(restoredInfo);
+    }
+
+    if (needsRelease && serv != IO_OBJECT_NULL) {
+        IOObjectRelease(serv);
+    }
+
+    BOOL propChanged = CLProbePropChangedForPath(safePath, beforeSnap, afterSnap);
+    int beforeCurrent = getEffectiveBatteryCurrent(beforeInfo ?: @{});
+    int afterCurrent = getEffectiveBatteryCurrent(afterInfo ?: @{});
+    BOOL beforeLooks = currentLooksCharging(beforeCurrent);
+    BOOL afterLooks = currentLooksCharging(afterCurrent);
+    BOOL currentStopped = NO;
+    BOOL baselineNotCharging = NO;
+    if (!beforeLooks) {
+        // before 本就不像充电：不把 current_stopped 算作有效停充证据（需真实 transition）
+        baselineNotCharging = YES;
+        currentStopped = NO;
+    } else {
+        currentStopped = !afterLooks && beforeLooks;
+    }
+
+    NSString* verdict = CLProbeVerdictForResult(writeRet, propChanged, currentStopped, NO);
+    // Only mask with restore_failed when STOP write itself succeeded.
+    // If stop write already failed, keep write_rejected (or other stop verdict).
+    if (didRestore && writeRet == KERN_SUCCESS && restoreRet != KERN_SUCCESS) {
+        verdict = @"restore_failed";
+    }
+
+    NSMutableDictionary* result = [@{
+        @"service": resolvedName,
+        @"requested_service": requestedName,
+        @"path": safePath,
+        @"write_ret": @(writeRet),
+        @"before": beforeSnap,
+        @"after": afterSnap,
+        @"restored": restoredSnap,
+        @"prop_changed": @(propChanged),
+        @"current_stopped": @(currentStopped),
+        @"verdict": verdict,
+    } mutableCopy];
+    if (didRestore) {
+        result[@"restore_ret"] = @(restoreRet);
+    }
+    if (baselineNotCharging) {
+        result[@"current_baseline_not_charging"] = @YES;
+    }
+    return result;
+}
+
 static void markPredictiveInhibitFallbackActive(NSString* reason, NSDictionary* info, NSDictionary* extras, time_t now) {
     if (g_predictiveInhibitFallbackActive) {
         return;
@@ -1273,6 +1533,9 @@ static BOOL shouldFallbackFromPredictiveInhibitStop(BOOL isAdaptorConnected,
 }
 
 static int setChargeStatus(BOOL flag) {
+    if (g_chargeControlProbeRunning) {
+        return 0; // 探针期间忽略自动/手动写
+    }
     io_service_t serv = getIOPMPSServ();
     if (serv == IO_OBJECT_NULL) {
         return -1;
@@ -1327,6 +1590,9 @@ static void syncThermalSimulationModeForCurrentState(NSDictionary* info) {
 }
 
 static int setBatteryStatus(BOOL flag) {
+    if (g_chargeControlProbeRunning) {
+        return 0; // 探针期间忽略自动写
+    }
     int ret = setChargeStatus(flag);
     syncThermalSimulationModeForCurrentState(bat_info);
     return ret;
@@ -3116,6 +3382,92 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
         return @{
             @"status": @(status)
         };
+    } else if ([api isEqualToString:@"charge_control_probe"]) {
+        @synchronized (CLProbeGetLock()) {
+            if (g_chargeControlProbeRunning) {
+                return @{ @"status": @-12, @"msg": @"probe_busy" };
+            }
+            g_chargeControlProbeRunning = YES;
+        }
+        NSDictionary* response = nil;
+        @try {
+            // Default 300ms: 3×3 matrix sleep budget ≈ 2.7s, keeps total near ≤5s design target.
+            NSInteger waitMs = 300;
+            if (nsreq[@"wait_ms"] != nil && [nsreq[@"wait_ms"] respondsToSelector:@selector(integerValue)]) {
+                waitMs = [nsreq[@"wait_ms"] integerValue];
+            }
+            if (waitMs < 200) waitMs = 200;
+            if (waitMs > 2000) waitMs = 2000;
+            BOOL restore = YES;
+            if (nsreq[@"restore"] != nil) {
+                restore = [nsreq[@"restore"] boolValue];
+            }
+            NSArray* paths = nsreq[@"paths"];
+            if (![paths isKindOfClass:[NSArray class]] || paths.count == 0) {
+                paths = CLProbeDefaultPaths();
+            }
+            NSArray* services = nsreq[@"services"];
+            if (![services isKindOfClass:[NSArray class]] || services.count == 0) {
+                services = CLProbeDefaultServices();
+            }
+
+            // Refresh bat_info once so external-power note / history extras are current.
+            getBatInfo(&bat_info);
+            NSMutableArray* results = [NSMutableArray array];
+            BOOL hasExternalPower = hasPotentialExternalPowerSignal(bat_info);
+            // Skip services that resolve to an underlying name already probed (e.g. auto == AppleSmartBattery).
+            NSMutableSet* probedResolvedServices = [NSMutableSet set];
+            for (id serviceObj in services) {
+                NSString* serviceName = [serviceObj isKindOfClass:[NSString class]] ? (NSString*)serviceObj : [serviceObj description];
+                NSString* resolvedPeek = [serviceName isEqualToString:@"auto"]
+                    ? (g_use_smart ? @"AppleSmartBattery" : @"IOPMPowerSource")
+                    : (serviceName ?: @"");
+                if (resolvedPeek.length > 0 && [probedResolvedServices containsObject:resolvedPeek]) {
+                    continue;
+                }
+                if (resolvedPeek.length > 0) {
+                    [probedResolvedServices addObject:resolvedPeek];
+                }
+                for (id pathObj in paths) {
+                    NSString* path = [pathObj isKindOfClass:[NSString class]] ? (NSString*)pathObj : [pathObj description];
+                    NSDictionary* one = CLProbeRunOne(serviceName, path, waitMs, restore);
+                    if (one != nil) {
+                        [results addObject:one];
+                    }
+                }
+            }
+
+            NSDictionary* summary = CLProbeSummarizeResults(results, hasExternalPower);
+            appendPolicyEventHistory(@"charge_path_event",
+                                     g_policyState ?: @"",
+                                     g_policyState ?: @"",
+                                     @"charge_control_probe",
+                                     bat_info,
+                                     @{ @"summary": summary, @"result_count": @(results.count) },
+                                     time(0));
+
+            response = @{
+                @"status": @0,
+                @"data": @{
+                    @"device": getDevMdoel() ?: @"",
+                    @"sysver": getSysVer() ?: @"",
+                    @"jb_type": @(getJBType()),
+                    @"use_smart": @(g_use_smart),
+                    @"probe_ts": @(time(0)),
+                    @"wait_ms": @(waitMs),
+                    @"restore": @(restore),
+                    @"results": results,
+                    @"summary": summary,
+                },
+            };
+        } @finally {
+            @synchronized (CLProbeGetLock()) {
+                g_chargeControlProbeRunning = NO;
+            }
+        }
+        // 探针结束后拉回正常策略（必须在互斥释放后，否则 setBatteryStatus/setInflowStatus 会被短路）
+        refreshBatteryStateAndApplyPolicy();
+        return response ?: @{ @"status": @-11, @"msg": @"probe_failed" };
     }
     return @{
         @"status": @-10
