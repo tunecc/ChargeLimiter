@@ -1287,16 +1287,24 @@ static BOOL CLProbePropChangedForPath(NSString* path,
                                       NSDictionary* after) {
     NSDictionary* safeBefore = before ?: @{};
     NSDictionary* safeAfter = after ?: @{};
-    (void)safeBefore;
     if ([path isEqualToString:@"legacy_is_charging"]) {
-        return ![safeAfter[@"IsCharging"] boolValue] &&
-               ![safeAfter[@"PredictiveChargingInhibit"] boolValue];
+        // Require a real toward-stop transition, not merely already-stopped after.
+        BOOL afterStopped = ![safeAfter[@"IsCharging"] boolValue] &&
+                            ![safeAfter[@"PredictiveChargingInhibit"] boolValue];
+        if (!afterStopped) {
+            return NO;
+        }
+        BOOL beforeCharging = [safeBefore[@"IsCharging"] boolValue];
+        BOOL beforeInhibit = [safeBefore[@"PredictiveChargingInhibit"] boolValue];
+        return beforeCharging || beforeInhibit;
     }
     if ([path isEqualToString:@"predictive_inhibit"]) {
-        return [safeAfter[@"PredictiveChargingInhibit"] boolValue] == YES;
+        return [safeAfter[@"PredictiveChargingInhibit"] boolValue] &&
+               ![safeBefore[@"PredictiveChargingInhibit"] boolValue];
     }
     if ([path isEqualToString:@"external_connected_off"]) {
-        return [safeAfter[@"ExternalConnected"] boolValue] == NO;
+        return ![safeAfter[@"ExternalConnected"] boolValue] &&
+               [safeBefore[@"ExternalConnected"] boolValue];
     }
     return NO;
 }
@@ -1458,9 +1466,9 @@ static NSDictionary* CLProbeRunOne(NSString* serviceName, NSString* path, NSInte
     BOOL currentStopped = NO;
     BOOL baselineNotCharging = NO;
     if (!beforeLooks) {
-        // before 本就不像充电：以 after 不像充电为 stopped，并标记 baseline
+        // before 本就不像充电：不把 current_stopped 算作有效停充证据（需真实 transition）
         baselineNotCharging = YES;
-        currentStopped = !afterLooks;
+        currentStopped = NO;
     } else {
         currentStopped = !afterLooks && beforeLooks;
     }
