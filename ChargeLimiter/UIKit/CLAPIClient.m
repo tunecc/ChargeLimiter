@@ -579,6 +579,20 @@ static int CLStartDaemonBestEffort(void) {
     [self sendRequest:@{@"api": @"clear_statistics"} completion:completion];
 }
 
+- (void)runChargeControlProbeWithWaitMs:(NSInteger)waitMs
+                                restore:(BOOL)restore
+                             completion:(CLAPICallback)completion {
+    NSInteger normalizedWait = waitMs;
+    if (normalizedWait < 200) normalizedWait = 200;
+    if (normalizedWait > 2000) normalizedWait = 2000;
+    NSDictionary *params = @{
+        @"api": @"charge_control_probe",
+        @"wait_ms": @(normalizedWait),
+        @"restore": @(restore),
+    };
+    [self sendRequest:params completion:completion];
+}
+
 - (void)checkDaemonAliveWithCompletion:(void (^)(BOOL))completion {
     [self getConfigWithKey:@"enable" completion:^(NSDictionary * _Nullable response, NSError * _Nullable error) {
         BOOL alive = (response != nil && [response[@"status"] intValue] == 0);
