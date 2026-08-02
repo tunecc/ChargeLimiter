@@ -1405,7 +1405,10 @@ static NSString* CLProbeVerdictForResult(kern_return_t writeRet,
     if (writeRet != KERN_SUCCESS) {
         return @"write_rejected";
     }
-    if (propChanged && currentStopped) {
+    // iOS17: hardware may drop current / flip ChargingOverride bitmask without
+    // flipping the classic IsCharging bool. Treat current stop as effective even
+    // when classic prop_changed is false (deep probe 2026-08-02).
+    if (currentStopped) {
         return @"effective";
     }
     if (propChanged && !currentStopped) {
@@ -1419,47 +1422,72 @@ static BOOL CLProbePropChangedForPath(NSString* path,
                                       NSDictionary* after) {
     NSDictionary* safeBefore = before ?: @{};
     NSDictionary* safeAfter = after ?: @{};
-    if ([path isEqualToString:@"is_charging_only"]) {
-        return ![safeAfter[@"IsCharging"] boolValue] && [safeBefore[@"IsCharging"] boolValue];
-    }
-    if ([path isEqualToString:@"legacy_is_charging"]) {
-        // Require a real toward-stop transition, not merely already-stopped after.
-        BOOL afterStopped = ![safeAfter[@"IsCharging"] boolValue] &&
-                            ![safeAfter[@"PredictiveChargingInhibit"] boolValue];
-        if (!afterStopped) {
-            return NO;
-        }
+    if ([path isEqualToString:@"is_charging_only"] ||
+        [path isEqualToString:@"legacy_is_charging"] ||
+        [path isEqualToString:@"charging_override"]) {
+        // iOS17: hardware may drop current / flip ChargingOverride bitmask while
+        // classic IsCharging stays true. Count any of:
+        //  - IsCharging true→false
+        //  - PCI false→true
+        //  - ChargingOverride integer change
+        //  - current looks-charging → not
+        BOOL afterCharging = [safeAfter[@"IsCharging"] boolValue];
+        BOOL afterInhibit = [safeAfter[@"PredictiveChargingInhibit"] boolValue];
         BOOL beforeCharging = [safeBefore[@"IsCharging"] boolValue];
         BOOL beforeInhibit = [safeBefore[@"PredictiveChargingInhibit"] boolValue];
-        return beforeCharging || beforeInhibit;
+        if ((!afterCharging && beforeCharging) || (afterInhibit && !beforeInhibit)) {
+            return YES;
+        }
+        id beforeCOObj = safeBefore[@"ChargingOverride"];
+        id afterCOObj = safeAfter[@"ChargingOverride"];
+        NSInteger beforeCO = 0;
+        NSInteger afterCO = 0;
+        if (beforeCOObj != nil && beforeCOObj != [NSNull null] &&
+            [beforeCOObj respondsToSelector:@selector(integerValue)]) {
+            beforeCO = [beforeCOObj integerValue];
+        }
+        if (afterCOObj != nil && afterCOObj != [NSNull null] &&
+            [afterCOObj respondsToSelector:@selector(integerValue)]) {
+            afterCO = [afterCOObj integerValue];
+        }
+        if (afterCO != beforeCO) {
+            return YES;
+        }
+        int beforeCur = getEffectiveBatteryCurrent(safeBefore);
+        int afterCur = getEffectiveBatteryCurrent(safeAfter);
+        if (currentLooksCharging(beforeCur) && !currentLooksCharging(afterCur)) {
+            return YES;
+        }
+        return NO;
     }
-    if ([path isEqualToString:@"predictive_inhibit"]) {
-        return [safeAfter[@"PredictiveChargingInhibit"] boolValue] &&
-               ![safeBefore[@"PredictiveChargingInhibit"] boolValue];
+    if ([path isEqualToString:@"predictive_inhibit"] ||
+        [path isEqualToString:@"predictive_inhibit_override"]) {
+        if ([safeAfter[@"PredictiveChargingInhibit"] boolValue] &&
+            ![safeBefore[@"PredictiveChargingInhibit"] boolValue]) {
+            return YES;
+        }
+        id beforeCOObj = safeBefore[@"ChargingOverride"];
+        id afterCOObj = safeAfter[@"ChargingOverride"];
+        NSInteger beforeCO = 0;
+        NSInteger afterCO = 0;
+        if (beforeCOObj != nil && beforeCOObj != [NSNull null] &&
+            [beforeCOObj respondsToSelector:@selector(integerValue)]) {
+            beforeCO = [beforeCOObj integerValue];
+        }
+        if (afterCOObj != nil && afterCOObj != [NSNull null] &&
+            [afterCOObj respondsToSelector:@selector(integerValue)]) {
+            afterCO = [afterCOObj integerValue];
+        }
+        return afterCO != beforeCO;
     }
     if ([path isEqualToString:@"external_connected_off"]) {
         return ![safeAfter[@"ExternalConnected"] boolValue] &&
                [safeBefore[@"ExternalConnected"] boolValue];
     }
-    if ([path isEqualToString:@"charging_override"]) {
-        // 停充成功：IsCharging 转 NO，或 PredictiveChargingInhibit 转 YES
-        BOOL afterCharging = [safeAfter[@"IsCharging"] boolValue];
-        BOOL afterInhibit = [safeAfter[@"PredictiveChargingInhibit"] boolValue];
-        BOOL beforeCharging = [safeBefore[@"IsCharging"] boolValue];
-        BOOL beforeInhibit = [safeBefore[@"PredictiveChargingInhibit"] boolValue];
-        return (!afterCharging && beforeCharging) || (afterInhibit && !beforeInhibit);
-    }
-    if ([path isEqualToString:@"predictive_inhibit_override"]) {
-        return [safeAfter[@"PredictiveChargingInhibit"] boolValue] &&
-               ![safeBefore[@"PredictiveChargingInhibit"] boolValue];
-    }
     if ([path isEqualToString:@"inflow_override"]) {
-        // FieldDiags/OBC inflow inhibit 成功信号：电流由正转 0/负
         int beforeCur = getEffectiveBatteryCurrent(safeBefore);
         int afterCur = getEffectiveBatteryCurrent(safeAfter);
-        BOOL beforeLooks = currentLooksCharging(beforeCur);
-        BOOL afterLooks = currentLooksCharging(afterCur);
-        return beforeLooks && !afterLooks;
+        return currentLooksCharging(beforeCur) && !currentLooksCharging(afterCur);
     }
     return NO;
 }
@@ -1625,6 +1653,15 @@ static NSDictionary* CLProbeRunOne(NSString* serviceName, NSString* path, NSInte
     if (restore) {
         didRestore = YES;
         restoreRet = CLProbeWritePath(serv, safePath, NO);
+        // iOS17: also clear hardware inhibit bitmask if still set after path restore.
+        // Deep probe saw ChargingOverride stick at 1/2/3 after stop writes.
+        NSMutableDictionary* clearProps = [NSMutableDictionary dictionary];
+        clearProps[@"IsCharging"] = @YES;
+        clearProps[@"PredictiveChargingInhibit"] = @NO;
+        kern_return_t clearRet = IORegistryEntrySetCFProperties(serv, (__bridge CFTypeRef)clearProps);
+        if (restoreRet == KERN_SUCCESS && clearRet != KERN_SUCCESS) {
+            restoreRet = clearRet;
+        }
         NSDictionary* restoredInfo = nil;
         getBatInfoWithServ(serv, &restoredInfo);
         restoredSnap = CLProbeSnapshotFromInfo(restoredInfo);
@@ -1666,6 +1703,8 @@ static NSDictionary* CLProbeRunOne(NSString* serviceName, NSString* path, NSInte
         @"restored": restoredSnap,
         @"prop_changed": @(propChanged),
         @"current_stopped": @(currentStopped),
+        @"before_current": @(beforeCurrent),
+        @"after_current": @(afterCurrent),
         @"verdict": verdict,
     } mutableCopy];
     if (didRestore) {
