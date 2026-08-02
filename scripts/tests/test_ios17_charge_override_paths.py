@@ -22,22 +22,26 @@ class Ios17OverridePathsTests(unittest.TestCase):
         for fn in ["writeChargeStatusOverride", "setInflowStatusOverride"]:
             self.assertIn(fn, self.source)
 
-    def test_override_write_sets_both_keys_with_same_value(self):
-        # 源码里 writeChargeStatusOverride 必须同时写 ChargingOverride 与 PredictiveChargingInhibit
-        # 且值来自同一个 stop 表达式（避免 split-brain）。
-        src = self.source
-        # 定位 writeChargeStatusOverride 函数体区间
-        start = src.find("static kern_return_t writeChargeStatusOverride(io_service_t serv, BOOL stop)")
-        end = src.find("static kern_return_t setInflowStatusOverride")
-        body = src[start:end]
-        self.assertIn("props[@\"ChargingOverride\"] = value;", body)
-        self.assertIn("props[@\"PredictiveChargingInhibit\"] = value;", body)
-        self.assertIn("NSNumber* value = @(stop ? YES : NO);", body)
+    def test_override_write_sets_opposite_polarity_keys(self):
+        # iOS17 可写入口：IsCharging + PredictiveChargingInhibit 极性相反
+        start = self.source.find("static kern_return_t writeChargeStatusOverride(io_service_t serv, BOOL stop)")
+        end = self.source.find("static kern_return_t setInflowStatusOverride")
+        body = self.source[start:end]
+        self.assertIn('props[@"IsCharging"] = @(stop ? NO : YES);', body)
+        self.assertIn('props[@"PredictiveChargingInhibit"] = @(stop ? YES : NO);', body)
+        # 不得再写 ChargingOverride 发布属性
+        self.assertNotIn('ChargingOverride', body)
 
-    def test_inflow_override_uses_inflowoverride_key(self):
+
+    def test_inflow_override_uses_fielddiags_keys(self):
         start = self.source.find("static kern_return_t setInflowStatusOverride(io_service_t serv, BOOL flag)")
-        body = self.source[start:start+600]
-        self.assertIn("props[@\"InflowOverride\"] = @(flag ? YES : NO);", body)
+        end = self.source.find("static io_service_t getIOPMPSServ")
+        body = self.source[start:end]
+        self.assertIn('FieldDiagsInflowInhibit', body)
+        self.assertIn('OBCInflowInhibit', body)
+        self.assertNotIn('InflowOverride', body)
+        self.assertIn('NSNumber* inhibit = @(flag ? NO : YES);', body)
+
 
     def test_getiopmpsserv_read_path_not_manager(self):
         """Read path must publish battery props; Manager does not (capacity=0 bug)."""
@@ -149,8 +153,10 @@ class Ios17OverridePathsTests(unittest.TestCase):
         body = self.source[start:end]
         self.assertIn('@"charging_override"', body)
         self.assertIn('@"inflow_override"', body)
-        self.assertIn("ChargingOverride", body)
-        self.assertIn("InflowOverride", body)
+        self.assertIn("IsCharging", body)
+        self.assertIn("FieldDiagsInflowInhibit", body)
+        self.assertNotIn('props[@"ChargingOverride"]', body)
+        self.assertIn("OBCInflowInhibit", body)
 
 
 if __name__ == "__main__":
