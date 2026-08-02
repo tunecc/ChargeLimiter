@@ -1227,7 +1227,7 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
         return;
     }
     UIAlertController *confirm = [UIAlertController alertControllerWithTitle:CLL(@"运行停充控制探针")
-                                                                     message:CLL(@"将短暂尝试多种停充写法并自动恢复。建议插着充电器运行。")
+                                                                     message:CLL(@"将尝试多种停充写法（每条观察约 2 秒）并自动恢复，整轮可能需要 1–2 分钟。请插着充电器运行。")
                                                               preferredStyle:UIAlertControllerStyleAlert];
     __weak typeof(self) weakSelf = self;
     [confirm addAction:[UIAlertAction actionWithTitle:CLL(@"取消") style:UIAlertActionStyleCancel handler:nil]];
@@ -1236,7 +1236,8 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
         if (!strongSelf) return;
         strongSelf.probeRunning = YES;
         strongSelf.probeResultLabel.text = CLL(@"运行中…");
-        [[CLAPIClient shared] runChargeControlProbeWithWaitMs:300 restore:YES completion:^(NSDictionary * _Nullable response, NSError * _Nullable error) {
+        // Deep probe: 2000ms post-write observation so prop_only paths can show late current stop.
+        [[CLAPIClient shared] runChargeControlProbeWithWaitMs:2000 restore:YES completion:^(NSDictionary * _Nullable response, NSError * _Nullable error) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 strongSelf.probeRunning = NO;
                 if (error || response == nil || [response[@"status"] intValue] != 0) {
