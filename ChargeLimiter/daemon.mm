@@ -1100,10 +1100,13 @@ static void refreshTrollStoreBundleCheckTimer(void) {
 
 
 // === iOS 17+ charge control override plane ============================
-// iOS 17 重构了停充控制面：AppleSmartBatteryManager 的 setProperties 只接受
-// ChargingOverride / PredictiveChargingInhibit / OBCChargingInhibit /
-// InflowOverride 等 override key，不再接受 IsCharging / ExternalConnected。
-// 旧路径匹配到的 IOPMPowerSource 抽象 service 对任意写返回 0 不动作。
+// iOS 17 重构了停充控制面。真机探针 + IDA 结论：
+// - 读路径：AppleSmartBattery / IOPMPowerSource（发布 CurrentCapacity 等）
+// - 写路径 service：AppleSmartBattery（Manager 的 setProperties 返回 Unsupported）
+// - 可写 key：IsCharging (CH0C mode1) + PredictiveChargingInhibit (CH0B mode2)，极性相反
+// - 可写禁流 key：FieldDiagsInflowInhibit (CH0J) / OBCInflowInhibit (CH0I)
+// - ChargingOverride / InflowOverride 只是状态发布属性，当 setProperties key 会 BadArgument
+// - 旧 IsCharging-only / ExternalConnected 在部分路径上仍可能 write_noop
 static BOOL CLIsIOS17OrLater(void) {
     // getSysVer 返回形如 "17.1" / "16.6" / ""
     NSString* v = getSysVer() ?: @"";
@@ -1163,28 +1166,32 @@ static io_service_t CLCopyOverrideWriteService(void) {
         IOServiceMatching(CLSmartBatteryManagerServiceName().UTF8String));
 }
 
-// iOS 17 停充：ChargingOverride + PredictiveChargingInhibit 同时写。
-// stop=YES → 两者写 YES（停充）；stop=NO → 两者写 NO（恢复）。
-// 与旧 writeChargeStatus 不同：不写 IsCharging（iOS 17 已不接受）。
+// iOS 17 停充：可写入口是 IsCharging (mode1/CH0C) + PredictiveChargingInhibit (mode2/CH0B)。
+// ChargingOverride 只是状态发布属性，当 setProperties key 会返回 kIOReturnBadArgument
+// （真机 2026-08-02 探针：ChargingOverride → -536870206，PCI 单独写 → 0）。
+// 极性相反：停充 = IsCharging=NO + PredictiveChargingInhibit=YES；
+//           恢复 = IsCharging=YES + PredictiveChargingInhibit=NO。
 static kern_return_t writeChargeStatusOverride(io_service_t serv, BOOL stop) {
     if (serv == IO_OBJECT_NULL) {
         return KERN_INVALID_ARGUMENT;
     }
-    NSNumber* value = @(stop ? YES : NO);
     NSMutableDictionary* props = [NSMutableDictionary dictionary];
-    props[@"ChargingOverride"] = value;
-    props[@"PredictiveChargingInhibit"] = value;
+    props[@"IsCharging"] = @(stop ? NO : YES);
+    props[@"PredictiveChargingInhibit"] = @(stop ? YES : NO);
     return IORegistryEntrySetCFProperties(serv, (__bridge CFTypeRef)props);
 }
 
-// iOS 17 禁流：InflowOverride 替代 ExternalConnected。
-// flag=YES → 允许流入；flag=NO → 禁流。
+// iOS 17 禁流：可写入口是 FieldDiagsInflowInhibit（mode2/CH0J）+ OBCInflowInhibit（mode1/CH0I 备用）。
+// InflowOverride 只是状态发布属性，当 setProperties key 会 BadArgument。
+// flag=YES → 允许流入（inhibit=NO）；flag=NO → 禁流（inhibit=YES）。
 static kern_return_t setInflowStatusOverride(io_service_t serv, BOOL flag) {
     if (serv == IO_OBJECT_NULL) {
         return KERN_INVALID_ARGUMENT;
     }
+    NSNumber* inhibit = @(flag ? NO : YES);
     NSMutableDictionary* props = [NSMutableDictionary dictionary];
-    props[@"InflowOverride"] = @(flag ? YES : NO);
+    props[@"FieldDiagsInflowInhibit"] = inhibit;
+    props[@"OBCInflowInhibit"] = inhibit;
     return IORegistryEntrySetCFProperties(serv, (__bridge CFTypeRef)props);
 }
 
@@ -1280,7 +1287,8 @@ static int setInflowStatus(BOOL flag) {
     if (g_chargeControlProbeRunning) {
         return 0; // 探针期间忽略自动写
     }
-    // iOS 17+: 禁流写到 AppleSmartBattery 的 InflowOverride（与读路径 service 分离）。
+    // iOS 17+: 禁流写到 AppleSmartBattery 的 FieldDiagsInflowInhibit/OBCInflowInhibit。
+    // InflowOverride 是发布属性，不能当 setProperties key（会 BadArgument）。
     if (CLCanUseOverrideChargeControl()) {
         io_service_t overrideServ = CLCopyOverrideWriteService();
         if (overrideServ != IO_OBJECT_NULL) {
@@ -1430,8 +1438,7 @@ static BOOL CLProbePropChangedForPath(NSString* path,
                [safeBefore[@"ExternalConnected"] boolValue];
     }
     if ([path isEqualToString:@"charging_override"]) {
-        // override 停充成功标志：after IsCharging 转 NO 或 PredictiveChargingInhibit 转 YES
-        //（取决于内核实现；任一变化即视为 prop_changed）。
+        // 停充成功：IsCharging 转 NO，或 PredictiveChargingInhibit 转 YES
         BOOL afterCharging = [safeAfter[@"IsCharging"] boolValue];
         BOOL afterInhibit = [safeAfter[@"PredictiveChargingInhibit"] boolValue];
         BOOL beforeCharging = [safeBefore[@"IsCharging"] boolValue];
@@ -1443,8 +1450,7 @@ static BOOL CLProbePropChangedForPath(NSString* path,
                ![safeBefore[@"PredictiveChargingInhibit"] boolValue];
     }
     if ([path isEqualToString:@"inflow_override"]) {
-        // InflowOverride 禁流成功的可观察信号：InstantAmperage/Amperage 由正转 0/负
-        //（属性层 InflowOverride 本身不一定回读，故以电流 transition 为准）。
+        // FieldDiags/OBC inflow inhibit 成功信号：电流由正转 0/负
         int beforeCur = getEffectiveBatteryCurrent(safeBefore);
         int afterCur = getEffectiveBatteryCurrent(safeAfter);
         BOOL beforeLooks = currentLooksCharging(beforeCur);
@@ -1548,17 +1554,20 @@ static kern_return_t CLProbeWritePath(io_service_t serv, NSString* path, BOOL st
     } else if ([path isEqualToString:@"external_connected_off"]) {
         props[@"ExternalConnected"] = @(stop ? NO : YES);
     } else if ([path isEqualToString:@"charging_override"]) {
-        // iOS 17 override 停充：写 ChargingOverride + PredictiveChargingInhibit。
-        // stop=YES → 两者 YES；stop=NO → 两者 NO。
-        NSNumber* v = @(stop ? YES : NO);
-        props[@"ChargingOverride"] = v;
-        props[@"PredictiveChargingInhibit"] = v;
+        // iOS 17 可写停充：IsCharging + PredictiveChargingInhibit 极性相反。
+        // stop=YES → IsCharging=NO, PCI=YES；stop=NO → IsCharging=YES, PCI=NO。
+        // 不要写 ChargingOverride（发布属性，会 BadArgument）。
+        props[@"IsCharging"] = @(stop ? NO : YES);
+        props[@"PredictiveChargingInhibit"] = @(stop ? YES : NO);
     } else if ([path isEqualToString:@"predictive_inhibit_override"]) {
-        // 单独写 PredictiveChargingInhibit（override 语义），用于隔离变量。
+        // 单独写 PredictiveChargingInhibit（mode2），用于隔离变量。
         props[@"PredictiveChargingInhibit"] = @(stop ? YES : NO);
     } else if ([path isEqualToString:@"inflow_override"]) {
-        // iOS 17 禁流：InflowOverride。stop=YES → 禁流(NO)；stop=NO → 恢复(YES)。
-        props[@"InflowOverride"] = @(stop ? NO : YES);
+        // iOS 17 可写禁流：FieldDiagsInflowInhibit / OBCInflowInhibit。
+        // stop=YES → inhibit YES；stop=NO → inhibit NO。
+        NSNumber* inhibit = @(stop ? YES : NO);
+        props[@"FieldDiagsInflowInhibit"] = inhibit;
+        props[@"OBCInflowInhibit"] = inhibit;
     } else {
         return KERN_INVALID_ARGUMENT;
     }
@@ -1694,8 +1703,9 @@ static int setChargeStatus(BOOL flag) {
     if (g_chargeControlProbeRunning) {
         return 0; // 探针期间忽略自动/手动写
     }
-    // iOS 17+: 写到 AppleSmartBattery 的 ChargingOverride（与读路径 service 分离）。
-    // 真机探针证实 Manager setProperties 返回 kIOReturnUnsupported；属性发布 nub 才是写目标。
+    // iOS 17+: 写到 AppleSmartBattery 的 IsCharging+PredictiveChargingInhibit（极性相反）。
+    // ChargingOverride 是发布属性，不能当 setProperties key（真机 BadArgument）。
+    // Manager setProperties 返回 kIOReturnUnsupported。
     if (CLCanUseOverrideChargeControl()) {
         io_service_t overrideServ = CLCopyOverrideWriteService();
         if (overrideServ != IO_OBJECT_NULL) {
