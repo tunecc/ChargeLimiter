@@ -47,3 +47,4 @@ outputs
 AGENTS.md
 .vibeskills
 scripts/tests
+.claude/worktrees/
