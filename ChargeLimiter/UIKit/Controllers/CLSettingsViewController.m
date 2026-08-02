@@ -4000,7 +4000,8 @@ static UIViewController *CLTopVisibleViewController(void) {
 
     self.statusLabel.text = statusText ?: @"";
     self.percentage = manager.currentCapacity;
-    self.isCharging = manager.isCharging;
+    // 与 CLManagerLooksChargingForDisplay 对齐：iOS17 sticky IsCharging 不能驱动 UI 充电态
+    self.isCharging = CLManagerLooksChargingForDisplay(manager);
 
     CLBatteryVisualState nextState = [self visualStateForManager:manager];
     BOOL stateChanged = (nextState != (CLBatteryVisualState)self.visualState);
@@ -6353,8 +6354,30 @@ static BOOL CLManagerLooksChargingForDisplay(CLBatteryManager *manager) {
     if (!manager) {
         return NO;
     }
+    // iOS 17 上有效停充后 IsCharging 常保持 true（电流已 < 阈值）。
+    // 显示层必须以电流 + daemon 命令/策略为准，不能单信系统 IsCharging。
     NSInteger current = CLEffectiveBatteryCurrentForManager(manager);
-    return manager.isCharging || manager.holdCharging || current > CLDisplayChargingThresholdmA;
+    if (current > CLDisplayChargingThresholdmA) {
+        return YES;
+    }
+    if (manager.holdCharging) {
+        return YES;
+    }
+    // 仅在 daemon 仍允许充电、且不在停充/保持策略时，才信 IsCharging。
+    if (!manager.isCharging || !manager.chargeCommandEnabled) {
+        return NO;
+    }
+    if (manager.holdActive || manager.predictiveChargingInhibitActive) {
+        return NO;
+    }
+    NSString *policyState = [manager.policyState isKindOfClass:[NSString class]] ? manager.policyState : @"";
+    if ([policyState isEqualToString:@"hold"]
+        || [policyState isEqualToString:@"stopped"]
+        || [policyState isEqualToString:@"temp_paused"]
+        || [policyState isEqualToString:@"no_inflow"]) {
+        return NO;
+    }
+    return YES;
 }
 
 static BOOL CLManagerLooksDischargingForDisplay(CLBatteryManager *manager) {
