@@ -622,11 +622,11 @@ static int CLStartDaemonBestEffort(void) {
     if ([services isKindOfClass:[NSArray class]] && services.count > 0) {
         params[@"services"] = services;
     }
-    // Probe matrix can exceed the shared 5s session; use a dedicated long-lived session.
-    // Never restart daemon on probe timeout (would interrupt an in-flight matrix).
+    // Deep probe matrix (7 paths × 3 services × 2s waits) can run ~40–90s.
+    // Dedicated long-lived session; never restart daemon on probe timeout.
     NSURLSessionConfiguration *probeConfig = [NSURLSessionConfiguration defaultSessionConfiguration];
-    probeConfig.timeoutIntervalForRequest = 30.0;
-    probeConfig.timeoutIntervalForResource = 60.0;
+    probeConfig.timeoutIntervalForRequest = 120.0;
+    probeConfig.timeoutIntervalForResource = 180.0;
     NSURLSession *probeSession = [NSURLSession sessionWithConfiguration:probeConfig];
     [self sendRequestInternal:params
                    allowRetry:NO
