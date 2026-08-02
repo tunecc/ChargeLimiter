@@ -1119,6 +1119,12 @@ static NSString* CLSmartBatteryManagerServiceName(void) {
     return @"AppleSmartBatteryManager";
 }
 
+// iOS 17 setProperties 目标是 AppleSmartBattery（属性发布 nub），不是 Manager。
+// Manager 可匹配但：1) 不发布 CurrentCapacity 等读属性；2) setProperties 返回 kIOReturnUnsupported。
+static NSString* CLOverrideWriteServiceName(void) {
+    return @"AppleSmartBattery";
+}
+
 // 进程内缓存：首次 true 后不再重试匹配，避免每次写都做 IOServiceGetMatchingService。
 // 缓存失败不致命，调用方回退旧逻辑。
 static SInt8 g_overrideChargeControlCached = -1; // -1=未知, 0=否, 1=是
@@ -1131,15 +1137,30 @@ static BOOL CLCanUseOverrideChargeControl(void) {
         g_overrideChargeControlCached = 0;
         return NO;
     }
+    // 以真正可写 setProperties 的 AppleSmartBattery 为准；Manager 仅作诊断探针目标。
     io_service_t serv = IOServiceGetMatchingService(
         kIOMasterPortDefault,
-        IOServiceMatching(CLSmartBatteryManagerServiceName().UTF8String));
+        IOServiceMatching(CLOverrideWriteServiceName().UTF8String));
     BOOL ok = (serv != IO_OBJECT_NULL);
     if (ok) {
         IOObjectRelease(serv);
     }
     g_overrideChargeControlCached = ok ? 1 : 0;
     return ok;
+}
+
+// 复制一份 override 写 service；调用方必须 IOObjectRelease（与 getIOPMPSServ 缓存对象不同）。
+static io_service_t CLCopyOverrideWriteService(void) {
+    io_service_t serv = IOServiceGetMatchingService(
+        kIOMasterPortDefault,
+        IOServiceMatching(CLOverrideWriteServiceName().UTF8String));
+    if (serv != IO_OBJECT_NULL) {
+        return serv;
+    }
+    // 极端回退：个别环境只有 Manager 名可见
+    return IOServiceGetMatchingService(
+        kIOMasterPortDefault,
+        IOServiceMatching(CLSmartBatteryManagerServiceName().UTF8String));
 }
 
 // iOS 17 停充：ChargingOverride + PredictiveChargingInhibit 同时写。
@@ -1170,21 +1191,12 @@ static kern_return_t setInflowStatusOverride(io_service_t serv, BOOL flag) {
 static io_service_t getIOPMPSServ() {
     static io_service_t serv = IO_OBJECT_NULL;
     if (serv == IO_OBJECT_NULL) {
-        // iOS 17+ 优先匹配新的 AppleSmartBatteryManager（KEXT AppleSmartBatteryManagerEmbedded）。
-        // 旧 AppleSmartBattery / IOPMPowerSource 在 iOS 17 上要么不存在、要么是
-        // 抽象 service（setProperties 对任意写返回 0 不动作）。
-        if (CLIsIOS17OrLater()) {
-            serv = IOServiceGetMatchingService(
-                kIOMasterPortDefault,
-                IOServiceMatching(CLSmartBatteryManagerServiceName().UTF8String));
-            if (serv != IO_OBJECT_NULL) {
-                g_use_smart = YES;
-                return serv;
-            }
-            // iOS 17 但未命中 manager（罕见，如越狱环境 IOService 名被改）：继续回退。
-        }
-        BOOL adv_prefer_smart = getLocalBool(@"adv_prefer_smart", NO);
-        if (adv_prefer_smart) {
+        // 读路径必须用发布电池属性的 service（AppleSmartBattery / IOPMPowerSource）。
+        // 切勿匹配 AppleSmartBatteryManager：它不发布 CurrentCapacity/Amperage，
+        // 会导致 UI 电量全 0（真机 2026-08-02 探针已证实）。
+        // iOS 17+ 默认优先 AppleSmartBattery（override 写目标与属性面一致）。
+        BOOL try_smart = getLocalBool(@"adv_prefer_smart", NO) || CLIsIOS17OrLater();
+        if (try_smart) {
             serv = IOServiceGetMatchingService(kIOMasterPortDefault, IOServiceMatching("AppleSmartBattery")); // >=iPhone8
         }
         if (serv != IO_OBJECT_NULL) {
@@ -1268,26 +1280,30 @@ static int setInflowStatus(BOOL flag) {
     if (g_chargeControlProbeRunning) {
         return 0; // 探针期间忽略自动写
     }
+    // iOS 17+: 禁流写到 AppleSmartBattery 的 InflowOverride（与读路径 service 分离）。
+    if (CLCanUseOverrideChargeControl()) {
+        io_service_t overrideServ = CLCopyOverrideWriteService();
+        if (overrideServ != IO_OBJECT_NULL) {
+            kern_return_t ret = setInflowStatusOverride(overrideServ, flag);
+            IOObjectRelease(overrideServ);
+            if (ret == 0) {
+                g_lastInflowCommandTs = time(0);
+                return 0;
+            }
+            NSFileErrorLog(@"override inflow write failed ret=%d flag=%d, fallback to legacy ExternalConnected", ret, flag);
+            appendPolicyEventHistory(@"charge_path_event",
+                                     g_policyState ?: @"",
+                                     g_policyState ?: @"",
+                                     @"override_inflow_write_failed",
+                                     bat_info,
+                                     @{ @"inflow_flag": @(flag), @"io_return": @(ret) },
+                                     time(0));
+            // 落到下方旧 ExternalConnected 逻辑
+        }
+    }
     io_service_t serv = getIOPMPSServ();
     if (serv == IO_OBJECT_NULL) {
         return -1;
-    }
-    // iOS 17+: 禁流用 InflowOverride 替代 ExternalConnected。
-    if (CLCanUseOverrideChargeControl()) {
-        kern_return_t ret = setInflowStatusOverride(serv, flag);
-        if (ret == 0) {
-            g_lastInflowCommandTs = time(0);
-            return 0;
-        }
-        NSFileErrorLog(@"override inflow write failed ret=%d flag=%d, fallback to legacy ExternalConnected", ret, flag);
-        appendPolicyEventHistory(@"charge_path_event",
-                                 g_policyState ?: @"",
-                                 g_policyState ?: @"",
-                                 @"override_inflow_write_failed",
-                                 bat_info,
-                                 @{ @"inflow_flag": @(flag), @"io_return": @(ret) },
-                                 time(0));
-        // 落到下方旧 ExternalConnected 逻辑
     }
     // iPhone>=8 ExternalConnected重置可消除120秒延迟,且更新系统充电图标
     NSMutableDictionary* props = [NSMutableDictionary new];
@@ -1365,7 +1381,9 @@ static NSArray* CLProbeDefaultPaths(void) {
     ];
 }
 static NSArray* CLProbeDefaultServices(void) {
-    return @[@"auto", @"AppleSmartBatteryManager", @"IOPMPowerSource", @"AppleSmartBattery"];
+    // auto = 读路径 service（AppleSmartBattery / IOPMPowerSource）。
+    // 写面探针显式测 AppleSmartBattery（override setProperties 目标）与 Manager（对照）。
+    return @[@"auto", @"AppleSmartBattery", @"AppleSmartBatteryManager", @"IOPMPowerSource"];
 }
 
 static NSString* CLProbeVerdictForResult(kern_return_t writeRet,
@@ -1499,10 +1517,7 @@ static NSString* CLProbeResolvedServiceName(NSString* requested, io_service_t se
         return requested ?: @"";
     }
     if ([requested isEqualToString:@"auto"]) {
-        // iOS 17+: auto 解析为 AppleSmartBatteryManager；否则沿用旧语义。
-        if (CLCanUseOverrideChargeControl()) {
-            return CLSmartBatteryManagerServiceName();
-        }
+        // auto 永远解析为读路径实际 service（getIOPMPSServ 结果），不伪装成 Manager。
         return g_use_smart ? @"AppleSmartBattery" : @"IOPMPowerSource";
     }
     return requested ?: @"";
@@ -1679,33 +1694,37 @@ static int setChargeStatus(BOOL flag) {
     if (g_chargeControlProbeRunning) {
         return 0; // 探针期间忽略自动/手动写
     }
+    // iOS 17+: 写到 AppleSmartBattery 的 ChargingOverride（与读路径 service 分离）。
+    // 真机探针证实 Manager setProperties 返回 kIOReturnUnsupported；属性发布 nub 才是写目标。
+    if (CLCanUseOverrideChargeControl()) {
+        io_service_t overrideServ = CLCopyOverrideWriteService();
+        if (overrideServ != IO_OBJECT_NULL) {
+            // flag = charge-enabled; override helper takes stop = !chargeEnabled
+            kern_return_t ret = writeChargeStatusOverride(overrideServ, !flag);
+            IOObjectRelease(overrideServ);
+            if (ret == 0) {
+                g_chargeCommandEnabled = flag;
+                g_lastChargeCommandTs = time(0);
+                return 0;
+            }
+            // override 写失败：记事件后回退旧逻辑，不直接失败。
+            NSDictionary* extras = @{
+                @"charge_flag": @(flag),
+                @"fallback_reason": @"override_write_failed",
+                @"io_return": @(ret),
+            };
+            NSFileErrorLog(@"override charge write failed ret=%d flag=%d, fallback to legacy path", ret, flag);
+            appendPolicyEventHistory(@"charge_path_event",
+                                     g_policyState ?: @"",
+                                     g_policyState ?: @"",
+                                     @"override_charge_write_failed",
+                                     bat_info, extras, time(0));
+            // 落到下方旧逻辑
+        }
+    }
     io_service_t serv = getIOPMPSServ();
     if (serv == IO_OBJECT_NULL) {
         return -1;
-    }
-    // iOS 17+: 优先走 override 控制面（ChargingOverride + PredictiveChargingInhibit）。
-    // 旧 IsCharging/PredictiveChargingInhibit(legacy) 写法在 iOS 17 已被 setProperties 忽略。
-    if (CLCanUseOverrideChargeControl()) {
-        // flag = charge-enabled; override helper takes stop = !chargeEnabled
-        kern_return_t ret = writeChargeStatusOverride(serv, !flag);
-        if (ret == 0) {
-            g_chargeCommandEnabled = flag;
-            g_lastChargeCommandTs = time(0);
-            return 0;
-        }
-        // override 写失败：记事件后回退旧逻辑，不直接失败。
-        NSDictionary* extras = @{
-            @"charge_flag": @(flag),
-            @"fallback_reason": @"override_write_failed",
-            @"io_return": @(ret),
-        };
-        NSFileErrorLog(@"override charge write failed ret=%d flag=%d, fallback to legacy path", ret, flag);
-        appendPolicyEventHistory(@"charge_path_event",
-                                 g_policyState ?: @"",
-                                 g_policyState ?: @"",
-                                 @"override_charge_write_failed",
-                                 bat_info, extras, time(0));
-        // 落到下方旧逻辑
     }
     BOOL usePredictiveInhibit = shouldUsePredictiveInhibitChargePath();
     kern_return_t ret = writeChargeStatus(serv, flag, usePredictiveInhibit);
@@ -3586,6 +3605,8 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             NSMutableSet* probedResolvedServices = [NSMutableSet set];
             for (id serviceObj in services) {
                 NSString* serviceName = [serviceObj isKindOfClass:[NSString class]] ? (NSString*)serviceObj : [serviceObj description];
+                // auto 解析必须与 CLProbeResolvedServiceName 一致，避免把 auto 错记成 Manager
+                // 从而跳过真正的 AppleSmartBattery 探针（真机 2026-08-02 复现）。
                 NSString* resolvedPeek = [serviceName isEqualToString:@"auto"]
                     ? (g_use_smart ? @"AppleSmartBattery" : @"IOPMPowerSource")
                     : (serviceName ?: @"");
