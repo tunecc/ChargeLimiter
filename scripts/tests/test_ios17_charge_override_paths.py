@@ -39,16 +39,38 @@ class Ios17OverridePathsTests(unittest.TestCase):
         body = self.source[start:start+600]
         self.assertIn("props[@\"InflowOverride\"] = @(flag ? YES : NO);", body)
 
-    def test_getiopmpsserv_prefers_manager_on_ios17(self):
+    def test_getiopmpsserv_read_path_not_manager(self):
+        """Read path must publish battery props; Manager does not (capacity=0 bug)."""
         src = self.source
         start = src.find("static io_service_t getIOPMPSServ()")
         end = src.find("static NSDictionary* getBatSlimInfo")
         body = src[start:end]
-        self.assertIn("CLIsIOS17OrLater()", body)
-        self.assertIn("CLSmartBatteryManagerServiceName().UTF8String", body)
-        # 旧回退仍保留
         self.assertIn("AppleSmartBattery", body)
         self.assertIn("IOPMPowerSource", body)
+        # Must NOT match Manager in the read-path function body
+        self.assertNotIn("CLSmartBatteryManagerServiceName()", body)
+        self.assertNotIn('IOServiceMatching("AppleSmartBatteryManager")', body)
+        # iOS17 still prefers smart for read when available
+        self.assertIn("CLIsIOS17OrLater()", body)
+
+    def test_override_write_service_is_apple_smart_battery(self):
+        self.assertIn("CLOverrideWriteServiceName", self.source)
+        self.assertIn("CLCopyOverrideWriteService", self.source)
+        start = self.source.find("static NSString* CLOverrideWriteServiceName(void)")
+        body = self.source[start:start+200]
+        self.assertIn('@"AppleSmartBattery"', body)
+
+    def test_setchargestatus_writes_via_override_copy_service(self):
+        start = self.source.find("static int setChargeStatus(BOOL flag)")
+        end = self.source.find("static NSString* desiredThermalSimulationModeForCurrentState")
+        if end < 0:
+            end = start + 2500
+        body = self.source[start:end]
+        self.assertIn("CLCopyOverrideWriteService()", body)
+        self.assertIn("writeChargeStatusOverride(overrideServ, !flag)", body)
+        self.assertIn("IOObjectRelease(overrideServ)", body)
+        # Must not write override using the read-path serv variable as sole target
+        self.assertNotIn("writeChargeStatusOverride(serv, !flag)", body)
 
 
     def test_setchargestatus_has_override_branch_and_legacy_fallback(self):
@@ -59,8 +81,9 @@ class Ios17OverridePathsTests(unittest.TestCase):
         body = self.source[start:end if end > start else start + 1600]
         self.assertIn("CLCanUseOverrideChargeControl()", body)
         # polarity: setChargeStatus flag is charge-enabled; helper takes stop
-        self.assertIn("writeChargeStatusOverride(serv, !flag)", body)
+        self.assertIn("writeChargeStatusOverride(overrideServ, !flag)", body)
         self.assertNotIn("writeChargeStatusOverride(serv, flag)", body)
+        self.assertNotIn("writeChargeStatusOverride(serv, !flag)", body)
         # 旧回退仍在
         self.assertIn("shouldUsePredictiveInhibitChargePath()", body)
         self.assertIn("writeChargeStatus(serv, flag", body)
@@ -75,12 +98,13 @@ class Ios17OverridePathsTests(unittest.TestCase):
         self.assertGreater(end, start)
         body = self.source[start:end]
 
-        self.assertIn("writeChargeStatusOverride(serv, !flag)", body)
-        # Must not pass charge-enabled flag directly as stop
+        self.assertIn("writeChargeStatusOverride(overrideServ, !flag)", body)
+        # Must not pass charge-enabled flag directly as stop, nor write via read-path serv
         self.assertNotIn("writeChargeStatusOverride(serv, flag)", body)
+        self.assertNotIn("writeChargeStatusOverride(serv, !flag)", body)
 
         # Override success block must sync g_chargeCommandEnabled before early return
-        override_idx = body.find("writeChargeStatusOverride(serv, !flag)")
+        override_idx = body.find("writeChargeStatusOverride(overrideServ, !flag)")
         self.assertGreater(override_idx, -1)
         success_block = body[override_idx:]
         success_ret = success_block.find("return 0;")
@@ -91,11 +115,15 @@ class Ios17OverridePathsTests(unittest.TestCase):
 
     def test_setinflowstatus_has_override_branch_and_legacy_fallback(self):
         start = self.source.find("static int setInflowStatus(BOOL flag)")
-        body = self.source[start:start+1200]
+        end = self.source.find("static BOOL isAdaptorConnect")
+        if end < 0:
+            end = start + 2500
+        body = self.source[start:end]
         self.assertIn("CLCanUseOverrideChargeControl()", body)
-        self.assertIn("setInflowStatusOverride(serv, flag)", body)
+        self.assertIn("setInflowStatusOverride(overrideServ, flag)", body)
+        self.assertIn("CLCopyOverrideWriteService()", body)
         # 旧 ExternalConnected 回退仍在
-        self.assertIn("props[@\"ExternalConnected\"]", body)
+        self.assertIn('props[@"ExternalConnected"]', body)
 
     def test_probe_default_paths_include_override(self):
         start = self.source.find("static NSArray* CLProbeDefaultPaths(void)")
@@ -105,8 +133,15 @@ class Ios17OverridePathsTests(unittest.TestCase):
 
     def test_probe_default_services_include_manager(self):
         start = self.source.find("static NSArray* CLProbeDefaultServices(void)")
-        body = self.source[start:start+300]
+        body = self.source[start:start+400]
         self.assertIn('@"AppleSmartBatteryManager"', body)
+        self.assertIn('@"AppleSmartBattery"', body)
+        self.assertIn('@"IOPMPowerSource"', body)
+        # auto must come first; AppleSmartBattery before Manager so write target is probed early
+        auto_i = body.find('@"auto"')
+        smart_i = body.find('@"AppleSmartBattery"')
+        mgr_i = body.find('@"AppleSmartBatteryManager"')
+        self.assertTrue(0 <= auto_i < smart_i < mgr_i)
 
     def test_probe_write_path_handles_override(self):
         start = self.source.find("static kern_return_t CLProbeWritePath(")
