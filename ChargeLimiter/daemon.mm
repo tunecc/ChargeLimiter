@@ -1222,7 +1222,7 @@ static NSDictionary* getBatSlimInfo(NSDictionary* info) {
     NSMutableDictionary* filtered_info = [NSMutableDictionary dictionary];
     NSArray* keep = @[
         @"Amperage", @"AppleRawCurrentCapacity", @"BatteryInstalled", @"BootVoltage", @"CurrentCapacity", @"CycleCount", @"DesignCapacity", @"ExternalChargeCapable", @"ExternalConnected",
-        @"InstantAmperage", @"IsCharging", @"NominalChargeCapacity", @"PostChargeWaitSeconds", @"PostDischargeWaitSeconds", @"PredictiveChargingInhibit", @"Serial", @"Temperature",
+        @"InstantAmperage", @"IsCharging", @"ChargingOverride", @"NotChargingReason", @"NominalChargeCapacity", @"PostChargeWaitSeconds", @"PostDischargeWaitSeconds", @"PredictiveChargingInhibit", @"Serial", @"Temperature",
         @"UpdateTime", @"VirtualTemperature", @"Voltage"];
     for (NSString* key in info) {
         if ([keep containsObject:key]) {
@@ -1380,10 +1380,11 @@ static kern_return_t writeChargeStatus(io_service_t serv, BOOL flag, BOOL usePre
 // Charge control probe helpers (diagnostic-only; user-triggered)
 static NSArray* CLProbeDefaultPaths(void) {
     return @[
+        @"is_charging_only",
+        @"legacy_is_charging",
         @"charging_override",
         @"predictive_inhibit_override",
         @"inflow_override",
-        @"legacy_is_charging",
         @"predictive_inhibit",
         @"external_connected_off",
     ];
@@ -1418,6 +1419,9 @@ static BOOL CLProbePropChangedForPath(NSString* path,
                                       NSDictionary* after) {
     NSDictionary* safeBefore = before ?: @{};
     NSDictionary* safeAfter = after ?: @{};
+    if ([path isEqualToString:@"is_charging_only"]) {
+        return ![safeAfter[@"IsCharging"] boolValue] && [safeBefore[@"IsCharging"] boolValue];
+    }
     if ([path isEqualToString:@"legacy_is_charging"]) {
         // Require a real toward-stop transition, not merely already-stopped after.
         BOOL afterStopped = ![safeAfter[@"IsCharging"] boolValue] &&
@@ -1533,6 +1537,8 @@ static NSDictionary* CLProbeSnapshotFromInfo(NSDictionary* info) {
     NSDictionary* safe = info ?: @{};
     return @{
         @"IsCharging": @([safe[@"IsCharging"] boolValue]),
+        @"ChargingOverride": safe[@"ChargingOverride"] ?: [NSNull null],
+        @"NotChargingReason": safe[@"NotChargingReason"] ?: [NSNull null],
         @"PredictiveChargingInhibit": @([safe[@"PredictiveChargingInhibit"] boolValue]),
         @"ExternalConnected": @([safe[@"ExternalConnected"] boolValue]),
         @"ExternalChargeCapable": @([safe[@"ExternalChargeCapable"] boolValue]),
@@ -1545,7 +1551,10 @@ static NSDictionary* CLProbeSnapshotFromInfo(NSDictionary* info) {
 
 static kern_return_t CLProbeWritePath(io_service_t serv, NSString* path, BOOL stop) {
     NSMutableDictionary* props = [NSMutableDictionary dictionary];
-    if ([path isEqualToString:@"legacy_is_charging"]) {
+    if ([path isEqualToString:@"is_charging_only"]) {
+        // Single-key write: only IsCharging. Isolates whether PCI co-write blocks effect.
+        props[@"IsCharging"] = @(stop ? NO : YES);
+    } else if ([path isEqualToString:@"legacy_is_charging"]) {
         props[@"IsCharging"] = @(stop ? NO : YES);
         props[@"PredictiveChargingInhibit"] = @NO;
     } else if ([path isEqualToString:@"predictive_inhibit"]) {
@@ -3587,8 +3596,9 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
         }
         NSDictionary* response = nil;
         @try {
-            // Default 300ms: 3×3 matrix sleep budget ≈ 2.7s, keeps total near ≤5s design target.
-            NSInteger waitMs = 300;
+            // Deep probe default 2000ms: give hardware time to react after prop-only writes.
+            // Matrix is larger now; total time can exceed 5s — acceptable for diagnostic.
+            NSInteger waitMs = 2000;
             if (nsreq[@"wait_ms"] != nil && [nsreq[@"wait_ms"] respondsToSelector:@selector(integerValue)]) {
                 waitMs = [nsreq[@"wait_ms"] integerValue];
             }

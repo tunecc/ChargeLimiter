@@ -132,7 +132,7 @@ class Ios17OverridePathsTests(unittest.TestCase):
     def test_probe_default_paths_include_override(self):
         start = self.source.find("static NSArray* CLProbeDefaultPaths(void)")
         body = self.source[start:start+400]
-        for p in ["charging_override", "predictive_inhibit_override", "inflow_override"]:
+        for p in ["is_charging_only", "charging_override", "predictive_inhibit_override", "inflow_override"]:
             self.assertIn(f'@"{p}"', body)
 
     def test_probe_default_services_include_manager(self):
@@ -158,6 +158,13 @@ class Ios17OverridePathsTests(unittest.TestCase):
         self.assertNotIn('props[@"ChargingOverride"]', body)
         self.assertIn("OBCInflowInhibit", body)
 
+
+    def test_probe_default_wait_ms_is_2000(self):
+        start = self.source.find('} else if ([api isEqualToString:@"charge_control_probe"])')
+        if start < 0:
+            start = self.source.find('charge_control_probe')
+        body = self.source[start:start+1200]
+        self.assertIn("NSInteger waitMs = 2000;", body)
 
 if __name__ == "__main__":
     unittest.main()
