@@ -134,6 +134,44 @@ clean_known_outputs() {
   find "$OUT_DIR" -maxdepth 1 -type f -name 'ChargeLimiter_*' -delete
 }
 
+# Ensure local link stubs under ChargeLimiter/ for Xcode LIBRARY_SEARCH_PATHS
+# ($(PROJECT_DIR)/ChargeLimiter). Prefer Theos vendor paths; never commit these.
+ensure_local_libroot_stubs() {
+  dest_a="$ROOT_DIR/ChargeLimiter/libroot.a"
+  dest_tbd="$ROOT_DIR/ChargeLimiter/libroothide.tbd"
+
+  if [ ! -f "$dest_a" ]; then
+    for candidate in \
+      /opt/theos/vendor/lib/iphone/roothide/libroot.a \
+      /opt/theos/vendor/lib/libroot.a \
+      /opt/theos/vendor/lib/iphone/rootless/libroot.a \
+      /opt/theos_roothide/vendor/lib/iphone/roothide/libroot.a \
+      /opt/theos_roothide/vendor/lib/libroot.a
+    do
+      if [ -f "$candidate" ]; then
+        cp -a "$candidate" "$dest_a"
+        echo "[INFO] Placed local libroot.a from $candidate"
+        break
+      fi
+    done
+  fi
+
+  if [ ! -f "$dest_tbd" ]; then
+    for candidate in \
+      /opt/theos/vendor/lib/iphone/roothide/libroothide.tbd \
+      /opt/theos/vendor/lib/libroothide.tbd \
+      /opt/theos_roothide/vendor/lib/iphone/roothide/libroothide.tbd \
+      /opt/theos_roothide/vendor/lib/libroothide.tbd
+    do
+      if [ -f "$candidate" ]; then
+        cp -a "$candidate" "$dest_tbd"
+        echo "[INFO] Placed local libroothide.tbd from $candidate"
+        break
+      fi
+    done
+  fi
+}
+
 require_project_build_environment() {
   missing=0
   for header in \
@@ -158,6 +196,26 @@ require_project_build_environment() {
     echo "[ERR] Prepare Theos headers before building. This project searches /opt/theos/vendor/include and /opt/include." >&2
     echo "[ERR] Example: clone Theos to /opt/theos; /opt/include may also point to /opt/theos/vendor/include." >&2
     exit 1
+  fi
+
+  ensure_local_libroot_stubs
+
+  # rootless + native roothide both link -lroot
+  if [ ! -f "$ROOT_DIR/ChargeLimiter/libroot.a" ] \
+    && [ ! -f /opt/theos/vendor/lib/iphone/rootless/libroot.a ] \
+    && [ ! -f /opt/theos/vendor/lib/libroot.a ] \
+    && [ ! -f /opt/theos/vendor/lib/iphone/roothide/libroot.a ]
+  then
+    echo "[ERR] Missing libroot.a for -lroot (rootless/roothide)." >&2
+    echo "[ERR] Place it under /opt/theos/vendor/lib/iphone/roothide/ or /opt/theos/vendor/lib/," >&2
+    echo "[ERR] or let ensure_local_libroot_stubs copy it into ChargeLimiter/libroot.a." >&2
+    exit 1
+  fi
+
+  if [ "$BUILD_NATIVE_ROOTHIDE" = "1" ]; then
+    if [ ! -d /opt/theos/vendor/include/roothide ] && [ ! -f /opt/theos/vendor/include/roothide.h ]; then
+      echo "[WARN] roothide headers not found under /opt/theos/vendor/include/roothide; native build may still link via libroot only." >&2
+    fi
   fi
 }
 
