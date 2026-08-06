@@ -8,6 +8,8 @@
 
 #include "ui.h"
 #include "utils.h"
+#import "CLLocalization.h"
+#import "UIKit/CLAppSettingsStore.h"
 
 // UIKit 原生界面
 #define USE_NATIVE_UIKIT 1
@@ -41,6 +43,7 @@ static BOOL isDarkMode() {
 
 @implementation AppDelegate {
     NSString* initUrl;
+    BOOL _configWriteAlertIsShowing;
 }
 static UIView* _mainWnd = nil;
 static AppDelegate* _app = nil;
@@ -94,7 +97,70 @@ static AppDelegate* _app = nil;
             [_accessController registerWindowWithContextID:_contextId atLevel:windowLevel];
         }
     }
+    // 配置写盘失败桌面通知
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleConfigWriteFailure:)
+                                                 name:CLConfigWriteFailedNotification
+                                               object:nil];
+
+    // 首次启动时从共享 plist / standardUserDefaults 迁移 App 设置到 appdata suite
+    NSError *migrateError = nil;
+    if (![[CLAppSettingsStore shared] migrateIfNeeded:&migrateError]) {
+        NSLog2(@"[CL] AppSettingsStore migration skipped or incomplete: %@", migrateError);
+    }
+
+    CLApplyLanguageFromSettings();
     return YES;
+}
+
+- (void)handleConfigWriteFailure:(NSNotification*)note {
+    @synchronized(self) {
+        if (_configWriteAlertIsShowing) {
+            NSLog2(@"[CL] config write failed (suppressed, alert already shown): %@", note.userInfo);
+            return;
+        }
+        _configWriteAlertIsShowing = YES;
+    }
+    NSLog2(@"[CL] config write failed alert: %@", note.userInfo);
+
+    UIAlertController* alert = [UIAlertController
+        alertControllerWithTitle:CLL(@"保存失败")
+                         message:CLL(@"设置未能保存，已恢复为上一次的值。若反复出现，请重装或修复 ChargeLimiter 数据目录权限。")
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"确定")
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction* _Nonnull action) {
+        @synchronized(self) {
+            self->_configWriteAlertIsShowing = NO;
+        }
+    }]];
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIWindow* keyWindow = nil;
+        for (UIScene* scene in [UIApplication sharedApplication].connectedScenes) {
+            if (scene.activationState != UISceneActivationStateForegroundActive) {
+                continue;
+            }
+            if ([scene isKindOfClass:[UIWindowScene class]]) {
+                keyWindow = ((UIWindowScene*)scene).windows.firstObject;
+                if (keyWindow) {
+                    break;
+                }
+            }
+        }
+        UIViewController* presenter = keyWindow.rootViewController;
+        while (presenter.presentedViewController) {
+            presenter = presenter.presentedViewController;
+        }
+        if (presenter) {
+            [presenter presentViewController:alert animated:YES completion:nil];
+        } else {
+            @synchronized(self) {
+                self->_configWriteAlertIsShowing = NO;
+            }
+            NSLog2(@"[CL] config write failed: no presenter available to show alert");
+        }
+    });
 }
 - (void)speedUpWebView:(UIWebView*)webview { // 优化UIWebView反应速度
     // 不用WKWebView的原因: TrollStore环境下,需要no-container/no-sandbox执行子进程,而WKWebView在iOS>=16下需要container-required才能工作,考虑和越狱的一致性选择UIWebView
@@ -160,7 +226,7 @@ static AppDelegate* _app = nil;
                     [window makeKeyAndVisible];
                     // 从持久存储读取并应用深色模式设置(AppAppearance: 0=跟随系统,1=浅色,2=深色)
                     if (@available(iOS 13.0, *)) {
-                        NSInteger appearance = getLocalInt(@"AppAppearance", 0);
+                        NSInteger appearance = [[CLAppSettingsStore shared] integerForKey:@"AppAppearance" defaultValue:0];
                         window.overrideUserInterfaceStyle = (UIUserInterfaceStyle)appearance;
                     }
                 } else {

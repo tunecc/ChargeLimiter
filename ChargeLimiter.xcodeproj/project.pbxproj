@@ -87,6 +87,10 @@
 		A720B9A92F2F0C0B008B9C91 /* CLSimpleHTTPServer.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9A72F2F0C0B008B9C91 /* CLSimpleHTTPServer.m */; };
 		A720B9AA2F2F0C0C008B9C91 /* CLSimpleHTTPServer.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9A72F2F0C0B008B9C91 /* CLSimpleHTTPServer.m */; };
 		A720B9AB2F2F0C0D008B9C91 /* CLSimpleHTTPServer.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9A72F2F0C0B008B9C91 /* CLSimpleHTTPServer.m */; };
+		A7FF00102F6D001000000001 /* CLLocalization.m in Sources */ = {isa = PBXBuildFile; fileRef = A7FF00012F6D000100000001 /* CLLocalization.m */; };
+		A7FF00112F6D001000000002 /* CLAppSettingsStore.m in Sources */ = {isa = PBXBuildFile; fileRef = A7FF00032F6D000100000003 /* CLAppSettingsStore.m */; };
+		A7FF00122F6D001000000003 /* CLLocalization.m in Sources */ = {isa = PBXBuildFile; fileRef = A7FF00012F6D000100000001 /* CLLocalization.m */; };
+		A7FF00132F6D001000000004 /* CLAppSettingsStore.m in Sources */ = {isa = PBXBuildFile; fileRef = A7FF00032F6D000100000003 /* CLAppSettingsStore.m */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -169,6 +173,10 @@
 		A720B97A2F2F0995008B9C91 /* CLUIKit.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CLUIKit.h; sourceTree = "<group>"; };
 		A720B9A62F2F0C0B008B9C91 /* CLSimpleHTTPServer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CLSimpleHTTPServer.h; sourceTree = "<group>"; };
 		A720B9A72F2F0C0B008B9C91 /* CLSimpleHTTPServer.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = CLSimpleHTTPServer.m; sourceTree = "<group>"; };
+		A7FF00012F6D000100000001 /* CLLocalization.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = CLLocalization.m; sourceTree = "<group>"; };
+		A7FF00002F6D000100000000 /* CLLocalization.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CLLocalization.h; sourceTree = "<group>"; };
+		A7FF00022F6D000100000002 /* CLAppSettingsStore.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CLAppSettingsStore.h; sourceTree = "<group>"; };
+		A7FF00032F6D000100000003 /* CLAppSettingsStore.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = CLAppSettingsStore.m; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -289,6 +297,8 @@
 				18C50C672B6D2D6E00793FA9 /* utils.h */,
 				18C50C652B6D2D5D00793FA9 /* utils.mm */,
 				18658A842BCF7A0200207EF3 /* common.h */,
+				A7FF00002F6D000100000000 /* CLLocalization.h */,
+				A7FF00012F6D000100000001 /* CLLocalization.m */,
 			);
 			path = ChargeLimiter;
 			sourceTree = "<group>";
@@ -351,6 +361,8 @@
 				A720B9782F2F0995008B9C91 /* CLTheme.h */,
 				A720B9792F2F0995008B9C91 /* CLTheme.m */,
 				A720B97A2F2F0995008B9C91 /* CLUIKit.h */,
+				A7FF00022F6D000100000002 /* CLAppSettingsStore.h */,
+				A7FF00032F6D000100000003 /* CLAppSettingsStore.m */,
 			);
 			path = "UIKit";
 			sourceTree = "<group>";
@@ -583,6 +595,8 @@
 				A720B9812F2F0995008B9C91 /* CLAccChargeViewController.m in Sources */,
 				A720B9822F2F0995008B9C91 /* CLAPIClient.m in Sources */,
 				A720B9832F2F0995008B9C91 /* CLTestApp.m in Sources */,
+				A7FF00102F6D001000000001 /* CLLocalization.m in Sources */,
+				A7FF00112F6D001000000002 /* CLAppSettingsStore.m in Sources */,
 				A720B9842F2F0995008B9C91 /* CLAdvancedSettingsViewController.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -602,6 +616,8 @@
 				A720B9A22F2F0995008B9C91 /* CLAccChargeViewController.m in Sources */,
 				A720B9A32F2F0995008B9C91 /* CLAPIClient.m in Sources */,
 				A720B9A42F2F0995008B9C91 /* CLTestApp.m in Sources */,
+				A7FF00122F6D001000000003 /* CLLocalization.m in Sources */,
+				A7FF00132F6D001000000004 /* CLAppSettingsStore.m in Sources */,
 				A720B9A52F2F0995008B9C91 /* CLAdvancedSettingsViewController.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
