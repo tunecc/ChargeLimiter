@@ -3644,49 +3644,6 @@ extern "C" BOOL CLRunLocalizationPersistenceSelfTest(NSString **failureReason) {
 
     return passed;
 }
-
-extern "C" BOOL CLRunAppSettingsStoreSelfTest(NSString **failureReason) {
-    // 在临时对象上验证 CLAppSettingsStore 读写与回滚
-    NSString *tempRoot = [NSTemporaryDirectory() stringByAppendingPathComponent:
-                          [NSString stringWithFormat:@"chargelimiter-selftest-store-%@", NSUUID.UUID.UUIDString]];
-    NSUserDefaults *tmpSuite = [[NSUserDefaults alloc] initWithSuiteName:@"com.chargelimiter.mod.appdata.selftest"];
-    CLAppSettingsStore *store = [CLAppSettingsStore shared];
-    // 注入临时 NSUserDefaults 套件覆盖 getAppUserDefaults 的返回值
-    // （利用 CLAppSettingsStore 的内部_property注入在运行测试前替换_suite返回的内容成为临时套件）
-    // 改用 setObject:forKey: 临时套件手动操作使用私有属性方式
-    if (!tmpSuite) {
-        if (failureReason) *failureReason = @"failed to create temp NSUserDefaults suite";
-        return NO;
-    }
-
-    // 写入并读回
-    [tmpSuite setInteger:0 forKey:@"AppLanguage"];
-    [tmpSuite synchronize];
-    id back = [tmpSuite objectForKey:@"AppLanguage"];
-    if (![back isKindOfClass:[NSNumber class]] || [back integerValue] != 0) {
-        if (failureReason) *failureReason = @"write/readback of AppLanguage=0 failed";
-        return NO;
-    }
-
-    [tmpSuite setInteger:1 forKey:@"AppLanguage"];
-    [tmpSuite synchronize];
-    back = [tmpSuite objectForKey:@"AppLanguage"];
-    if (![back isKindOfClass:[NSNumber class]] || [back integerValue] != 1) {
-        if (failureReason) *failureReason = @"write/readback of AppLanguage=1 failed";
-        return NO;
-    }
-
-    // 回滚还原测试
-    [tmpSuite removeObjectForKey:@"AppLanguage"];
-    [tmpSuite synchronize];
-    back = [tmpSuite objectForKey:@"AppLanguage"];
-    if (back != nil) {
-        if (failureReason) *failureReason = @"removal of AppLanguage failed";
-        return NO;
-    }
-
-    return YES;
-}
 #endif
 
 id getlocalKV(NSString* key) {
@@ -3725,7 +3682,7 @@ BOOL CLMigrateAppSettingsToSharedStoreIfNeeded(void) {
         return YES;
     }
 
-    // 直接读旧 appdata suite，不依赖 CLAppSettingsStore。
+    // 直接读旧 appdata suite（不再经过独立 App store）。
     NSUserDefaults* suite = [[NSUserDefaults alloc] initWithSuiteName:@"com.chargelimiter.mod.appdata"];
     if (suite == nil) {
         suite = getAppUserDefaults();
