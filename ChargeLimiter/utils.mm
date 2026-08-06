@@ -3196,6 +3196,10 @@ static BOOL migrateLegacyUserDefaultsIntoPreferences(NSMutableDictionary* prefer
 // 配置写入失败通知
 NSString* const CLConfigWriteFailedNotification = @"CLConfigWriteFailedNotification";
 
+// 启动迁移期间抑制写失败通知（仅 NSLog；避免 save-failed alert）。
+// apply 在决定是否 post 时捕获本标志当前值，避免 async 主线程 block 跑时标志已清。
+static BOOL CLSuppressConfigWriteFailedNotification = NO;
+
 @interface CLSettingsStore : NSObject
 @property (nonatomic, strong) NSMutableDictionary* preferences;
 @property (nonatomic, strong) NSMutableDictionary* cachedChanges;
@@ -3414,22 +3418,26 @@ static BOOL ensureStoreConfigFileExists(CLSettingsStore* store, NSString** pathO
             NSString* attemptedPath = getConfigWritePathWithLibroot() ?: @"";
             NSArray<NSString*>* attemptedPaths = attemptedPath.length > 0 ? @[attemptedPath] : @[];
             NSLog2(@"[CL] conf write failed: attemptedPath=%@ err=%@", attemptedPath, writeError);
-            dispatch_async(dispatch_get_main_queue(), ^{
-                NSMutableDictionary* userInfo = [NSMutableDictionary dictionary];
-                if (writeError) {
-                    userInfo[@"error"] = writeError;
-                }
-                if (attemptedPaths.count > 0) {
-                    userInfo[@"attemptedPaths"] = attemptedPaths;
-                } else {
-                    userInfo[@"reason"] = @"No valid write paths available";
-                }
-                userInfo[@"jbType"] = @(getJBType());
+            // 捕获当前 suppress 值：async block 可能在迁移清标志之后才跑。
+            BOOL suppressNotification = CLSuppressConfigWriteFailedNotification;
+            if (!suppressNotification) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    NSMutableDictionary* userInfo = [NSMutableDictionary dictionary];
+                    if (writeError) {
+                        userInfo[@"error"] = writeError;
+                    }
+                    if (attemptedPaths.count > 0) {
+                        userInfo[@"attemptedPaths"] = attemptedPaths;
+                    } else {
+                        userInfo[@"reason"] = @"No valid write paths available";
+                    }
+                    userInfo[@"jbType"] = @(getJBType());
 
-                [[NSNotificationCenter defaultCenter] postNotificationName:CLConfigWriteFailedNotification
-                                                                    object:nil
-                                                                  userInfo:userInfo];
-            });
+                    [[NSNotificationCenter defaultCenter] postNotificationName:CLConfigWriteFailedNotification
+                                                                        object:nil
+                                                                      userInfo:userInfo];
+                });
+            }
             return NO;
         }
         [self.preferences removeAllObjects];
@@ -3698,6 +3706,7 @@ BOOL setlocalKVChecked(NSString* key, id val) {
 // 把 App 四键从 appdata suite / standardUserDefaults 迁入共享 plist。
 // 权威源 = 共享 store；旧 suite 仅作迁移源。成功后写标记并 best-effort 清理 suite 四键。
 // 返回 NO 仅当「需要写入共享却写失败」；无数据可迁也返回 YES。
+// 写失败只打日志：期间设置 CLSuppressConfigWriteFailedNotification，避免 save-failed UI。
 BOOL CLMigrateAppSettingsToSharedStoreIfNeeded(void) {
     static NSString* const kMarkerKey = @"CLAppSettingsMigratedToShared";
     static NSArray<NSString*>* keys = nil;
@@ -3724,54 +3733,59 @@ BOOL CLMigrateAppSettingsToSharedStoreIfNeeded(void) {
     NSUserDefaults* stdDefaults = [NSUserDefaults standardUserDefaults];
 
     BOOL writeFailed = NO;
+    // 抑制 apply 写失败通知：ui 已在迁移前注册 observer，否则会弹「保存失败」。
+    CLSuppressConfigWriteFailedNotification = YES;
+    @try {
+        for (NSString* key in keys) {
+            id sharedVal = getlocalKV(key);
+            if ([sharedVal isKindOfClass:[NSNumber class]]) {
+                // 共享已有合法值，跳过该键
+                continue;
+            }
 
-    for (NSString* key in keys) {
-        id sharedVal = getlocalKV(key);
-        if ([sharedVal isKindOfClass:[NSNumber class]]) {
-            // 共享已有合法值，跳过该键
-            continue;
-        }
+            NSInteger val = 0;
 
-        NSInteger val = 0;
+            // Priority 1: appdata suite
+            id suiteVal = [suite objectForKey:key];
+            if ([suiteVal isKindOfClass:[NSNumber class]]) {
+                val = [suiteVal integerValue];
+            } else {
+                // Priority 2: standardUserDefaults；再否则 default 0
+                id stdVal = [stdDefaults objectForKey:key];
+                if ([stdVal isKindOfClass:[NSNumber class]]) {
+                    val = [stdVal integerValue];
+                }
+            }
 
-        // Priority 1: appdata suite
-        id suiteVal = [suite objectForKey:key];
-        if ([suiteVal isKindOfClass:[NSNumber class]]) {
-            val = [suiteVal integerValue];
-        } else {
-            // Priority 2: standardUserDefaults；再否则 default 0
-            id stdVal = [stdDefaults objectForKey:key];
-            if ([stdVal isKindOfClass:[NSNumber class]]) {
-                val = [stdVal integerValue];
+            // 共享缺失则写入（含 default 0），保证四键在共享侧补齐
+            if (!setlocalKVChecked(key, @(val))) {
+                writeFailed = YES;
+                NSLog2(@"[CL] migrate app setting to shared failed key=%@ val=%ld", key, (long)val);
             }
         }
 
-        // 共享缺失则写入（含 default 0），保证四键在共享侧补齐
-        if (!setlocalKVChecked(key, @(val))) {
-            writeFailed = YES;
-            NSLog2(@"[CL] migrate app setting to shared failed key=%@ val=%ld", key, (long)val);
+        if (writeFailed) {
+            // 不写标记，下次启动可重试
+            return NO;
         }
-    }
 
-    if (writeFailed) {
-        // 不写标记，下次启动可重试
-        return NO;
-    }
+        // 成功路径：写标记（空迁移也写，避免每启重复扫）
+        if (!setlocalKVChecked(kMarkerKey, @1)) {
+            NSLog2(@"[CL] migrate marker write failed key=%@", kMarkerKey);
+            return NO;
+        }
 
-    // 成功路径：写标记（空迁移也写，避免每启重复扫）
-    if (!setlocalKVChecked(kMarkerKey, @1)) {
-        NSLog2(@"[CL] migrate marker write failed key=%@", kMarkerKey);
-        return NO;
-    }
+        // best-effort 清理旧 suite 四键
+        for (NSString* key in keys) {
+            [suite removeObjectForKey:key];
+        }
+        [suite synchronize];
 
-    // best-effort 清理旧 suite 四键
-    for (NSString* key in keys) {
-        [suite removeObjectForKey:key];
+        NSLog2(@"[CL] migrated app settings into shared plist (marker set)");
+        return YES;
+    } @finally {
+        CLSuppressConfigWriteFailedNotification = NO;
     }
-    [suite synchronize];
-
-    NSLog2(@"[CL] migrated app settings into shared plist (marker set)");
-    return YES;
 }
 
 extern "C" void setlocalKV_C(NSString* key, id val) {
