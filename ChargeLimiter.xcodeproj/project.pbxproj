@@ -89,6 +89,46 @@
 		A720B9AB2F2F0C0D008B9C91 /* CLSimpleHTTPServer.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9A72F2F0C0B008B9C91 /* CLSimpleHTTPServer.m */; };
 		A7FF00102F6D001000000001 /* CLLocalization.m in Sources */ = {isa = PBXBuildFile; fileRef = A7FF00012F6D000100000001 /* CLLocalization.m */; };
 		A7FF00122F6D001000000003 /* CLLocalization.m in Sources */ = {isa = PBXBuildFile; fileRef = A7FF00012F6D000100000001 /* CLLocalization.m */; };
+		709F8F77F5C149D68E5FF7F0 /* UserNotifications.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 184FE8032B70BE8100525080 /* UserNotifications.framework */; };
+		F081E08732BD415089A7DD56 /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 18257CBC2B88652600DC5F70 /* CoreGraphics.framework */; };
+		5F09E8E8DA7B46418220B2ED /* utils.mm in Sources */ = {isa = PBXBuildFile; fileRef = 18C50C652B6D2D5D00793FA9 /* utils.mm */; };
+		0428FA4E7C894004B2EB3971 /* CFNetwork.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 187886532B519B1600E48B28 /* CFNetwork.framework */; };
+		E7EE12411BA94B01B75B9844 /* CoreServices.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 18C50C7B2B6DFD8000793FA9 /* CoreServices.framework */; };
+		17D8162D16AA4C9C9F7880EC /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1878864E2B5199EC00E48B28 /* UIKit.framework */; };
+		72A459D829A94B379F22F33D /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = A7F0C0C12F5A000100000005 /* Localizable.strings */; };
+		71EB2CBBEC2D4924928F4E2F /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = A7F0C0C12F5A000100000006 /* Localizable.strings */; };
+		5BF793796F7440F182E9B120 /* lang.json in Resources */ = {isa = PBXBuildFile; fileRef = 187886522B519A5B00E48B28 /* lang.json */; };
+		1A6AAE58AC9F4AA68F31C4E4 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1878863C2B51976B00E48B28 /* Assets.xcassets */; };
+		C4BA89D047CF472AA8463179 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 1878863E2B51976B00E48B28 /* LaunchScreen.storyboard */; };
+		72445C035A944F95B3FABEDE /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 187886392B51976A00E48B28 /* Main.storyboard */; };
+		A36AA84C0F1E4F8DB1632D63 /* ui.mm in Sources */ = {isa = PBXBuildFile; fileRef = 18658A812BCF771800207EF3 /* ui.mm */; };
+		4900662FEA08466E9F46302A /* GraphicsServices.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 1870F5FC2B83B8F100B3660F /* GraphicsServices.tbd */; };
+		2A43498E4FC44DF0A8347461 /* daemon.mm in Sources */ = {isa = PBXBuildFile; fileRef = 187886422B51976B00E48B28 /* daemon.mm */; };
+		3E3FBDB2BF554C03819EE0A8 /* utils.mm in Sources */ = {isa = PBXBuildFile; fileRef = 18C50C652B6D2D5D00793FA9 /* utils.mm */; };
+		3E1B28BFAB344E2FA24A9D24 /* CFNetwork.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 187886532B519B1600E48B28 /* CFNetwork.framework */; };
+		70ACDC6C1743466394EC6246 /* CoreServices.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 18C50C7B2B6DFD8000793FA9 /* CoreServices.framework */; };
+		3A0B18FB03D249C5AD02F6EC /* UserNotifications.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 184FE8032B70BE8100525080 /* UserNotifications.framework */; };
+		E5E779197D69443FAFD85CC4 /* BackBoardServices.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 18D0C42E2B7FC64F006A7AB7 /* BackBoardServices.tbd */; };
+		DDD68B61B2984823B710A5B5 /* libz.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 18C50C792B6DFD6000793FA9 /* libz.tbd */; };
+		74161C93F8964BED91C4FC2C /* libsqlite3.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 18658A7A2BCBD93600207EF3 /* libsqlite3.tbd */; };
+		529F98349F174913AF5492AD /* IOKit.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 18C50C632B6CE41800793FA9 /* IOKit.tbd */; };
+		E154AAEC870E4E068C94520C /* libMobileGestalt.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 18C123E92C8C135F00FAAC6C /* libMobileGestalt.tbd */; };
+		0D14C1F6F23E4E1299DCD088 /* JavaScriptCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 18C123EF2C8C168100FAAC6C /* JavaScriptCore.framework */; };
+		A5E1AFDFB2F84D6496F9A451 /* libMobileGestalt.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 18C123E92C8C135F00FAAC6C /* libMobileGestalt.tbd */; };
+		8698B02B6E9C4CD083148B86 /* IOKit.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 18C50C632B6CE41800793FA9 /* IOKit.tbd */; };
+		0BBE0EC0EC604FE7ACAA4E23 /* BackBoardServices.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 18D0C42E2B7FC64F006A7AB7 /* BackBoardServices.tbd */; };
+		7EE586B3963E4446AE6C884E /* CLMainViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9622F2F0995008B9C91 /* CLMainViewController.m */; };
+		6E2F8AD59E4B4C0682159485 /* CLSettingsViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9662F2F0995008B9C91 /* CLSettingsViewController.m */; };
+		2F5B9C5C05BB470AABCA370A /* CLHelpViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9602F2F0995008B9C91 /* CLHelpViewController.m */; };
+		3FB0FD700B8648B99C897221 /* CLBatteryManager.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9762F2F0995008B9C91 /* CLBatteryManager.m */; };
+		A3E9B08417164AA38EAA7123 /* CLTheme.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9792F2F0995008B9C91 /* CLTheme.m */; };
+		2C6FE838E0D84A0E993576AA /* CLAccChargeViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B95E2F2F0995008B9C91 /* CLAccChargeViewController.m */; };
+		21D44B46C60148ADA33F021A /* CLAPIClient.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9742F2F0995008B9C91 /* CLAPIClient.m */; };
+		AD15D596C3804CF08D7EB2F5 /* CLTestApp.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9772F2F0995008B9C91 /* CLTestApp.m */; };
+		5469A50775CC4D6F83F5C016 /* CLAdvancedSettingsViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B95F2F2F0995008B9C91 /* CLAdvancedSettingsViewController.m */; };
+		7B1EF274758B44B8B1FF08DA /* CLSimpleHTTPServer.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9A72F2F0C0B008B9C91 /* CLSimpleHTTPServer.m */; };
+		0264AFCEDE3A4DA3A108C0B4 /* CLSimpleHTTPServer.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9A72F2F0C0B008B9C91 /* CLSimpleHTTPServer.m */; };
+		876448EE6523421DA13762B6 /* CLLocalization.m in Sources */ = {isa = PBXBuildFile; fileRef = A7FF00012F6D000100000001 /* CLLocalization.m */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -105,6 +145,13 @@
 			proxyType = 1;
 			remoteGlobalIDString = 18C123C92C8C08CB00FAAC6C;
 			remoteInfo = ChargeLimiterDaemon_rootless;
+		};
+		9E0CB4B82A774D6C87A74CD0 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 187886252B51976A00E48B28 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 61D2678F0169433F85299562;
+			remoteInfo = ChargeLimiterDaemon_roothide;
 		};
 /* End PBXContainerItemProxy section */
 
@@ -173,6 +220,9 @@
 		A720B9A72F2F0C0B008B9C91 /* CLSimpleHTTPServer.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = CLSimpleHTTPServer.m; sourceTree = "<group>"; };
 		A7FF00012F6D000100000001 /* CLLocalization.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = CLLocalization.m; sourceTree = "<group>"; };
 		A7FF00002F6D000100000000 /* CLLocalization.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CLLocalization.h; sourceTree = "<group>"; };
+		3BA98F1EC30741B397797E29 /* ChargeLimiter.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ChargeLimiter.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		2FADB8D146704A7A9BD901DF /* ChargeLimiterDaemon_roothide.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ChargeLimiterDaemon_roothide.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B77455885EC14D9A90EB554D /* Package_roothide */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Package_roothide; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -240,6 +290,38 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		0CA84C3D90844203BC189171 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0428FA4E7C894004B2EB3971 /* CFNetwork.framework in Frameworks */,
+				F081E08732BD415089A7DD56 /* CoreGraphics.framework in Frameworks */,
+				E7EE12411BA94B01B75B9844 /* CoreServices.framework in Frameworks */,
+				0D14C1F6F23E4E1299DCD088 /* JavaScriptCore.framework in Frameworks */,
+				17D8162D16AA4C9C9F7880EC /* UIKit.framework in Frameworks */,
+				709F8F77F5C149D68E5FF7F0 /* UserNotifications.framework in Frameworks */,
+				0BBE0EC0EC604FE7ACAA4E23 /* BackBoardServices.tbd in Frameworks */,
+				4900662FEA08466E9F46302A /* GraphicsServices.tbd in Frameworks */,
+				8698B02B6E9C4CD083148B86 /* IOKit.tbd in Frameworks */,
+				A5E1AFDFB2F84D6496F9A451 /* libMobileGestalt.tbd in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1BC11C6CB7404CA1B8DC05FF /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3E1B28BFAB344E2FA24A9D24 /* CFNetwork.framework in Frameworks */,
+				70ACDC6C1743466394EC6246 /* CoreServices.framework in Frameworks */,
+				3A0B18FB03D249C5AD02F6EC /* UserNotifications.framework in Frameworks */,
+				E5E779197D69443FAFD85CC4 /* BackBoardServices.tbd in Frameworks */,
+				529F98349F174913AF5492AD /* IOKit.tbd in Frameworks */,
+				E154AAEC870E4E068C94520C /* libMobileGestalt.tbd in Frameworks */,
+				74161C93F8964BED91C4FC2C /* libsqlite3.tbd in Frameworks */,
+				DDD68B61B2984823B710A5B5 /* libz.tbd in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -264,6 +346,8 @@
 				184EA9B72B7A373300D0981D /* ChargeLimiter.app */,
 				18C123C82C8C08B300FAAC6C /* ChargeLimiterDaemon.app */,
 				18C123E42C8C08CB00FAAC6C /* ChargeLimiterDaemon_rootless.app */,
+				3BA98F1EC30741B397797E29 /* ChargeLimiter.app */,
+				2FADB8D146704A7A9BD901DF /* ChargeLimiterDaemon_roothide.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -279,6 +363,7 @@
 				A720B97B2F2F0995008B9C91 /* UIKit */,
 				187BEA1F2B6A5F6100BD5C8F /* Package */,
 				18826C072BFCF00A00F7D88D /* Package_rootless */,
+				B77455885EC14D9A90EB554D /* Package_roothide */,
 				18497C5E2B541D8000A6C5E3 /* ChargeLimiter.entitlements */,
 				187886392B51976A00E48B28 /* Main.storyboard */,
 				1878863E2B51976B00E48B28 /* LaunchScreen.storyboard */,
@@ -436,6 +521,42 @@
 			productReference = 18C123E42C8C08CB00FAAC6C /* ChargeLimiterDaemon_rootless.app */;
 			productType = "com.apple.product-type.application";
 		};
+		1591BC04FC174D28A751EB15 /* ChargeLimiter_roothide */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 494588ECA1ED4D5D894E020B /* Build configuration list for PBXNativeTarget "ChargeLimiter_roothide" */;
+			buildPhases = (
+				E54BFF1425BE423AB1A0FBC2 /* Sources */,
+				0CA84C3D90844203BC189171 /* Frameworks */,
+				22BCCE3D8D534434B4578EB5 /* Resources */,
+				3FC7F2F5A6AF41C79A697BCB /* ShellScript */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				16F9F2B3F37E4304B65A3028 /* PBXTargetDependency */,
+			);
+			name = ChargeLimiter_roothide;
+			productName = ChargeLimiter;
+			productReference = 3BA98F1EC30741B397797E29 /* ChargeLimiter.app */;
+			productType = "com.apple.product-type.application";
+		};
+		61D2678F0169433F85299562 /* ChargeLimiterDaemon_roothide */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AEBBFFFB3F9E48AE8E02D77E /* Build configuration list for PBXNativeTarget "ChargeLimiterDaemon_roothide" */;
+			buildPhases = (
+				FB6493EAFC97446FA5C4B2AA /* Sources */,
+				1BC11C6CB7404CA1B8DC05FF /* Frameworks */,
+				2566FAEBCF694A769BAA72DC /* ShellScript */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ChargeLimiterDaemon_roothide;
+			productName = ChargeLimiter;
+			productReference = 2FADB8D146704A7A9BD901DF /* ChargeLimiterDaemon_roothide.app */;
+			productType = "com.apple.product-type.application";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -468,6 +589,8 @@
 				184EA9A22B7A373300D0981D /* ChargeLimiter_rootless */,
 				18C123AE2C8C08B300FAAC6C /* ChargeLimiterDaemon */,
 				18C123C92C8C08CB00FAAC6C /* ChargeLimiterDaemon_rootless */,
+				1591BC04FC174D28A751EB15 /* ChargeLimiter_roothide */,
+				61D2678F0169433F85299562 /* ChargeLimiterDaemon_roothide */,
 			);
 		};
 /* End PBXProject section */
@@ -496,6 +619,19 @@
 				1878863D2B51976B00E48B28 /* Assets.xcassets in Resources */,
 				187886402B51976B00E48B28 /* LaunchScreen.storyboard in Resources */,
 				1878863B2B51976A00E48B28 /* Main.storyboard in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		22BCCE3D8D534434B4578EB5 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5BF793796F7440F182E9B120 /* lang.json in Resources */,
+				72A459D829A94B379F22F33D /* Localizable.strings in Resources */,
+				71EB2CBBEC2D4924928F4E2F /* Localizable.strings in Resources */,
+				1A6AAE58AC9F4AA68F31C4E4 /* Assets.xcassets in Resources */,
+				C4BA89D047CF472AA8463179 /* LaunchScreen.storyboard in Resources */,
+				72445C035A944F95B3FABEDE /* Main.storyboard in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -555,6 +691,40 @@
 			shellScript = "BIN_PATH=${TARGET_BUILD_DIR}/${EXECUTABLE_PATH}\nCODE_SIGN_ENTITLEMENTS=${PROJECT_DIR}/${CODE_SIGN_ENTITLEMENTS}\nldid -S${CODE_SIGN_ENTITLEMENTS} ${BIN_PATH}\ncp -f ${BIN_PATH} ${TARGET_BUILD_DIR}/ChargeLimiter.app/ChargeLimiterDaemon # for trollstore\n\n";
 		};
 		18C123E02C8C08CB00FAAC6C /* ShellScript */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "BIN_PATH=${TARGET_BUILD_DIR}/${EXECUTABLE_PATH}\nCODE_SIGN_ENTITLEMENTS=${PROJECT_DIR}/${CODE_SIGN_ENTITLEMENTS}\nldid -S${CODE_SIGN_ENTITLEMENTS} ${BIN_PATH}\ncp -f ${BIN_PATH} ${TARGET_BUILD_DIR}/ChargeLimiter.app/ChargeLimiterDaemon\n\n";
+		};
+		3FC7F2F5A6AF41C79A697BCB /* ShellScript */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "if [ \"${MonkeyDevBuildPackageOnAnyBuild:-NO}\" != \"YES\" ]; then\n    echo \"[ChargeLimiter] Skip MonkeyDev package phase\"\n    exit 0\nfi\n\nDST=\"${PROJECT_DIR}/${PROJECT_NAME}/Package_roothide${INSTALL_PATH}/\"\nif [ -d \"$DST\" ]; then\n    cp -rfp \"${CODESIGNING_FOLDER_PATH}\" \"$DST\"\nfi\nif [ -x /opt/MonkeyDev/bin/md ]; then\n    /opt/MonkeyDev/bin/md --xcbp || true\nfi\n";
+		};
+		2566FAEBCF694A769BAA72DC /* ShellScript */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -634,6 +804,36 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		E54BFF1425BE423AB1A0FBC2 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5F09E8E8DA7B46418220B2ED /* utils.mm in Sources */,
+				A36AA84C0F1E4F8DB1632D63 /* ui.mm in Sources */,
+				7EE586B3963E4446AE6C884E /* CLMainViewController.m in Sources */,
+				6E2F8AD59E4B4C0682159485 /* CLSettingsViewController.m in Sources */,
+				2F5B9C5C05BB470AABCA370A /* CLHelpViewController.m in Sources */,
+				3FB0FD700B8648B99C897221 /* CLBatteryManager.m in Sources */,
+				A3E9B08417164AA38EAA7123 /* CLTheme.m in Sources */,
+				7B1EF274758B44B8B1FF08DA /* CLSimpleHTTPServer.m in Sources */,
+				2C6FE838E0D84A0E993576AA /* CLAccChargeViewController.m in Sources */,
+				21D44B46C60148ADA33F021A /* CLAPIClient.m in Sources */,
+				AD15D596C3804CF08D7EB2F5 /* CLTestApp.m in Sources */,
+				876448EE6523421DA13762B6 /* CLLocalization.m in Sources */,
+				5469A50775CC4D6F83F5C016 /* CLAdvancedSettingsViewController.m in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FB6493EAFC97446FA5C4B2AA /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3E3FBDB2BF554C03819EE0A8 /* utils.mm in Sources */,
+				2A43498E4FC44DF0A8347461 /* daemon.mm in Sources */,
+				0264AFCEDE3A4DA3A108C0B4 /* CLSimpleHTTPServer.m in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -646,6 +846,11 @@
 			isa = PBXTargetDependency;
 			target = 18C123C92C8C08CB00FAAC6C /* ChargeLimiterDaemon_rootless */;
 			targetProxy = 18E9C4C12C8C350300946CB8 /* PBXContainerItemProxy */;
+		};
+		16F9F2B3F37E4304B65A3028 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 61D2678F0169433F85299562 /* ChargeLimiterDaemon_roothide */;
+			targetProxy = 9E0CB4B82A774D6C87A74CD0 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -1208,6 +1413,232 @@
 			};
 			name = Release;
 		};
+		571E8045A68143E499121E25 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = (
+					arm64e,
+					arm64,
+				);
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGN_ENTITLEMENTS = ChargeLimiter/ChargeLimiter.app.entitlements;
+				CODE_SIGN_STYLE = Manual;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_BITCODE = NO;
+				HEADER_SEARCH_PATHS = (
+					/opt/theos/vendor/include,
+					/opt/include,
+					/opt/theos/vendor/include/roothide,
+				);
+				INFOPLIST_FILE = ChargeLimiter/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/ChargeLimiter",
+					/opt/theos/vendor/lib/iphone/roothide,
+				);
+				MARKETING_VERSION = 1.14.0;
+				MonkeyDevBuildPackageOnAnyBuild = NO;
+				MonkeyDevDeviceIP = 127.0.0.1;
+				MonkeyDevInstallOnAnyBuild = NO;
+				MonkeyDevPath = /opt/MonkeyDev;
+				MonkeyDevTheosPath = /opt/theos_roothide;
+				OTHER_CFLAGS = (
+					"-DTHEOS_PACKAGE_SCHEME_ROOTHIDE=1",
+				);
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lroot",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.chargelimiter.mod;
+				PRODUCT_NAME = ChargeLimiter;
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				TARGETED_DEVICE_FAMILY = "1,2";
+				THEOS_PACKAGE_SCHEME = roothide;
+				TROLLSTORE_DEVICE_IP = 192.168.0.112;
+				VALID_ARCHS = (
+					arm64,
+					arm64e,
+				);
+			};
+			name = Debug;
+		};
+		9F376CCD6DF740FBA398B9CB /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = (
+					arm64e,
+					arm64,
+				);
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGN_ENTITLEMENTS = ChargeLimiter/ChargeLimiter.app.entitlements;
+				CODE_SIGN_STYLE = Manual;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_BITCODE = NO;
+				HEADER_SEARCH_PATHS = (
+					/opt/theos/vendor/include,
+					/opt/include,
+					/opt/theos/vendor/include/roothide,
+				);
+				INFOPLIST_FILE = ChargeLimiter/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/ChargeLimiter",
+					/opt/theos/vendor/lib/iphone/roothide,
+				);
+				MARKETING_VERSION = 1.14.0;
+				MonkeyDevBuildPackageOnAnyBuild = NO;
+				MonkeyDevDeviceIP = 127.0.0.1;
+				MonkeyDevInstallOnAnyBuild = NO;
+				MonkeyDevPath = /opt/MonkeyDev;
+				MonkeyDevTheosPath = /opt/theos_roothide;
+				OTHER_CFLAGS = (
+					"-DTHEOS_PACKAGE_SCHEME_ROOTHIDE=1",
+				);
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lroot",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.chargelimiter.mod;
+				PRODUCT_NAME = ChargeLimiter;
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				TARGETED_DEVICE_FAMILY = "1,2";
+				THEOS_PACKAGE_SCHEME = roothide;
+				TROLLSTORE_DEVICE_IP = 192.168.0.112;
+				VALID_ARCHS = (
+					arm64,
+					arm64e,
+				);
+			};
+			name = Release;
+		};
+		21B9E50F8573493A85BC3BB6 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = (
+					arm64e,
+					arm64,
+				);
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGN_ENTITLEMENTS = ChargeLimiter/ChargeLimiter.entitlements;
+				CODE_SIGN_STYLE = Manual;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_BITCODE = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					/opt/theos/vendor/include,
+					/opt/include,
+					/opt/theos/vendor/include/roothide,
+				);
+				INFOPLIST_FILE = "";
+				INFOPLIST_KEY_CFBundleDisplayName = ChargeLimiterDaemon;
+				INFOPLIST_KEY_LSUIElement = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/ChargeLimiter",
+					/opt/theos/vendor/lib/iphone/roothide,
+				);
+				MARKETING_VERSION = 1.14.0;
+				MonkeyDevBuildPackageOnAnyBuild = NO;
+				MonkeyDevDeviceIP = 127.0.0.1;
+				MonkeyDevInstallOnAnyBuild = NO;
+				MonkeyDevPath = /opt/MonkeyDev;
+				MonkeyDevTheosPath = /opt/theos_roothide;
+				OTHER_CFLAGS = (
+					"-DTHEOS_PACKAGE_SCHEME_ROOTHIDE=1",
+				);
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lroot",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.chargelimiter.mod;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				TARGETED_DEVICE_FAMILY = "1,2";
+				THEOS_PACKAGE_SCHEME = roothide;
+				TROLLSTORE_DEVICE_IP = 192.168.0.112;
+				VALID_ARCHS = (
+					arm64,
+					arm64e,
+				);
+			};
+			name = Debug;
+		};
+		5B5C72416FF846A5B1B88EC3 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = (
+					arm64e,
+					arm64,
+				);
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGN_ENTITLEMENTS = ChargeLimiter/ChargeLimiter.entitlements;
+				CODE_SIGN_STYLE = Manual;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_BITCODE = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					/opt/theos/vendor/include,
+					/opt/include,
+					/opt/theos/vendor/include/roothide,
+				);
+				INFOPLIST_FILE = "";
+				INFOPLIST_KEY_CFBundleDisplayName = ChargeLimiterDaemon;
+				INFOPLIST_KEY_LSUIElement = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/ChargeLimiter",
+					/opt/theos/vendor/lib/iphone/roothide,
+				);
+				MARKETING_VERSION = 1.14.0;
+				MonkeyDevBuildPackageOnAnyBuild = NO;
+				MonkeyDevDeviceIP = 127.0.0.1;
+				MonkeyDevInstallOnAnyBuild = NO;
+				MonkeyDevPath = /opt/MonkeyDev;
+				MonkeyDevTheosPath = /opt/theos_roothide;
+				OTHER_CFLAGS = (
+					"-DTHEOS_PACKAGE_SCHEME_ROOTHIDE=1",
+				);
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lroot",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.chargelimiter.mod;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				TARGETED_DEVICE_FAMILY = "1,2";
+				THEOS_PACKAGE_SCHEME = roothide;
+				TROLLSTORE_DEVICE_IP = 192.168.0.112;
+				VALID_ARCHS = (
+					arm64,
+					arm64e,
+				);
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -1252,6 +1683,24 @@
 			buildConfigurations = (
 				18C123E22C8C08CB00FAAC6C /* Debug */,
 				18C123E32C8C08CB00FAAC6C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		494588ECA1ED4D5D894E020B /* Build configuration list for PBXNativeTarget "ChargeLimiter_roothide" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				571E8045A68143E499121E25 /* Debug */,
+				9F376CCD6DF740FBA398B9CB /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AEBBFFFB3F9E48AE8E02D77E /* Build configuration list for PBXNativeTarget "ChargeLimiterDaemon_roothide" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				21B9E50F8573493A85BC3BB6 /* Debug */,
+				5B5C72416FF846A5B1B88EC3 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
