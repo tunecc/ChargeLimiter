@@ -1,6 +1,8 @@
 #include "utils.h"
 #import "CLLocalization.h"
+#include <errno.h>
 #include <limits.h>
+#include <pwd.h>
 #include <stdlib.h>
 #include <sys/utsname.h>
 #include <sys/sysctl.h>
@@ -46,6 +48,7 @@ static BOOL writeMergedConfigDictionaryToDisk(NSDictionary* fallbackPreferences,
                                               NSString** pathOut,
                                               NSError** errorOut,
                                               NSMutableDictionary** mergedPreferencesOut);
+static void repairSharedConfigFileOwnership(NSString* confPath);
 static BOOL ensureStoreConfigFileExists(CLSettingsStore* store, NSString** pathOut, NSError** errorOut);
 
 static NSString* normalizedAbsolutePath(NSString* path) {
@@ -1448,7 +1451,47 @@ static BOOL writeMergedConfigDictionaryToDisk(NSDictionary* fallbackPreferences,
     if (mergedPreferencesOut) {
         *mergedPreferencesOut = mergedPreferences;
     }
+    // root 写盘成功后交还 mobile 所有权，避免 App 原子替换失败
+    repairSharedConfigFileOwnership(writtenPath);
     return YES;
+}
+
+/**
+ * 若当前 euid==0，将共享配置文件与其目录交还 mobile:mobile。
+ * 文件 0640，目录 0750。单点失败只打日志，不反向影响写成功结果。
+ */
+static void repairSharedConfigFileOwnership(NSString* confPath) {
+    if (confPath.length == 0 || geteuid() != 0) {
+        return;
+    }
+
+    struct passwd* pw = getpwnam("mobile");
+    if (pw == NULL) {
+        NSLog2(@"[CL] repairSharedConfigFileOwnership: getpwnam(mobile) failed path=%@", confPath);
+        return;
+    }
+
+    uid_t uid = pw->pw_uid;
+    gid_t gid = pw->pw_gid;
+    NSString* dir = [confPath stringByDeletingLastPathComponent];
+    const char* filePathC = confPath.fileSystemRepresentation;
+    const char* dirPathC = dir.length > 0 ? dir.fileSystemRepresentation : NULL;
+
+    if (dirPathC != NULL) {
+        if (chown(dirPathC, uid, gid) != 0) {
+            NSLog2(@"[CL] repairSharedConfigFileOwnership: chown dir failed path=%@ errno=%d", dir, errno);
+        }
+        if (chmod(dirPathC, 0750) != 0) {
+            NSLog2(@"[CL] repairSharedConfigFileOwnership: chmod dir 0750 failed path=%@ errno=%d", dir, errno);
+        }
+    }
+
+    if (chown(filePathC, uid, gid) != 0) {
+        NSLog2(@"[CL] repairSharedConfigFileOwnership: chown file failed path=%@ errno=%d", confPath, errno);
+    }
+    if (chmod(filePathC, 0640) != 0) {
+        NSLog2(@"[CL] repairSharedConfigFileOwnership: chmod file 0640 failed path=%@ errno=%d", confPath, errno);
+    }
 }
 
 static NSArray<NSString*>* currentConfigCleanupPathCandidates(void) {
@@ -3161,7 +3204,7 @@ NSString* const CLConfigWriteFailedNotification = @"CLConfigWriteFailedNotificat
 + (instancetype)shared;
 - (id)readValueForKey:(NSString*)key defaultValue:(id)defaultValue;
 - (void)setValue:(id)value forKey:(NSString*)key;
-- (void)apply;
+- (BOOL)apply;
 - (void)reloadFromDisk;
 @end
 
@@ -3354,10 +3397,10 @@ static BOOL ensureStoreConfigFileExists(CLSettingsStore* store, NSString** pathO
     }
 }
 
-- (void)apply {
+- (BOOL)apply {
     @synchronized (self) {
         if (!self.isDirty) {
-            return;
+            return YES;
         }
         NSMutableDictionary* mergedPreferences = nil;
         NSError* writeError = nil;
@@ -3387,7 +3430,7 @@ static BOOL ensureStoreConfigFileExists(CLSettingsStore* store, NSString** pathO
                                                                     object:nil
                                                                   userInfo:userInfo];
             });
-            return;
+            return NO;
         }
         [self.preferences removeAllObjects];
         [self.preferences addEntriesFromDictionary:mergedPreferences];
@@ -3395,6 +3438,7 @@ static BOOL ensureStoreConfigFileExists(CLSettingsStore* store, NSString** pathO
         [self.cachedChanges removeAllObjects];
         [self.removedKeys removeAllObjects];
         self.isDirty = NO;
+        return YES;
     }
 }
 
@@ -3642,9 +3686,13 @@ id getlocalKV(NSString* key) {
 }
 
 void setlocalKV(NSString* key, id val) {
+    (void)setlocalKVChecked(key, val);
+}
+
+BOOL setlocalKVChecked(NSString* key, id val) {
     CLSettingsStore* store = [CLSettingsStore shared];
     [store setValue:val forKey:key];
-    [store apply];
+    return [store apply];
 }
 
 extern "C" void setlocalKV_C(NSString* key, id val) {

@@ -85,6 +85,7 @@ void setSmartChargeEnable(BOOL flag);
 /* ---------------- App ---------------- */
 id getlocalKV(NSString* key);
 void setlocalKV(NSString* key, id val);
+BOOL setlocalKVChecked(NSString* key, id val); // YES=写盘成功
 NSDictionary* getAllKV();
 BOOL getLocalBool(NSString* key, BOOL defaultValue);
 int getLocalInt(NSString* key, int defaultValue);
