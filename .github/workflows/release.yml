@@ -61,25 +61,28 @@ jobs:
           test -f /opt/theos/vendor/include/IOKit/hid/IOHIDService.h
           test -f /opt/theos/vendor/include/MobileCoreServices/LSApplicationProxy.h
 
-      # ChargeLimiter roothide Xcode targets link with -lroot and search:
-      #   HEADER: /opt/theos/vendor/include/roothide
-      #   LIBRARY: /opt/theos/vendor/lib/iphone/roothide
-      #   MonkeyDevTheosPath: /opt/theos_roothide (optional; package phases are off by default)
-      # Prefer roothide/theos vendor bits; fall back to libroothide Xcode devkit.
-      # Official refs:
-      #   https://github.com/roothide/Developer
-      #   https://github.com/roothide/libroothide/releases
+      # Native roothide path (same as local default ./scripts/build_packages.sh):
+      #   HEADER: /opt/theos/vendor/include + /opt/theos/vendor/include/roothide
+      #   LIBRARY: /opt/theos/vendor/lib/iphone/roothide (+ ChargeLimiter/libroot.a stub via build script)
+      #   MonkeyDevTheosPath: /opt/theos
+      #   Link: -lroot  → needs libroot.a (NOT only libroothide.tbd from Xcode devkit)
+      # Official refs: https://github.com/roothide/Developer  https://github.com/roothide/theos
       - name: Prepare roothide toolchain
         run: |
           set -euo pipefail
 
           ROOTHIDE_INC="/opt/theos/vendor/include/roothide"
           ROOTHIDE_LIB="/opt/theos/vendor/lib/iphone/roothide"
-          sudo mkdir -p "$ROOTHIDE_INC" "$ROOTHIDE_LIB" /opt
+          ROOTLESS_LIB="/opt/theos/vendor/lib/iphone/rootless"
+          VENDOR_LIB="/opt/theos/vendor/lib"
+          VENDOR_INC="/opt/theos/vendor/include"
+          sudo mkdir -p "$ROOTHIDE_INC" "$ROOTHIDE_LIB" "$ROOTLESS_LIB" "$VENDOR_LIB" /opt
 
+          # Prefer a full roothide/theos tree. If vendor is empty after plain theos clone,
+          # overlay vendor from roothide/theos (same layout local machines use).
           install_from_roothide_theos() {
             if [ ! -d /opt/theos_roothide/.git ]; then
-              echo "[INFO] Cloning roothide/theos into /opt/theos_roothide (best-effort)..."
+              echo "[INFO] Cloning roothide/theos into /opt/theos_roothide..."
               if ! sudo git clone --depth 1 --recursive https://github.com/roothide/theos.git /opt/theos_roothide; then
                 echo "[WARN] Failed to clone https://github.com/roothide/theos.git" >&2
                 return 1
@@ -89,121 +92,182 @@ jobs:
               sudo git -C /opt/theos_roothide submodule update --init --recursive || true
             fi
 
-            # Copy vendor headers/libs that match project.pbxproj search paths.
+            # Ensure submodules that carry headers/libs are present.
+            if [ -x /opt/theos_roothide/bin/update-theos ]; then
+              sudo /opt/theos_roothide/bin/update-theos || true
+            fi
+            sudo git -C /opt/theos_roothide submodule update --init --recursive || true
+
+            # Headers
+            if [ -d /opt/theos_roothide/vendor/include ] && [ "$(ls -A /opt/theos_roothide/vendor/include 2>/dev/null || true)" ]; then
+              # Merge, do not wipe host theos vendor entirely if already populated.
+              sudo rsync -a /opt/theos_roothide/vendor/include/ "$VENDOR_INC/"
+            fi
             if [ -d /opt/theos_roothide/vendor/include/roothide ]; then
+              sudo mkdir -p "$ROOTHIDE_INC"
               sudo cp -a /opt/theos_roothide/vendor/include/roothide/. "$ROOTHIDE_INC/"
             fi
             if [ -f /opt/theos_roothide/vendor/include/roothide.h ]; then
-              sudo cp -a /opt/theos_roothide/vendor/include/roothide.h /opt/theos/vendor/include/roothide.h
-              sudo cp -a /opt/theos_roothide/vendor/include/roothide.h "$ROOTHIDE_INC/roothide.h" || true
+              sudo cp -a /opt/theos_roothide/vendor/include/roothide.h "$VENDOR_INC/roothide.h"
+            fi
+            if [ -d /opt/theos_roothide/vendor/include/libroot ]; then
+              sudo mkdir -p "$VENDOR_INC/libroot"
+              sudo cp -a /opt/theos_roothide/vendor/include/libroot/. "$VENDOR_INC/libroot/"
+            fi
+            if [ -f /opt/theos_roothide/vendor/include/libroot.h ]; then
+              sudo cp -a /opt/theos_roothide/vendor/include/libroot.h "$VENDOR_INC/libroot.h"
+            fi
+
+            # Libs (roothide + rootless + top-level vendor/lib)
+            if [ -d /opt/theos_roothide/vendor/lib ]; then
+              sudo rsync -a /opt/theos_roothide/vendor/lib/ "$VENDOR_LIB/"
             fi
             if [ -d /opt/theos_roothide/vendor/lib/iphone/roothide ]; then
+              sudo mkdir -p "$ROOTHIDE_LIB"
               sudo cp -a /opt/theos_roothide/vendor/lib/iphone/roothide/. "$ROOTHIDE_LIB/"
             fi
-
-            # Some forks keep libroot only under vendor/lib; surface it for -lroot.
-            if ! ls "$ROOTHIDE_LIB"/libroot* >/dev/null 2>&1; then
-              for candidate in \
-                /opt/theos_roothide/vendor/lib/iphone/roothide/libroot.a \
-                /opt/theos_roothide/vendor/lib/libroot.a \
-                /opt/theos_roothide/vendor/lib/iphone/libroot.a
-              do
-                if [ -f "$candidate" ]; then
-                  sudo cp -a "$candidate" "$ROOTHIDE_LIB/"
-                fi
-              done
-            fi
-            return 0
-          }
-
-          install_from_libroothide_devkit() {
-            echo "[INFO] Trying libroothide Xcode devkit (best-effort)..."
-            TMP="$(mktemp -d)"
-            # Primary: release-body file attachment used by libroothide 0.0.1
-            # Fallback: latest release tarball (source only; may not contain prebuilt libroot)
-            if curl -fsSL -o "$TMP/devkit.zip" \
-              "https://github.com/RootHide/libroothide/files/12643716/devkit.zip"
-            then
-              unzip -q "$TMP/devkit.zip" -d "$TMP/devkit"
-            else
-              echo "[WARN] devkit.zip download failed; trying libroothide source archive" >&2
-              if ! curl -fsSL -o "$TMP/libroothide.tgz" \
-                "https://api.github.com/repos/roothide/libroothide/tarball/0.0.1"
-              then
-                echo "[WARN] libroothide archive download failed" >&2
-                rm -rf "$TMP"
-                return 1
-              fi
-              mkdir -p "$TMP/devkit"
-              tar -xzf "$TMP/libroothide.tgz" -C "$TMP/devkit" --strip-components=1 || true
+            if [ -d /opt/theos_roothide/vendor/lib/iphone/rootless ]; then
+              sudo mkdir -p "$ROOTLESS_LIB"
+              sudo cp -a /opt/theos_roothide/vendor/lib/iphone/rootless/. "$ROOTLESS_LIB/"
             fi
 
-            # Heuristic copy: place any discovered roothide headers / libroot into pbx paths.
-            while IFS= read -r hdr; do
-              sudo mkdir -p "$ROOTHIDE_INC"
-              sudo cp -a "$hdr" "$ROOTHIDE_INC/" || true
-              sudo cp -a "$hdr" /opt/theos/vendor/include/ || true
-            done < <(find "$TMP/devkit" -type f \( -name 'roothide.h' -o -name 'libroothide.h' \) 2>/dev/null || true)
-
-            while IFS= read -r lib; do
-              sudo mkdir -p "$ROOTHIDE_LIB"
-              sudo cp -a "$lib" "$ROOTHIDE_LIB/"
-            done < <(find "$TMP/devkit" -type f \( -name 'libroot*.a' -o -name 'libroot*.dylib' -o -name 'libroothide*.a' -o -name 'libroothide*.dylib' \) 2>/dev/null || true)
-
-            # If the zip is a drop-in SDK tree, also try common layout roots.
-            for root in "$TMP/devkit" "$TMP/devkit"/*; do
-              [ -d "$root" ] || continue
-              if [ -d "$root/include/roothide" ]; then
-                sudo cp -a "$root/include/roothide/." "$ROOTHIDE_INC/"
-              fi
-              if [ -d "$root/lib/iphone/roothide" ]; then
-                sudo cp -a "$root/lib/iphone/roothide/." "$ROOTHIDE_LIB/"
-              fi
-              if [ -d "$root/usr/lib" ]; then
-                find "$root/usr/lib" -type f \( -name 'libroot*' -o -name 'libroothide*' \) -exec sudo cp -a {} "$ROOTHIDE_LIB/" \;
+            # Surface libroot.a into every path Xcode/build_packages may search.
+            for candidate in \
+              "$ROOTHIDE_LIB/libroot.a" \
+              "$VENDOR_LIB/libroot.a" \
+              "$ROOTLESS_LIB/libroot.a" \
+              /opt/theos_roothide/vendor/lib/iphone/roothide/libroot.a \
+              /opt/theos_roothide/vendor/lib/libroot.a \
+              /opt/theos_roothide/vendor/lib/iphone/rootless/libroot.a
+            do
+              if [ -f "$candidate" ]; then
+                sudo mkdir -p "$ROOTHIDE_LIB" "$ROOTLESS_LIB" "$VENDOR_LIB"
+                sudo cp -a "$candidate" "$ROOTHIDE_LIB/libroot.a"
+                sudo cp -a "$candidate" "$VENDOR_LIB/libroot.a"
+                sudo cp -a "$candidate" "$ROOTLESS_LIB/libroot.a"
+                echo "[INFO] libroot.a sourced from $candidate"
+                break
               fi
             done
 
+            # libroothide.tbd is optional (runtime dylib on device); keep if present.
+            for candidate in \
+              "$ROOTHIDE_LIB/libroothide.tbd" \
+              "$VENDOR_LIB/libroothide.tbd" \
+              /opt/theos_roothide/vendor/lib/iphone/roothide/libroothide.tbd \
+              /opt/theos_roothide/vendor/lib/libroothide.tbd
+            do
+              if [ -f "$candidate" ]; then
+                sudo cp -a "$candidate" "$ROOTHIDE_LIB/libroothide.tbd"
+                break
+              fi
+            done
+
+            return 0
+          }
+
+          # Last resort only: Xcode devkit zip is headers + tbd stub, usually NO libroot.a.
+          # Keep for headers; never treat tbd alone as enough for -lroot.
+          install_headers_from_libroothide_devkit() {
+            echo "[INFO] Trying libroothide Xcode devkit for headers only (best-effort)..."
+            TMP="$(mktemp -d)"
+            if ! curl -fsSL -o "$TMP/devkit.zip" \
+              "https://github.com/RootHide/libroothide/files/12643716/devkit.zip"
+            then
+              echo "[WARN] devkit.zip download failed" >&2
+              rm -rf "$TMP"
+              return 1
+            fi
+            unzip -q "$TMP/devkit.zip" -d "$TMP/devkit"
+            while IFS= read -r hdr; do
+              sudo mkdir -p "$ROOTHIDE_INC"
+              sudo cp -a "$hdr" "$ROOTHIDE_INC/" || true
+              case "$(basename "$hdr")" in
+                roothide.h) sudo cp -a "$hdr" "$VENDOR_INC/roothide.h" || true ;;
+              esac
+            done < <(find "$TMP/devkit" -type f \( -name 'roothide.h' -o -name 'stub.h' -o -name 'module.modulemap' \) 2>/dev/null || true)
+            while IFS= read -r tbd; do
+              sudo mkdir -p "$ROOTHIDE_LIB"
+              sudo cp -a "$tbd" "$ROOTHIDE_LIB/" || true
+            done < <(find "$TMP/devkit" -type f -name 'libroothide.tbd' 2>/dev/null || true)
             rm -rf "$TMP"
             return 0
           }
 
           install_from_roothide_theos || true
+
+          # If plain theos vendor already has libroot (e.g. from a full local-style tree), use it.
           if ! ls "$ROOTHIDE_LIB"/libroot* >/dev/null 2>&1; then
-            install_from_libroothide_devkit || true
+            for candidate in \
+              "$VENDOR_LIB/libroot.a" \
+              "$ROOTLESS_LIB/libroot.a"
+            do
+              if [ -f "$candidate" ]; then
+                sudo cp -a "$candidate" "$ROOTHIDE_LIB/libroot.a"
+                echo "[INFO] Promoted existing $candidate into roothide lib dir"
+                break
+              fi
+            done
+          fi
+
+          if [ ! -f "$VENDOR_INC/roothide.h" ] && [ ! -f "$ROOTHIDE_INC/roothide.h" ]; then
+            install_headers_from_libroothide_devkit || true
+          fi
+
+          # Match local build_packages ensure_local_libroot_stubs: project-dir fallback.
+          if [ -f "$ROOTHIDE_LIB/libroot.a" ] || [ -f "$VENDOR_LIB/libroot.a" ] || [ -f "$ROOTLESS_LIB/libroot.a" ]; then
+            mkdir -p ChargeLimiter
+            for candidate in "$ROOTHIDE_LIB/libroot.a" "$VENDOR_LIB/libroot.a" "$ROOTLESS_LIB/libroot.a"; do
+              if [ -f "$candidate" ]; then
+                cp -a "$candidate" ChargeLimiter/libroot.a
+                echo "[INFO] CI local stub ChargeLimiter/libroot.a from $candidate"
+                break
+              fi
+            done
+            if [ -f "$ROOTHIDE_LIB/libroothide.tbd" ]; then
+              cp -a "$ROOTHIDE_LIB/libroothide.tbd" ChargeLimiter/libroothide.tbd || true
+            fi
           fi
 
           echo "[INFO] roothide include dir:"
           ls -la "$ROOTHIDE_INC" || true
           echo "[INFO] roothide lib dir:"
           ls -la "$ROOTHIDE_LIB" || true
+          echo "[INFO] vendor libroot candidates:"
+          ls -la "$VENDOR_LIB"/libroot* "$ROOTLESS_LIB"/libroot* "$ROOTHIDE_LIB"/libroot* 2>/dev/null || true
+          ls -la ChargeLimiter/libroot.a 2>/dev/null || true
 
-          if ! ls "$ROOTHIDE_LIB"/libroot* >/dev/null 2>&1; then
+          if [ ! -f "$ROOTHIDE_LIB/libroot.a" ] \
+            && [ ! -f "$VENDOR_LIB/libroot.a" ] \
+            && [ ! -f "$ROOTLESS_LIB/libroot.a" ] \
+            && [ ! -f ChargeLimiter/libroot.a ]
+          then
             cat >&2 <<'EOF'
-[ERR] Native roothide link dependencies are missing.
+[ERR] Native roothide/rootless link dependency libroot.a is missing.
 
-ChargeLimiter_roothide links with -lroot and expects:
-  /opt/theos/vendor/lib/iphone/roothide/libroot*   (LIBRARY_SEARCH_PATHS)
-  /opt/theos/vendor/include/roothide              (HEADER_SEARCH_PATHS)
+ChargeLimiter links with -lroot. Required (any one, preferably all mirrored):
+  /opt/theos/vendor/lib/iphone/roothide/libroot.a
+  /opt/theos/vendor/lib/libroot.a
+  /opt/theos/vendor/lib/iphone/rootless/libroot.a
+  ChargeLimiter/libroot.a   (local stub; gitignored; filled by build_packages.sh)
 
 CI tried:
-  1) clone https://github.com/roothide/theos.git → /opt/theos_roothide and copy vendor bits
-  2) download libroothide Xcode devkit from https://github.com/roothide/libroothide/releases
+  1) clone https://github.com/roothide/theos.git → /opt/theos_roothide and rsync vendor
+  2) promote any existing vendor/rootless libroot into roothide path
+  3) optional header-only devkit (does NOT provide libroot.a)
 
-Fix:
-  - Install roothide/theos (https://github.com/roothide/Developer)
-  - Or place libroothide/libroot into the paths above
-  - Local emergency only: ./scripts/build_packages.sh --legacy-roothide-convert
-  - Or skip: ./scripts/build_packages.sh --skip-roothide  (not for release)
+libroothide.tbd alone is NOT enough for -lroot.
+
+Fix on the runner image or in this workflow: install a full Theos vendor that
+contains libroot.a (same as a working local /opt/theos or Develop/theos-roothide).
 EOF
             exit 1
           fi
 
-          # Soft header check: warn if roothide.h is absent (some builds only need libroot).
-          if [ ! -f /opt/theos/vendor/include/roothide.h ] \
-            && [ ! -f "$ROOTHIDE_INC/roothide.h" ] \
-            && [ ! -f "$ROOTHIDE_INC/libroothide.h" ]; then
-            echo "[WARN] roothide.h not found under vendor include; compile may still fail if sources include <roothide.h>" >&2
+          if [ ! -f "$VENDOR_INC/roothide.h" ] \
+            && [ ! -f "$ROOTHIDE_INC/roothide.h" ]
+          then
+            echo "[WARN] roothide.h not found; native compile may still succeed if only libroot is required." >&2
           fi
 
       - name: Verify release tag matches project version
