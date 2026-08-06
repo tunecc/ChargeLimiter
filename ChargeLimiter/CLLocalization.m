@@ -1,9 +1,13 @@
 #import "CLLocalization.h"
-#import "UIKit/CLAppSettingsStore.h"
 
 #import <Foundation/Foundation.h>
 
 extern "C" NSUserDefaults* getAppUserDefaults(void);
+
+// 共享 plist KV（utils.mm；本文件按 ObjC++ 编译，可直接链接非 extern "C" 符号，
+// 也可用 _C 包装。AppLanguage 权威源 = 共享 store，不是 appdata suite。）
+id getlocalKV(NSString* key);
+BOOL setlocalKVChecked(NSString* key, id val);
 
 #pragma mark - Localization
 
@@ -46,8 +50,9 @@ NSString *CLLocalizedString(NSString *key) {
 }
 
 CLAppLanguage CLGetAppLanguage(void) {
-    NSInteger val = [[CLAppSettingsStore shared] integerForKey:@"AppLanguage" defaultValue:0];
-    switch (val) {
+    id val = getlocalKV(@"AppLanguage");
+    NSInteger n = [val isKindOfClass:[NSNumber class]] ? [val integerValue] : 0;
+    switch (n) {
         case 1: return CLAppLanguageEnglish;
         case 2: return CLAppLanguageChineseSimplified;
         default: return CLAppLanguageSystem;
@@ -82,7 +87,12 @@ BOOL CLSetAppLanguage(CLAppLanguage language, NSError **error) {
         }
         return NO;
     }
-    if (![[CLAppSettingsStore shared] setIntegerForKey:@"AppLanguage" value:(NSInteger)language error:error]) {
+    if (!setlocalKVChecked(@"AppLanguage", @((NSInteger)language))) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"CLAppSettings"
+                                         code:-2
+                                     userInfo:@{NSLocalizedDescriptionKey: @"Shared config write failed"}];
+        }
         return NO;
     }
     CLApplyLanguageFromSettings();
