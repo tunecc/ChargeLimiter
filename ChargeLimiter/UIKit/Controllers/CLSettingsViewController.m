@@ -9,10 +9,10 @@
 #import "../CLBatteryManager.h"
 #import "../CLAPIClient.h"
 #import "../CLSymbolImageSupport.h"
-#import "../CLAppSettingsStore.h"
 #import "../../CLLocalization.h"
 // 写失败通知在 utils.mm 中定义/广播，这里前向声明即可拿到符号，
 // 避免把整个 utils.h 拖进来（utils.h 含大量 daemon 侧声明，不适配 UIKit target）。
+// App 四键权威源 = 共享 plist（getlocalKV_C / setlocalKV_C）；apply 失败会 post 通知，勿在此再 post。
 extern NSString* const CLConfigWriteFailedNotification;
 NSUserDefaults* getAppUserDefaults(void);
 NSString* getAppDocumentsPath_C(void);
@@ -4305,21 +4305,18 @@ static NSString *CLDaemonLanguageValueForLocaleIdentifier(NSString *identifier) 
 
 static NSString * const CLStopChargePresetDefaultsKey = @"StopChargePresetValue";
 
-// App 专属设置统一走 CLAppSettingsStore（NSUserDefaults suite com.chargelimiter.mod.appdata），
-// 与 root daemon 的共享 plist 物理隔离；roothide 下 mobile 进程可读写，重启/重新越狱后不丢失。
-// 写失败时发送 CLConfigWriteFailedNotification，由 AppDelegate 弹出失败提示并去重。
+// App 四键走共享 plist（getlocalKV_C / setlocalKV_C → CLSettingsStore）。
+// setlocalKV_C 内部 apply 失败时已 post CLConfigWriteFailedNotification，此处不要再 post 一次。
 static NSInteger CLLocalIntegerForKey(NSString *key, NSInteger defaultValue) {
-    return [[CLAppSettingsStore shared] integerForKey:key defaultValue:defaultValue];
+    id val = getlocalKV_C(key);
+    if ([val isKindOfClass:[NSNumber class]]) {
+        return [val integerValue];
+    }
+    return defaultValue;
 }
 
 static void CLSetLocalIntegerForKey(NSString *key, NSInteger value) {
-    NSError *error = nil;
-    if (![[CLAppSettingsStore shared] setIntegerForKey:key value:value error:&error]) {
-        [[NSNotificationCenter defaultCenter] postNotificationName:CLConfigWriteFailedNotification
-                                                            object:nil
-                                                          userInfo:@{@"key": key,
-                                                                     @"error": error ?: [NSNull null]}];
-    }
+    setlocalKV_C(key, @(value));
 }
 
 static NSInteger CLNormalizedStopChargePresetValue(NSInteger value) {
@@ -4623,12 +4620,10 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
         NSError *error = nil;
         if (CLSetAppLanguage(language, &error)) {
             [self syncDaemonLanguageWithAppLanguage:language];
-        } else {
-            [[NSNotificationCenter defaultCenter] postNotificationName:CLConfigWriteFailedNotification
-                                                                object:nil
-                                                              userInfo:@{@"key": @"AppLanguage",
-                                                                         @"error": error ?: [NSNull null]}];
         }
+        // 写失败：setlocalKVChecked/apply 已 post CLConfigWriteFailedNotification，勿双重弹窗。
+        // error 仅用于调试；UI 合法入口不会触发 range 校验失败。
+        (void)error;
     };
 
     [alert addAction:[self checkedActionWithTitle:CLL(@"跟随系统") checked:(current == CLAppLanguageSystem) handler:^(UIAlertAction * _Nonnull action) {

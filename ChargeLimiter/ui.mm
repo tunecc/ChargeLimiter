@@ -224,9 +224,10 @@ static AppDelegate* _app = nil;
                 if (window) {
                     window.rootViewController = mainVC;
                     [window makeKeyAndVisible];
-                    // 从持久存储读取并应用深色模式设置(AppAppearance: 0=跟随系统,1=浅色,2=深色)
+                    // 从共享 plist 读取并应用深色模式设置(AppAppearance: 0=跟随系统,1=浅色,2=深色)
                     if (@available(iOS 13.0, *)) {
-                        NSInteger appearance = [[CLAppSettingsStore shared] integerForKey:@"AppAppearance" defaultValue:0];
+                        id appearanceVal = getlocalKV(@"AppAppearance");
+                        NSInteger appearance = [appearanceVal isKindOfClass:[NSNumber class]] ? [appearanceVal integerValue] : 0;
                         window.overrideUserInterfaceStyle = (UIUserInterfaceStyle)appearance;
                     }
                 } else {
