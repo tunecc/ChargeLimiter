@@ -4,6 +4,37 @@
 
 写法参考了 Keep a Changelog 和一些成熟项目常见的结构：每个版本先说明主线，再按少量分类列出用户真正会感知到的变化，尽量详细，但不写成长文。
 
+## v1.14.0 - 2026-08-06
+
+本版主要解决了 roothide（iOS 17）环境下充电控制失效与 App 语言/设置重启后丢失两大问题：新增 iOS 17 停充写法探针并落地了专用的 override 充电控制平面，同时把 App 专属设置抽离到独立 store 彻底修复重启丢失。
+
+### Fixed
+
+- **修复 roothide 下 App 语言每次杀后台重启后重置为"跟随系统"**：根因是 daemon 以 root 创建的共享配置 plist 属主为 root:wheel，mobile App 无法以原子替换方式写入。现在 postinst 在 bootstrap daemon 前把共享数据目录修复为 `mobile:mobile 0750`、plist `0640`；并把四个 App 专属设置抽离到独立的 NSUserDefaults suite，与 daemon 共享文件物理隔离。
+- **修复 iOS 17 有效停充后主界面仍显示"正在充电"**：iOS 17 上 sticky `IsCharging=true` 不会随停充清除，导致 UI 误判充电态。现在显示层以电流 + daemon 充电命令/保持/抑制/策略状态为准，停充时正确显示"已连接电源 · 停止充电"，保持时显示"插电保持中"。
+- **修复 iOS 17 停充写法极性错误**：override 写服务写入 `IsCharging` + `PCI` 的反极性而非 `ChargingOverride` bit，并同步 `g_chargeCommandEnabled`，避免命令态与实际不一致。
+- 修复探针超时与属性转换、深探针覆盖 `prop_only` 路径延迟生效的问题。
+
+### Added
+
+- **iOS 17 停充控制探针**（设置 → 诊断）：一键尝试多种停充写法并自动恢复，产出可复制的探针结果与诊断摘要，帮助在不支持的机型上找到真正生效的写法。深探针对每条 path 观察 2 秒以捕捉 `prop_only` 路径的延迟电流停止。
+- **iOS 17 override 充电控制平面**：新增 `AppleSmartBatteryManager` 服务的 charge/inflow override 写路径，`setChargeStatus` / `setInflowStatus` 在 iOS 17 路由到独立写服务，读服务与之分离。
+- **App 独立 settings store**：`CLAppSettingsStore`（suite `com.chargelimiter.mod.appdata`）承载 `AppLanguage` / `AppAppearance` / `SliderHapticStyle` / `StopChargePresetValue`，首启从共享 plist / standardUserDefaults 迁移，事务写并读回校验。
+- **写失败 UI 反馈**：App 专属设置写盘失败时弹出"保存失败"提示并去重，不再静默吞掉。
+- 本地化新增 iOS 17 override 探针路径相关标签。
+
+### Changed
+
+- App 专属设置改走 `CLAppSettingsStore`，daemon 侧语言 (`lang` key) 仍独立经 HTTP API 同步，两侧互不踩踏。
+- 本地化逻辑从 utils.mm 抽离到独立的 `CLLocalization.m`。
+- postinst 用变量 `DATA_DIR_LOGICAL` 间接传递共享目录逻辑路径，规避 roothide 打包转换把 `/var/mobile/...` 改写为 `/rootfs/var/...` 的 sed 规则。
+- 构建脚本修复宿主 umask 077 致 `DEBIAN` 目录以 0700 落盘被 dpkg-deb 拒绝的问题。
+
+### Notes
+
+- 适用于 rootful / rootless / roothide / TrollStore 四种环境，roothide 包由 rootless 暂存树转换生成。
+- roothide 用户建议优先回归：杀后台重启后语言/深色模式/震动/停充预设是否保持；切换语言后 daemon 文案是否同步；诊断里运行停充探针是否正常。
+
 ## v1.13.9 - 2026-06-23
 
 这一版修复了 v1.13.8 引入的配置持久化问题，彻底解决杀后台重开后设置丢失的问题。
