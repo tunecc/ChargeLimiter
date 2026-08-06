@@ -1441,13 +1441,14 @@
 					"$(inherited)",
 					"$(PROJECT_DIR)/ChargeLimiter",
 					/opt/theos/vendor/lib/iphone/roothide,
+					/opt/theos/vendor/lib,
 				);
 				MARKETING_VERSION = 1.14.0;
 				MonkeyDevBuildPackageOnAnyBuild = NO;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = NO;
 				MonkeyDevPath = /opt/MonkeyDev;
-				MonkeyDevTheosPath = /opt/theos_roothide;
+				MonkeyDevTheosPath = /opt/theos;
 				OTHER_CFLAGS = (
 					"-DTHEOS_PACKAGE_SCHEME_ROOTHIDE=1",
 				);
@@ -1496,13 +1497,14 @@
 					"$(inherited)",
 					"$(PROJECT_DIR)/ChargeLimiter",
 					/opt/theos/vendor/lib/iphone/roothide,
+					/opt/theos/vendor/lib,
 				);
 				MARKETING_VERSION = 1.14.0;
 				MonkeyDevBuildPackageOnAnyBuild = NO;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = NO;
 				MonkeyDevPath = /opt/MonkeyDev;
-				MonkeyDevTheosPath = /opt/theos_roothide;
+				MonkeyDevTheosPath = /opt/theos;
 				OTHER_CFLAGS = (
 					"-DTHEOS_PACKAGE_SCHEME_ROOTHIDE=1",
 				);
@@ -1554,13 +1556,14 @@
 					"$(inherited)",
 					"$(PROJECT_DIR)/ChargeLimiter",
 					/opt/theos/vendor/lib/iphone/roothide,
+					/opt/theos/vendor/lib,
 				);
 				MARKETING_VERSION = 1.14.0;
 				MonkeyDevBuildPackageOnAnyBuild = NO;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = NO;
 				MonkeyDevPath = /opt/MonkeyDev;
-				MonkeyDevTheosPath = /opt/theos_roothide;
+				MonkeyDevTheosPath = /opt/theos;
 				OTHER_CFLAGS = (
 					"-DTHEOS_PACKAGE_SCHEME_ROOTHIDE=1",
 				);
@@ -1612,13 +1615,14 @@
 					"$(inherited)",
 					"$(PROJECT_DIR)/ChargeLimiter",
 					/opt/theos/vendor/lib/iphone/roothide,
+					/opt/theos/vendor/lib,
 				);
 				MARKETING_VERSION = 1.14.0;
 				MonkeyDevBuildPackageOnAnyBuild = NO;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = NO;
 				MonkeyDevPath = /opt/MonkeyDev;
-				MonkeyDevTheosPath = /opt/theos_roothide;
+				MonkeyDevTheosPath = /opt/theos;
 				OTHER_CFLAGS = (
 					"-DTHEOS_PACKAGE_SCHEME_ROOTHIDE=1",
 				);
