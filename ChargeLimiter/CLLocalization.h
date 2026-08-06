@@ -10,7 +10,7 @@ FOUNDATION_EXPORT NSString * const CLAppLanguageDidChangeNotification;
 
 FOUNDATION_EXPORT NSString *CLLocalizedString(NSString *key);
 FOUNDATION_EXPORT void CLApplyLanguageFromSettings(void);
-FOUNDATION_EXPORT void CLSetAppLanguage(CLAppLanguage language);
+FOUNDATION_EXPORT BOOL CLSetAppLanguage(CLAppLanguage language, NSError **error);
 FOUNDATION_EXPORT CLAppLanguage CLGetAppLanguage(void);
 
 #define CLL(key) CLLocalizedString((key))

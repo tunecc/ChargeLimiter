@@ -373,6 +373,7 @@ convert_rootless_stage_to_roothide() {
   done
 
   clean_host_metadata "$dst_stage"
+  chmod 755 "$dst_stage/DEBIAN"
   chmod 755 "$dst_stage/DEBIAN"/*
   set_roothide_control_arch "$dst_stage/DEBIAN/control"
 }
@@ -546,6 +547,7 @@ cp -a "$ROOTLESS_APP" "$STAGE_ROOTLESS_DIR/var/jb/Applications/ChargeLimiter.app
 
 clean_host_metadata "$STAGE_ROOTFUL_DIR"
 clean_host_metadata "$STAGE_ROOTLESS_DIR"
+chmod 755 "$STAGE_ROOTFUL_DIR/DEBIAN" "$STAGE_ROOTLESS_DIR/DEBIAN"
 chmod 755 "$STAGE_ROOTFUL_DIR/DEBIAN"/* "$STAGE_ROOTLESS_DIR/DEBIAN"/*
 set_control_version "$STAGE_ROOTFUL_DIR/DEBIAN/control"
 set_control_version "$STAGE_ROOTLESS_DIR/DEBIAN/control"

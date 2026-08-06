@@ -374,3 +374,5 @@
 "daemon 未响应" = "Daemon did not respond";
 "运行" = "Run";
 "探针结果已复制到剪贴板。" = "The probe result has been copied to the clipboard.";
+"保存失败" = "Save Failed";
+"设置未能保存，已恢复为上一次的值。若反复出现，请重装或修复 ChargeLimiter 数据目录权限。" = "Settings could not be saved. The previous value was restored. If this keeps happening, reinstall or repair the ChargeLimiter data directory permissions.";
