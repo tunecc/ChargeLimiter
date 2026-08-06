@@ -6,14 +6,32 @@ PROJECT="$ROOT_DIR/ChargeLimiter.xcodeproj"
 OUT_DIR="$ROOT_DIR/out"
 PKG_ROOTFUL_DIR="$ROOT_DIR/ChargeLimiter/Package"
 PKG_ROOTLESS_DIR="$ROOT_DIR/ChargeLimiter/Package_rootless"
+PKG_ROOTHIDE_DIR="$ROOT_DIR/ChargeLimiter/Package_roothide"
 BUILD_ROOTFUL="$ROOT_DIR/build_rootful"
 BUILD_ROOTLESS="$ROOT_DIR/build_rootless"
+BUILD_ROOTHIDE="$ROOT_DIR/build_roothide"
 PAYLOAD_DIR="$ROOT_DIR/Payload"
 ROOTHIDE_MERGE_ENT="$ROOT_DIR/scripts/roothide.entitlements"
 STAGE_DIR=""
 BUILD_LOG_ROOT=""
-BUILD_LEGACY_ROOTHIDE="${CHARGELIMITER_BUILD_ROOTHIDE:-${CHARGELIMITER_BUILD_LEGACY_ROOTHIDE:-1}}"
+# Default: native roothide scheme + Package_roothide. Legacy convert is opt-in.
+BUILD_NATIVE_ROOTHIDE="${CHARGELIMITER_BUILD_NATIVE_ROOTHIDE:-1}"
+BUILD_LEGACY_ROOTHIDE="${CHARGELIMITER_BUILD_LEGACY_ROOTHIDE:-0}"
 DPKG_DEB_SUPPORTS_ROOT_OWNER_GROUP=0
+
+# CHARGELIMITER_BUILD_ROOTHIDE=0 disables all roothide packaging paths.
+case "${CHARGELIMITER_BUILD_ROOTHIDE:-1}" in
+  0)
+    BUILD_NATIVE_ROOTHIDE=0
+    BUILD_LEGACY_ROOTHIDE=0
+    ;;
+  1)
+    ;;
+  *)
+    echo "[ERR] CHARGELIMITER_BUILD_ROOTHIDE must be 0 or 1." >&2
+    exit 1
+    ;;
+esac
 
 usage() {
   cat >&2 <<EOF
@@ -21,15 +39,13 @@ Usage: $0 [VERSION] [--skip-roothide] [--legacy-roothide-convert]
 
 Build TrollStore, rootful, rootless, and roothide packages into out/.
 
-This repository still has no native roothide Xcode packaging entry, so the
-default roothide package is produced by converting the rootless staging tree.
-That output is installable for roothide users, but it is not the same as a
-future native THEOS_PACKAGE_SCHEME=roothide release path.
+By default the roothide package is built natively via the "ChargeLimiter roothide"
+scheme and Package_roothide template (THEOS_PACKAGE_SCHEME=roothide).
 
 Options:
   --skip-roothide            Do not build the roothide package.
-  --legacy-roothide-convert  Compatibility alias. The current default already
-                             builds the roothide package by conversion.
+  --legacy-roothide-convert  Build roothide by converting the rootless staging
+                             tree (RootHidePatcher-style fallback; not default).
 EOF
 }
 
@@ -194,6 +210,15 @@ sign_app() {
   # Keep dedicated entitlements for each executable.
   ldid -S"$APP_ENT" "$APP_PATH/ChargeLimiter"
   ldid -S"$DAEMON_ENT" "$APP_PATH/ChargeLimiterDaemon"
+  rm -rf "$APP_PATH/_CodeSignature"
+}
+
+# Native roothide: base jb entitlements, then merge scripts/roothide.entitlements.
+sign_roothide_app() {
+  APP_PATH="$1"
+  sign_app "$APP_PATH" "$APP_ENT_JB"
+  ldid -M "-S$ROOTHIDE_MERGE_ENT" "$APP_PATH/ChargeLimiter"
+  ldid -M "-S$ROOTHIDE_MERGE_ENT" "$APP_PATH/ChargeLimiterDaemon"
   rm -rf "$APP_PATH/_CodeSignature"
 }
 
@@ -406,10 +431,13 @@ while [ "$#" -gt 0 ]; do
       exit 0
       ;;
     --skip-roothide)
+      BUILD_NATIVE_ROOTHIDE=0
       BUILD_LEGACY_ROOTHIDE=0
       ;;
     --legacy-roothide-convert)
+      # Opt-in RootHidePatcher-style conversion; disables native path.
       BUILD_LEGACY_ROOTHIDE=1
+      BUILD_NATIVE_ROOTHIDE=0
       ;;
     --)
       shift
@@ -432,21 +460,44 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
-case "$BUILD_LEGACY_ROOTHIDE" in
+case "$BUILD_NATIVE_ROOTHIDE" in
   0|1)
     ;;
   *)
-    echo "[ERR] CHARGELIMITER_BUILD_ROOTHIDE / CHARGELIMITER_BUILD_LEGACY_ROOTHIDE must be 0 or 1." >&2
+    echo "[ERR] CHARGELIMITER_BUILD_NATIVE_ROOTHIDE must be 0 or 1." >&2
     exit 1
     ;;
 esac
 
-if [ "$BUILD_LEGACY_ROOTHIDE" = "1" ]; then
-  require_cmd file
+case "$BUILD_LEGACY_ROOTHIDE" in
+  0|1)
+    ;;
+  *)
+    echo "[ERR] CHARGELIMITER_BUILD_LEGACY_ROOTHIDE must be 0 or 1." >&2
+    exit 1
+    ;;
+esac
+
+# Prefer a single roothide path: native wins if both somehow enabled.
+if [ "$BUILD_NATIVE_ROOTHIDE" = "1" ] && [ "$BUILD_LEGACY_ROOTHIDE" = "1" ]; then
+  echo "[WARN] Both native and legacy roothide requested; using native path only."
+  BUILD_LEGACY_ROOTHIDE=0
+fi
+
+BUILD_ANY_ROOTHIDE=0
+if [ "$BUILD_NATIVE_ROOTHIDE" = "1" ] || [ "$BUILD_LEGACY_ROOTHIDE" = "1" ]; then
+  BUILD_ANY_ROOTHIDE=1
+fi
+
+if [ "$BUILD_ANY_ROOTHIDE" = "1" ]; then
   [ -f "$ROOTHIDE_MERGE_ENT" ] || {
     echo "[ERR] Missing roothide compatibility entitlements: $ROOTHIDE_MERGE_ENT" >&2
     exit 1
   }
+fi
+
+if [ "$BUILD_LEGACY_ROOTHIDE" = "1" ]; then
+  require_cmd file
 fi
 
 if [ -z "$VERSION" ]; then
@@ -460,6 +511,7 @@ fi
 
 ROOTFUL_APP="$BUILD_ROOTFUL/Build/Products/Release-iphoneos/ChargeLimiter.app"
 ROOTLESS_APP="$BUILD_ROOTLESS/Build/Products/Release-iphoneos/ChargeLimiter.app"
+ROOTHIDE_APP="$BUILD_ROOTHIDE/Build/Products/Release-iphoneos/ChargeLimiter.app"
 APP_ENT_TS="$ROOT_DIR/ChargeLimiter/ChargeLimiter.app.entitlements"
 APP_ENT_JB="$ROOT_DIR/ChargeLimiter/ChargeLimiter.app.jb.entitlements"
 DAEMON_ENT="$ROOT_DIR/ChargeLimiter/ChargeLimiter.entitlements"
@@ -472,6 +524,7 @@ TROLLSTORE_BANNED_ENTITLEMENTS_REGEX="com\\.apple\\.private\\.cs\\.debugger|dyna
 
 force_clean_dir "$BUILD_ROOTFUL"
 force_clean_dir "$BUILD_ROOTLESS"
+force_clean_dir "$BUILD_ROOTHIDE"
 force_clean_dir "$PAYLOAD_DIR"
 require_project_build_environment
 mkdir -p "$OUT_DIR" "$PAYLOAD_DIR"
@@ -482,10 +535,10 @@ STAGE_ROOTLESS_DIR="$STAGE_DIR/rootless"
 STAGE_ROOTHIDE_DIR="$STAGE_DIR/roothide"
 
 if [ "$BUILD_LEGACY_ROOTHIDE" = "1" ]; then
-  echo "[WARN] roothide package will be built by converting the rootless staging tree because this project still has no native roothide Xcode packaging entry."
+  echo "[WARN] roothide package will be built by converting the rootless staging tree (--legacy-roothide-convert)."
 fi
 
-echo "[1/9] Build rootful app (arm64)..."
+echo "[1/10] Build rootful app (arm64)..."
 run_logged_command build-rootful xcodebuild \
   -project "$PROJECT" \
   -scheme "ChargeLimiter" \
@@ -499,7 +552,7 @@ run_logged_command build-rootful xcodebuild \
   MonkeyDevInstallOnAnyBuild=NO \
   MonkeyDevBuildPackageOnAnyBuild=NO
 
-echo "[2/9] Build rootless app (arm64)..."
+echo "[2/10] Build rootless app (arm64)..."
 run_logged_command build-rootless xcodebuild \
   -project "$PROJECT" \
   -scheme "ChargeLimiter rootless" \
@@ -513,20 +566,49 @@ run_logged_command build-rootless xcodebuild \
   MonkeyDevInstallOnAnyBuild=NO \
   MonkeyDevBuildPackageOnAnyBuild=NO
 
+if [ "$BUILD_NATIVE_ROOTHIDE" = "1" ]; then
+  echo "[3/10] Build roothide app (native scheme)..."
+  run_logged_command build-roothide xcodebuild \
+    -project "$PROJECT" \
+    -scheme "ChargeLimiter roothide" \
+    -destination "generic/platform=iOS" \
+    -configuration Release \
+    -derivedDataPath "$BUILD_ROOTHIDE" \
+    CODE_SIGNING_ALLOWED=NO \
+    THEOS_PACKAGE_SCHEME=roothide \
+    THEOS_PACKAGE_INSTALL_PREFIX= \
+    ARCHS=arm64 \
+    MonkeyDevInstallOnAnyBuild=NO \
+    MonkeyDevBuildPackageOnAnyBuild=NO
+else
+  echo "[3/10] Skip native roothide xcodebuild."
+fi
+
 if [ ! -d "$ROOTFUL_APP" ] || [ ! -d "$ROOTLESS_APP" ]; then
     echo "[ERR] Build output app not found." >&2
     exit 1
 fi
 
-echo "[3/9] Strip app binaries..."
+if [ "$BUILD_NATIVE_ROOTHIDE" = "1" ] && [ ! -d "$ROOTHIDE_APP" ]; then
+    echo "[ERR] Native roothide build output app not found: $ROOTHIDE_APP" >&2
+    exit 1
+fi
+
+echo "[4/10] Strip app binaries..."
 strip_app "$ROOTFUL_APP"
 strip_app "$ROOTLESS_APP"
+if [ "$BUILD_NATIVE_ROOTHIDE" = "1" ]; then
+  strip_app "$ROOTHIDE_APP"
+fi
 
-echo "[4/9] Sign app binaries..."
+echo "[5/10] Sign app binaries..."
 sign_app "$ROOTFUL_APP" "$APP_ENT_JB"
 sign_app "$ROOTLESS_APP" "$APP_ENT_JB"
+if [ "$BUILD_NATIVE_ROOTHIDE" = "1" ]; then
+  sign_roothide_app "$ROOTHIDE_APP"
+fi
 
-echo "[5/9] Prepare package trees..."
+echo "[6/10] Prepare package trees..."
 cp -a "$PKG_ROOTFUL_DIR" "$STAGE_ROOTFUL_DIR"
 cp -a "$PKG_ROOTLESS_DIR" "$STAGE_ROOTLESS_DIR"
 [ -d "$STAGE_ROOTFUL_DIR/DEBIAN" ] || {
@@ -552,14 +634,29 @@ chmod 755 "$STAGE_ROOTFUL_DIR/DEBIAN"/* "$STAGE_ROOTLESS_DIR/DEBIAN"/*
 set_control_version "$STAGE_ROOTFUL_DIR/DEBIAN/control"
 set_control_version "$STAGE_ROOTLESS_DIR/DEBIAN/control"
 
-if [ "$BUILD_LEGACY_ROOTHIDE" = "1" ]; then
-  echo "[6/9] Convert rootless package tree to roothide layout..."
+if [ "$BUILD_NATIVE_ROOTHIDE" = "1" ]; then
+  echo "[7/10] Stage native Package_roothide..."
+  [ -d "$PKG_ROOTHIDE_DIR/DEBIAN" ] || {
+    echo "[ERR] Missing native Package_roothide template: $PKG_ROOTHIDE_DIR/DEBIAN" >&2
+    exit 1
+  }
+  cp -a "$PKG_ROOTHIDE_DIR" "$STAGE_ROOTHIDE_DIR"
+  rm -rf "$STAGE_ROOTHIDE_DIR/Applications/ChargeLimiter.app"
+  mkdir -p "$STAGE_ROOTHIDE_DIR/Applications"
+  cp -a "$ROOTHIDE_APP" "$STAGE_ROOTHIDE_DIR/Applications/ChargeLimiter.app"
+  clean_host_metadata "$STAGE_ROOTHIDE_DIR"
+  chmod 755 "$STAGE_ROOTHIDE_DIR/DEBIAN"
+  chmod 755 "$STAGE_ROOTHIDE_DIR/DEBIAN"/*
+  set_control_version "$STAGE_ROOTHIDE_DIR/DEBIAN/control"
+  set_roothide_control_arch "$STAGE_ROOTHIDE_DIR/DEBIAN/control"
+elif [ "$BUILD_LEGACY_ROOTHIDE" = "1" ]; then
+  echo "[7/10] Convert rootless package tree to roothide layout (legacy)..."
   convert_rootless_stage_to_roothide "$STAGE_ROOTLESS_DIR" "$STAGE_ROOTHIDE_DIR"
 else
-  echo "[6/9] Skip roothide package by request."
+  echo "[7/10] Skip roothide package by request."
 fi
 
-echo "[7/9] Build TrollStore package..."
+echo "[8/10] Build TrollStore package..."
 cp -a "$ROOTLESS_APP" "$PAYLOAD_DIR/ChargeLimiter.app"
 sign_app "$PAYLOAD_DIR/ChargeLimiter.app" "$APP_ENT_TS"
 clean_host_metadata "$PAYLOAD_DIR"
@@ -570,11 +667,11 @@ clean_host_metadata "$PAYLOAD_DIR"
 )
 rm -rf "$PAYLOAD_DIR"
 
-echo "[8/9] Build deb packages..."
+echo "[9/10] Build deb packages..."
 rm -f "$ROOTFUL_DEB_OUT" "$ROOTLESS_DEB_OUT" "$ROOTHIDE_DEB_OUT"
 dpkg_build_package "$STAGE_ROOTFUL_DIR" "$ROOTFUL_DEB_OUT"
 dpkg_build_package "$STAGE_ROOTLESS_DIR" "$ROOTLESS_DEB_OUT"
-if [ "$BUILD_LEGACY_ROOTHIDE" = "1" ]; then
+if [ "$BUILD_ANY_ROOTHIDE" = "1" ]; then
   dpkg_build_package "$STAGE_ROOTHIDE_DIR" "$ROOTHIDE_DEB_OUT"
 fi
 
@@ -788,17 +885,17 @@ check_roothide_stage() {
     }
   done
 
-  # RootHidePatcher standard conversion keeps the rootless Mach-O slices and
-  # rewrites the package/runtime layout around them instead of rebuilding arm64e.
+  # Legacy conversion keeps rootless arm64 slices; native scheme also builds arm64
+  # (iphoneos-arm64e is the roothide dpkg architecture label, not CPU slice).
   check_app "$APP_PATH" "arm64"
 }
 
-echo "[9/9] Verify package contents..."
+echo "[10/10] Verify package contents..."
 check_rootful_stage "$STAGE_ROOTFUL_DIR"
 check_rootless_stage "$STAGE_ROOTLESS_DIR"
 check_deb_metadata "$ROOTFUL_DEB_OUT" "iphoneos-arm"
 check_deb_metadata "$ROOTLESS_DEB_OUT" "iphoneos-arm64"
-if [ "$BUILD_LEGACY_ROOTHIDE" = "1" ]; then
+if [ "$BUILD_ANY_ROOTHIDE" = "1" ]; then
   check_roothide_stage "$STAGE_ROOTHIDE_DIR"
   check_no_host_metadata "$STAGE_ROOTHIDE_DIR"
   check_deb_metadata "$ROOTHIDE_DEB_OUT" "iphoneos-arm64e"
@@ -808,9 +905,12 @@ echo "[OK] Done"
 echo "[OUT] $TIPA_OUT"
 echo "[OUT] $ROOTFUL_DEB_OUT"
 echo "[OUT] $ROOTLESS_DEB_OUT"
-if [ "$BUILD_LEGACY_ROOTHIDE" = "1" ]; then
+if [ "$BUILD_NATIVE_ROOTHIDE" = "1" ]; then
   echo "[OUT] $ROOTHIDE_DEB_OUT"
-  echo "[INFO] roothide package was built by compatibility conversion from the rootless staging tree. A true native roothide release path still needs a dedicated roothide packaging entry."
+  echo "[INFO] roothide package was built natively via scheme \"ChargeLimiter roothide\" and Package_roothide."
+elif [ "$BUILD_LEGACY_ROOTHIDE" = "1" ]; then
+  echo "[OUT] $ROOTHIDE_DEB_OUT"
+  echo "[INFO] roothide package was built by legacy conversion from the rootless staging tree (--legacy-roothide-convert)."
 else
   echo "[INFO] roothide package was skipped."
 fi
