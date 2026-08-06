@@ -30,7 +30,7 @@ ChargeLimiter 本质上是一个充电策略调度器，不是硬件电源路径
 - TrollStore
 - 越狱 rootful
 - 越狱 rootless
-- roothide 兼容环境
+- 越狱 roothide（原生 scheme / `Package_roothide`）
 
 ## 当前版本能做什么
 
@@ -337,11 +337,12 @@ Apple 官方对 iPhone 电池寿命的说明里，明确把 `温度历史` 和 `
 - rootless：`out/ChargeLimiter_<VERSION>_rootless_arm64.deb`
 - roothide：`out/ChargeLimiter_<VERSION>_roothide_arm64e.deb`
 
-当前仓库还没有原生 roothide Xcode 打包入口，所以脚本会默认把 rootless 临时包树转换成 roothide 安装包，保证一次运行能拿到四类产物。这个 roothide 产物可安装，但它依然不是未来原生 `THEOS_PACKAGE_SCHEME=roothide` 正式发布线的替代品。
+roothide **默认原生构建**：scheme `ChargeLimiter roothide` + 模板 `ChargeLimiter/Package_roothide/`（`THEOS_PACKAGE_SCHEME=roothide`，Architecture `iphoneos-arm64e`，包布局无 `/var/jb`）。
+需要 libroothide / roothide 的 `libroot`（见下方构建说明）。从 rootless 转换仅作紧急回滚：`./scripts/build_packages.sh --legacy-roothide-convert`。
 
 ## 构建与打包
 
-详细说明见 [构建安装包.md](构建安装包.md)。
+详细说明见 [构建安装包.md](构建安装包.md) 与 [docs/roothide-packaging.md](docs/roothide-packaging.md)。
 
 快速命令：
 
@@ -349,10 +350,16 @@ Apple 官方对 iPhone 电池寿命的说明里，明确把 `温度历史` 和 `
 ./scripts/build_packages.sh
 ```
 
+跳过 roothide（本机无 roothide 库时）：
+
+```bash
+./scripts/build_packages.sh --skip-roothide
+```
+
 手动指定版本号：
 
 ```bash
-./scripts/build_packages.sh 1.13.0
+./scripts/build_packages.sh 1.14.0
 ```
 
 单独验证编译：
@@ -365,11 +372,16 @@ xcodebuild -project ChargeLimiter.xcodeproj -scheme "ChargeLimiter" -destination
 xcodebuild -project ChargeLimiter.xcodeproj -scheme "ChargeLimiter rootless" -destination "generic/platform=iOS" -configuration Release -derivedDataPath build_rootless CODE_SIGNING_ALLOWED=NO ARCHS=arm64
 ```
 
+```bash
+xcodebuild -project ChargeLimiter.xcodeproj -scheme "ChargeLimiter roothide" -destination "generic/platform=iOS" -configuration Release -derivedDataPath build_roothide CODE_SIGNING_ALLOWED=NO ARCHS=arm64 THEOS_PACKAGE_SCHEME=roothide
+```
+
 ## 相关文档
 
 - [更新日志](CHANGELOG.md)
 - [构建安装包.md](构建安装包.md)
-- [真机长测与阈值校准.md](docs/真机长测与阈值校准.md)
+- [原生 Roothide 打包说明](docs/roothide-packaging.md)
+- [真机长测与频率校准.md](docs/真机长测与频率校准.md)
 
 ## 依据
 

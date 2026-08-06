@@ -44,6 +44,7 @@ jobs:
 
       - name: Prepare Theos headers
         run: |
+          set -euo pipefail
           sudo mkdir -p /opt
           if [ ! -d /opt/theos ]; then
             sudo git clone --depth 1 --recursive https://github.com/theos/theos.git /opt/theos
@@ -59,6 +60,151 @@ jobs:
           sudo mkdir -p /opt/framework /opt/lib
           test -f /opt/theos/vendor/include/IOKit/hid/IOHIDService.h
           test -f /opt/theos/vendor/include/MobileCoreServices/LSApplicationProxy.h
+
+      # ChargeLimiter roothide Xcode targets link with -lroot and search:
+      #   HEADER: /opt/theos/vendor/include/roothide
+      #   LIBRARY: /opt/theos/vendor/lib/iphone/roothide
+      #   MonkeyDevTheosPath: /opt/theos_roothide (optional; package phases are off by default)
+      # Prefer roothide/theos vendor bits; fall back to libroothide Xcode devkit.
+      # Official refs:
+      #   https://github.com/roothide/Developer
+      #   https://github.com/roothide/libroothide/releases
+      - name: Prepare roothide toolchain
+        run: |
+          set -euo pipefail
+
+          ROOTHIDE_INC="/opt/theos/vendor/include/roothide"
+          ROOTHIDE_LIB="/opt/theos/vendor/lib/iphone/roothide"
+          sudo mkdir -p "$ROOTHIDE_INC" "$ROOTHIDE_LIB" /opt
+
+          install_from_roothide_theos() {
+            if [ ! -d /opt/theos_roothide/.git ]; then
+              echo "[INFO] Cloning roothide/theos into /opt/theos_roothide (best-effort)..."
+              if ! sudo git clone --depth 1 --recursive https://github.com/roothide/theos.git /opt/theos_roothide; then
+                echo "[WARN] Failed to clone https://github.com/roothide/theos.git" >&2
+                return 1
+              fi
+            else
+              echo "[INFO] Using existing /opt/theos_roothide"
+              sudo git -C /opt/theos_roothide submodule update --init --recursive || true
+            fi
+
+            # Copy vendor headers/libs that match project.pbxproj search paths.
+            if [ -d /opt/theos_roothide/vendor/include/roothide ]; then
+              sudo cp -a /opt/theos_roothide/vendor/include/roothide/. "$ROOTHIDE_INC/"
+            fi
+            if [ -f /opt/theos_roothide/vendor/include/roothide.h ]; then
+              sudo cp -a /opt/theos_roothide/vendor/include/roothide.h /opt/theos/vendor/include/roothide.h
+              sudo cp -a /opt/theos_roothide/vendor/include/roothide.h "$ROOTHIDE_INC/roothide.h" || true
+            fi
+            if [ -d /opt/theos_roothide/vendor/lib/iphone/roothide ]; then
+              sudo cp -a /opt/theos_roothide/vendor/lib/iphone/roothide/. "$ROOTHIDE_LIB/"
+            fi
+
+            # Some forks keep libroot only under vendor/lib; surface it for -lroot.
+            if ! ls "$ROOTHIDE_LIB"/libroot* >/dev/null 2>&1; then
+              for candidate in \
+                /opt/theos_roothide/vendor/lib/iphone/roothide/libroot.a \
+                /opt/theos_roothide/vendor/lib/libroot.a \
+                /opt/theos_roothide/vendor/lib/iphone/libroot.a
+              do
+                if [ -f "$candidate" ]; then
+                  sudo cp -a "$candidate" "$ROOTHIDE_LIB/"
+                fi
+              done
+            fi
+            return 0
+          }
+
+          install_from_libroothide_devkit() {
+            echo "[INFO] Trying libroothide Xcode devkit (best-effort)..."
+            TMP="$(mktemp -d)"
+            # Primary: release-body file attachment used by libroothide 0.0.1
+            # Fallback: latest release tarball (source only; may not contain prebuilt libroot)
+            if curl -fsSL -o "$TMP/devkit.zip" \
+              "https://github.com/RootHide/libroothide/files/12643716/devkit.zip"
+            then
+              unzip -q "$TMP/devkit.zip" -d "$TMP/devkit"
+            else
+              echo "[WARN] devkit.zip download failed; trying libroothide source archive" >&2
+              if ! curl -fsSL -o "$TMP/libroothide.tgz" \
+                "https://api.github.com/repos/roothide/libroothide/tarball/0.0.1"
+              then
+                echo "[WARN] libroothide archive download failed" >&2
+                rm -rf "$TMP"
+                return 1
+              fi
+              mkdir -p "$TMP/devkit"
+              tar -xzf "$TMP/libroothide.tgz" -C "$TMP/devkit" --strip-components=1 || true
+            fi
+
+            # Heuristic copy: place any discovered roothide headers / libroot into pbx paths.
+            while IFS= read -r hdr; do
+              sudo mkdir -p "$ROOTHIDE_INC"
+              sudo cp -a "$hdr" "$ROOTHIDE_INC/" || true
+              sudo cp -a "$hdr" /opt/theos/vendor/include/ || true
+            done < <(find "$TMP/devkit" -type f \( -name 'roothide.h' -o -name 'libroothide.h' \) 2>/dev/null || true)
+
+            while IFS= read -r lib; do
+              sudo mkdir -p "$ROOTHIDE_LIB"
+              sudo cp -a "$lib" "$ROOTHIDE_LIB/"
+            done < <(find "$TMP/devkit" -type f \( -name 'libroot*.a' -o -name 'libroot*.dylib' -o -name 'libroothide*.a' -o -name 'libroothide*.dylib' \) 2>/dev/null || true)
+
+            # If the zip is a drop-in SDK tree, also try common layout roots.
+            for root in "$TMP/devkit" "$TMP/devkit"/*; do
+              [ -d "$root" ] || continue
+              if [ -d "$root/include/roothide" ]; then
+                sudo cp -a "$root/include/roothide/." "$ROOTHIDE_INC/"
+              fi
+              if [ -d "$root/lib/iphone/roothide" ]; then
+                sudo cp -a "$root/lib/iphone/roothide/." "$ROOTHIDE_LIB/"
+              fi
+              if [ -d "$root/usr/lib" ]; then
+                find "$root/usr/lib" -type f \( -name 'libroot*' -o -name 'libroothide*' \) -exec sudo cp -a {} "$ROOTHIDE_LIB/" \;
+              fi
+            done
+
+            rm -rf "$TMP"
+            return 0
+          }
+
+          install_from_roothide_theos || true
+          if ! ls "$ROOTHIDE_LIB"/libroot* >/dev/null 2>&1; then
+            install_from_libroothide_devkit || true
+          fi
+
+          echo "[INFO] roothide include dir:"
+          ls -la "$ROOTHIDE_INC" || true
+          echo "[INFO] roothide lib dir:"
+          ls -la "$ROOTHIDE_LIB" || true
+
+          if ! ls "$ROOTHIDE_LIB"/libroot* >/dev/null 2>&1; then
+            cat >&2 <<'EOF'
+[ERR] Native roothide link dependencies are missing.
+
+ChargeLimiter_roothide links with -lroot and expects:
+  /opt/theos/vendor/lib/iphone/roothide/libroot*   (LIBRARY_SEARCH_PATHS)
+  /opt/theos/vendor/include/roothide              (HEADER_SEARCH_PATHS)
+
+CI tried:
+  1) clone https://github.com/roothide/theos.git → /opt/theos_roothide and copy vendor bits
+  2) download libroothide Xcode devkit from https://github.com/roothide/libroothide/releases
+
+Fix:
+  - Install roothide/theos (https://github.com/roothide/Developer)
+  - Or place libroothide/libroot into the paths above
+  - Local emergency only: ./scripts/build_packages.sh --legacy-roothide-convert
+  - Or skip: ./scripts/build_packages.sh --skip-roothide  (not for release)
+EOF
+            exit 1
+          fi
+
+          # Soft header check: warn if roothide.h is absent (some builds only need libroot).
+          if [ ! -f /opt/theos/vendor/include/roothide.h ] \
+            && [ ! -f "$ROOTHIDE_INC/roothide.h" ] \
+            && [ ! -f "$ROOTHIDE_INC/libroothide.h" ]; then
+            echo "[WARN] roothide.h not found under vendor include; compile may still fail if sources include <roothide.h>" >&2
+          fi
 
       - name: Verify release tag matches project version
         run: |
@@ -80,6 +226,8 @@ jobs:
           test -e /opt/include
           ls -ld /opt/include /opt/theos /opt/theos/vendor/include
           test "$(readlink /opt/include)" = "/opt/theos/vendor/include"
+          ls -la /opt/theos/vendor/lib/iphone/roothide
+          ls /opt/theos/vendor/lib/iphone/roothide/libroot* >/dev/null
           xcodebuild -version
 
       - name: Build packages
@@ -87,12 +235,34 @@ jobs:
 
       - name: Verify expected release assets
         run: |
+          set -euo pipefail
           TAG_VERSION="${RELEASE_TAG#v}"
           test -f "out/ChargeLimiter_${TAG_VERSION}_TrollStore.tipa"
           test -f "out/ChargeLimiter_${TAG_VERSION}_rootful_arm.deb"
           test -f "out/ChargeLimiter_${TAG_VERSION}_rootless_arm64.deb"
           test -f "out/ChargeLimiter_${TAG_VERSION}_roothide_arm64e.deb"
           ls -l out/ChargeLimiter_*
+
+          # Unpack native roothide deb and assert layout / arch / version.
+          TMP="$(mktemp -d)"
+          cleanup() { rm -rf "$TMP"; }
+          trap cleanup EXIT
+
+          dpkg-deb -R "out/ChargeLimiter_${TAG_VERSION}_roothide_arm64e.deb" "$TMP"
+
+          grep -q "Architecture: iphoneos-arm64e" "$TMP/DEBIAN/control"
+          grep -E -q "^Version: ${TAG_VERSION}$" "$TMP/DEBIAN/control"
+
+          test -d "$TMP/Applications/ChargeLimiter.app"
+          test -f "$TMP/Applications/ChargeLimiter.app/Info.plist"
+          test ! -d "$TMP/var/jb"
+          test ! -e "$TMP/var/jb/Applications/ChargeLimiter.app"
+
+          # macOS runner ships PlistBuddy here:
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
+            "$TMP/Applications/ChargeLimiter.app/Info.plist" | grep -qx "$TAG_VERSION"
+
+          echo "[OK] roothide deb content checks passed for ${TAG_VERSION}"
 
       - name: Generate release notes
         run: |
