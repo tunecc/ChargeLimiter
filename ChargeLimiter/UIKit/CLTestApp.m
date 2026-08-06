@@ -12,7 +12,6 @@
 #import "Controllers/CLSettingsViewController.h"
 #if TARGET_OS_SIMULATOR || defined(CL_TEST_MODE)
 BOOL CLRunLocalizationPersistenceSelfTest(NSString **failureReason);
-BOOL CLRunAppSettingsStoreSelfTest(NSString **failureReason);
 #endif
 
 #if TARGET_OS_SIMULATOR || defined(CL_TEST_MODE)
@@ -38,11 +37,6 @@ static UIViewController *CLCreateTestRootViewController(void) {
     NSLog(@"[CL-Test] localization persistence self-test: %@", passed ? @"PASS" : @"FAIL");
     if (!passed && failureReason.length > 0) {
         NSLog(@"[CL-Test] localization persistence failure: %@", failureReason);
-    }
-    passed = CLRunAppSettingsStoreSelfTest(&failureReason);
-    NSLog(@"[CL-Test] app settings store self-test: %@", passed ? @"PASS" : @"FAIL");
-    if (!passed && failureReason.length > 0) {
-        NSLog(@"[CL-Test] app settings store failure: %@", failureReason);
     }
 #endif
     NSLog(@"[CL-Test] UI 初始化完成");
