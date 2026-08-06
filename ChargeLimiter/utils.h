@@ -86,6 +86,9 @@ void setSmartChargeEnable(BOOL flag);
 id getlocalKV(NSString* key);
 void setlocalKV(NSString* key, id val);
 BOOL setlocalKVChecked(NSString* key, id val); // YES=写盘成功
+// 启动时把 App 四键从 appdata suite / standardUserDefaults 迁入共享 plist。
+// YES=迁移逻辑完成（含无数据可迁）；NO=需要写入共享却写失败。
+BOOL CLMigrateAppSettingsToSharedStoreIfNeeded(void);
 NSDictionary* getAllKV();
 BOOL getLocalBool(NSString* key, BOOL defaultValue);
 int getLocalInt(NSString* key, int defaultValue);
