@@ -3695,6 +3695,85 @@ BOOL setlocalKVChecked(NSString* key, id val) {
     return [store apply];
 }
 
+// 把 App 四键从 appdata suite / standardUserDefaults 迁入共享 plist。
+// 权威源 = 共享 store；旧 suite 仅作迁移源。成功后写标记并 best-effort 清理 suite 四键。
+// 返回 NO 仅当「需要写入共享却写失败」；无数据可迁也返回 YES。
+BOOL CLMigrateAppSettingsToSharedStoreIfNeeded(void) {
+    static NSString* const kMarkerKey = @"CLAppSettingsMigratedToShared";
+    static NSArray<NSString*>* keys = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        keys = @[
+            @"AppLanguage",
+            @"AppAppearance",
+            @"SliderHapticStyle",
+            @"StopChargePresetValue",
+        ];
+    });
+
+    id marker = getlocalKV(kMarkerKey);
+    if ([marker isKindOfClass:[NSNumber class]] && [marker boolValue]) {
+        return YES;
+    }
+
+    // 直接读旧 appdata suite，不依赖 CLAppSettingsStore。
+    NSUserDefaults* suite = [[NSUserDefaults alloc] initWithSuiteName:@"com.chargelimiter.mod.appdata"];
+    if (suite == nil) {
+        suite = getAppUserDefaults();
+    }
+    NSUserDefaults* stdDefaults = [NSUserDefaults standardUserDefaults];
+
+    BOOL writeFailed = NO;
+
+    for (NSString* key in keys) {
+        id sharedVal = getlocalKV(key);
+        if ([sharedVal isKindOfClass:[NSNumber class]]) {
+            // 共享已有合法值，跳过该键
+            continue;
+        }
+
+        NSInteger val = 0;
+
+        // Priority 1: appdata suite
+        id suiteVal = [suite objectForKey:key];
+        if ([suiteVal isKindOfClass:[NSNumber class]]) {
+            val = [suiteVal integerValue];
+        } else {
+            // Priority 2: standardUserDefaults；再否则 default 0
+            id stdVal = [stdDefaults objectForKey:key];
+            if ([stdVal isKindOfClass:[NSNumber class]]) {
+                val = [stdVal integerValue];
+            }
+        }
+
+        // 共享缺失则写入（含 default 0），保证四键在共享侧补齐
+        if (!setlocalKVChecked(key, @(val))) {
+            writeFailed = YES;
+            NSLog2(@"[CL] migrate app setting to shared failed key=%@ val=%ld", key, (long)val);
+        }
+    }
+
+    if (writeFailed) {
+        // 不写标记，下次启动可重试
+        return NO;
+    }
+
+    // 成功路径：写标记（空迁移也写，避免每启重复扫）
+    if (!setlocalKVChecked(kMarkerKey, @1)) {
+        NSLog2(@"[CL] migrate marker write failed key=%@", kMarkerKey);
+        return NO;
+    }
+
+    // best-effort 清理旧 suite 四键
+    for (NSString* key in keys) {
+        [suite removeObjectForKey:key];
+    }
+    [suite synchronize];
+
+    NSLog2(@"[CL] migrated app settings into shared plist (marker set)");
+    return YES;
+}
+
 extern "C" void setlocalKV_C(NSString* key, id val) {
     setlocalKV(key, val);
 }

@@ -9,7 +9,6 @@
 #include "ui.h"
 #include "utils.h"
 #import "CLLocalization.h"
-#import "UIKit/CLAppSettingsStore.h"
 
 // UIKit 原生界面
 #define USE_NATIVE_UIKIT 1
@@ -103,10 +102,10 @@ static AppDelegate* _app = nil;
                                                  name:CLConfigWriteFailedNotification
                                                object:nil];
 
-    // 首次启动时从共享 plist / standardUserDefaults 迁移 App 设置到 appdata suite
-    NSError *migrateError = nil;
-    if (![[CLAppSettingsStore shared] migrateIfNeeded:&migrateError]) {
-        NSLog2(@"[CL] AppSettingsStore migration skipped or incomplete: %@", migrateError);
+    // 首次启动：把 appdata suite / standardUserDefaults 中的 App 四键迁入共享 plist
+    // 失败只打日志，不弹「保存失败」（避免与用户主动改设置的写失败反馈混淆）
+    if (!CLMigrateAppSettingsToSharedStoreIfNeeded()) {
+        NSLog2(@"[CL] shared settings migration had write failures");
     }
 
     CLApplyLanguageFromSettings();
