@@ -251,6 +251,7 @@ static int CLStartDaemonBestEffort(void) {
 - (NSDictionary *)mockConfig {
     static NSMutableDictionary *config = nil;
     if (!config) {
+        NSString *appVer = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"";
         config = [@{
             @"enable": @YES,
             @"floatwnd": @NO,
@@ -287,7 +288,7 @@ static int CLStartDaemonBestEffort(void) {
             @"full_charge_sched_interval_days": @7,
             @"full_charge_sched_start_minute": @120,
             @"full_charge_sched_duration_hours": @4,
-            @"ver": @"1.13.6",
+            @"ver": appVer,
             @"sysver": @"iOS 16.1.2",
             @"devmodel": @"iPhone14,2",
             @"sys_boot": @((NSInteger)[[NSDate date] timeIntervalSince1970] - 86400),
