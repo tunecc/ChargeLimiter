@@ -888,6 +888,26 @@ check_roothide_stage() {
   # Legacy conversion keeps rootless arm64 slices; native scheme also builds arm64
   # (iphoneos-arm64e is the roothide dpkg architecture label, not CPU slice).
   check_app "$APP_PATH" "arm64"
+
+  # Link-path guard: residual /var/jb load commands are never valid in roothide stage.
+  # Rootful-shaped native binaries that only link system libs (no jb paths) are OK.
+  for bin_name in ChargeLimiter ChargeLimiterDaemon; do
+    bin_path="$APP_PATH/$bin_name"
+    [ -f "$bin_path" ] || {
+      echo "[ERR] Missing roothide binary for link check: $bin_path" >&2
+      exit 1
+    }
+    if xcrun otool -L "$bin_path" 2>/dev/null | awk 'NR > 1 { print $1 }' | rg -F -q '/var/jb'; then
+      echo "[ERR] Residual /var/jb load path in roothide binary: $bin_path" >&2
+      xcrun otool -L "$bin_path" >&2 || true
+      exit 1
+    fi
+    if list_rpaths "$bin_path" 2>/dev/null | rg -F -q '/var/jb'; then
+      echo "[ERR] Residual /var/jb rpath in roothide binary: $bin_path" >&2
+      list_rpaths "$bin_path" >&2 || true
+      exit 1
+    fi
+  done
 }
 
 echo "[10/10] Verify package contents..."
