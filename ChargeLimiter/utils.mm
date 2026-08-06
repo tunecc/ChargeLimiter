@@ -3438,6 +3438,23 @@ static BOOL ensureStoreConfigFileExists(CLSettingsStore* store, NSString** pathO
                                                                       userInfo:userInfo];
                 });
             }
+            // setValue 已先改 preferences；写盘失败必须回滚，保证 setlocalKVChecked
+            // 返回 NO 时内存与磁盘一致（UI 读到的不是未落盘脏值）。
+            // 失败路径允许空字典替换（与常规 reloadFromDisk 保护不同）。
+            NSString* rollbackPath = nil;
+            NSDictionary* diskDict = readConfigDictionaryFromDisk(&rollbackPath);
+            [self.preferences removeAllObjects];
+            if ([diskDict isKindOfClass:[NSDictionary class]]) {
+                [self.preferences addEntriesFromDictionary:diskDict];
+                if (rollbackPath.length > 0) {
+                    NSLog2(@"[CL] conf rolled back from disk path=%@", rollbackPath);
+                }
+            } else {
+                NSLog2(@"[CL] conf rollback: disk unreadable, cleared dirty in-memory state");
+            }
+            [self.cachedChanges removeAllObjects];
+            [self.removedKeys removeAllObjects];
+            self.isDirty = NO;
             return NO;
         }
         [self.preferences removeAllObjects];
@@ -3665,34 +3682,36 @@ BOOL setlocalKVChecked(NSString* key, id val) {
 // 返回 NO 仅当「需要写入共享却写失败」；无数据可迁也返回 YES。
 // 写失败只打日志：期间设置 CLSuppressConfigWriteFailedNotification，避免 save-failed UI。
 BOOL CLMigrateAppSettingsToSharedStoreIfNeeded(void) {
-    static NSString* const kMarkerKey = @"CLAppSettingsMigratedToShared";
-    static NSArray<NSString*>* keys = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        keys = @[
-            @"AppLanguage",
-            @"AppAppearance",
-            @"SliderHapticStyle",
-            @"StopChargePresetValue",
-        ];
-    });
-
-    id marker = getlocalKV(kMarkerKey);
-    if ([marker isKindOfClass:[NSNumber class]] && [marker boolValue]) {
-        return YES;
-    }
-
-    // 直接读旧 appdata suite（不再经过独立 App store）。
-    NSUserDefaults* suite = [[NSUserDefaults alloc] initWithSuiteName:@"com.chargelimiter.mod.appdata"];
-    if (suite == nil) {
-        suite = getAppUserDefaults();
-    }
-    NSUserDefaults* stdDefaults = [NSUserDefaults standardUserDefaults];
-
-    BOOL writeFailed = NO;
-    // 抑制 apply 写失败通知：ui 已在迁移前注册 observer，否则会弹「保存失败」。
+    // 必须在任何 getlocalKV / CLSettingsStore 访问之前置位：
+    // getlocalKV 会构造 shared store，init 里 legacy UserDefaults 迁移可能 apply，
+    // 而 ui 已在 migrate 前注册 save-failed observer。
     CLSuppressConfigWriteFailedNotification = YES;
     @try {
+        static NSString* const kMarkerKey = @"CLAppSettingsMigratedToShared";
+        static NSArray<NSString*>* keys = nil;
+        static dispatch_once_t onceToken;
+        dispatch_once(&onceToken, ^{
+            keys = @[
+                @"AppLanguage",
+                @"AppAppearance",
+                @"SliderHapticStyle",
+                @"StopChargePresetValue",
+            ];
+        });
+
+        id marker = getlocalKV(kMarkerKey);
+        if ([marker isKindOfClass:[NSNumber class]] && [marker boolValue]) {
+            return YES;
+        }
+
+        // 直接读旧 appdata suite（不再经过独立 App store）。
+        NSUserDefaults* suite = [[NSUserDefaults alloc] initWithSuiteName:@"com.chargelimiter.mod.appdata"];
+        if (suite == nil) {
+            suite = getAppUserDefaults();
+        }
+        NSUserDefaults* stdDefaults = [NSUserDefaults standardUserDefaults];
+
+        BOOL writeFailed = NO;
         for (NSString* key in keys) {
             id sharedVal = getlocalKV(key);
             if ([sharedVal isKindOfClass:[NSNumber class]]) {

@@ -83,6 +83,45 @@ class StartupMigrationTests(unittest.TestCase):
             "apply must check suppress flag before posting CLConfigWriteFailedNotification",
         )
 
+    def test_migrate_sets_suppress_before_any_store_access(self):
+        """Suppress must be YES before first getlocalKV/store touch in migrate.
+
+        getlocalKV constructs CLSettingsStore and init may apply legacy
+        UserDefaults migration; if suppress is still NO and UI already
+        registered the save-failed observer, that apply can pop an alert.
+        """
+        import re
+
+        mm = UTILS_MM.read_text(encoding="utf-8")
+        migrate_idx = mm.find("BOOL CLMigrateAppSettingsToSharedStoreIfNeeded")
+        self.assertGreater(migrate_idx, -1)
+        migrate_end = mm.find("\nextern \"C\"", migrate_idx + 1)
+        if migrate_end < 0:
+            migrate_end = mm.find("\nvoid reloadLocalKVFromDisk", migrate_idx + 1)
+        body = mm[migrate_idx:migrate_end]
+
+        suppress_on = body.find("CLSuppressConfigWriteFailedNotification = YES")
+        self.assertGreater(
+            suppress_on,
+            -1,
+            "migrate must set CLSuppressConfigWriteFailedNotification = YES",
+        )
+        # Match real calls only (ignore comments that mention getlocalKV).
+        call_matches = list(re.finditer(r"(?<![\w/])getlocalKV\s*\(", body))
+        self.assertTrue(call_matches, "migrate uses getlocalKV(...)")
+        first_get = call_matches[0].start()
+        self.assertLess(
+            suppress_on,
+            first_get,
+            "suppress=YES must precede any getlocalKV (store init / apply side effects)",
+        )
+        self.assertIn("@finally", body, "suppress must be cleared in @finally")
+        self.assertIn(
+            "CLSuppressConfigWriteFailedNotification = NO",
+            body,
+            "migrate must clear suppress flag",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

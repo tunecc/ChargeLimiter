@@ -62,6 +62,37 @@ class BuildPackagesRoothideNativeTests(unittest.TestCase):
         self.assertIn("--skip-roothide", usage)
         self.assertRegex(usage, r"native|Package_roothide|ChargeLimiter roothide", re.I)
 
+    def test_check_roothide_stage_rejects_var_jb_load_paths(self):
+        """After binaries exist, reject residual /var/jb load paths via otool.
+
+        Native roothide may be rootful-shaped (system libs only) — that is OK.
+        Residual /var/jb/* load commands are not.
+        """
+        s = self.source
+        fn_idx = s.find("check_roothide_stage()")
+        self.assertGreater(fn_idx, -1)
+        # Take a large slice; function is long and not followed by another foo().
+        body = s[fn_idx:fn_idx + 8000]
+        # Truncate at the closing of this function before the next top-level echo/step.
+        close_idx = body.find('\necho "[10/10]')
+        if close_idx > 0:
+            body = body[:close_idx]
+
+        self.assertRegex(
+            body,
+            r"otool\s+-L|xcrun\s+otool\s+-L",
+            "check_roothide_stage must otool -L app/daemon binaries",
+        )
+        self.assertTrue(
+            "/var/jb" in body,
+            "check_roothide_stage must reject residual /var/jb load paths",
+        )
+        # Should inspect both app and daemon binaries
+        self.assertTrue(
+            "ChargeLimiter" in body and "ChargeLimiterDaemon" in body,
+            "link check should cover app and daemon executables",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
