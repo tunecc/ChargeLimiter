@@ -1,0 +1,35 @@
+#!/bin/sh
+
+APP_DIR="/Applications/ChargeLimiter.app"
+DAEMON_PLIST="/Library/LaunchDaemons/com.chargelimiter.mod.plist"
+CACHE="/var/mobile/Library/Preferences/com.chargelimiter.mod.containerpath"
+
+should_cleanup_data() {
+    action="$1"
+    reason="${2:-}"
+    case "$action" in
+        purge)
+            return 0
+            ;;
+        remove)
+            [ -z "$reason" ] && return 0
+            return 1
+            ;;
+    esac
+    return 1
+}
+
+warn_manual_cleanup() {
+    printf '\033[31m[ChargeLimiter] Failed to remove app data container automatically. Please remove it manually from your file manager.\033[0m\n' >&2
+}
+
+"$APP_DIR/ChargeLimiterDaemon" reset_and_exit 2>/dev/null
+launchctl bootout system "$DAEMON_PLIST" 2>/dev/null || launchctl unload "$DAEMON_PLIST" 2>/dev/null
+killall -9 ChargeLimiter ChargeLimiterDaemon 2>/dev/null
+if should_cleanup_data "$1" "${2:-}"; then
+    "$APP_DIR/ChargeLimiterDaemon" cleanup_data_container 2>/dev/null || warn_manual_cleanup
+fi
+rm -f "$CACHE"
+uicache -p "$APP_DIR" 2>/dev/null
+
+exit 0
