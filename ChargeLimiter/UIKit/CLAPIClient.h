@@ -63,6 +63,9 @@ typedef void (^CLAPICallback)(NSDictionary *_Nullable response, NSError *_Nullab
                                services:(nullable NSArray<NSString *> *)services
                              completion:(CLAPICallback)completion;
 
+// 便捷方法 - 拉取只读诊断(环境/读电量链路);失败不重启 daemon
+- (void)getDiagWithCompletion:(CLAPICallback)completion;
+
 // 检查 daemon 是否存活
 - (void)checkDaemonAliveWithCompletion:(void (^)(BOOL alive))completion;
 

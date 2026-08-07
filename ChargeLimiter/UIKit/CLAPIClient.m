@@ -636,6 +636,19 @@ static int CLStartDaemonBestEffort(void) {
                    completion:completion];
 }
 
+- (void)getDiagWithCompletion:(CLAPICallback)completion {
+    NSDictionary *params = @{ @"api": @"get_diag" };
+    NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration defaultSessionConfiguration];
+    cfg.timeoutIntervalForRequest = 8.0;
+    cfg.timeoutIntervalForResource = 15.0;
+    NSURLSession *diagSession = [NSURLSession sessionWithConfiguration:cfg];
+    [self sendRequestInternal:params
+                   allowRetry:NO
+            allowDaemonRestart:NO
+                      session:diagSession
+                   completion:completion];
+}
+
 - (void)checkDaemonAliveWithCompletion:(void (^)(BOOL))completion {
     [self getConfigWithKey:@"enable" completion:^(NSDictionary * _Nullable response, NSError * _Nullable error) {
         BOOL alive = (response != nil && [response[@"status"] intValue] == 0);

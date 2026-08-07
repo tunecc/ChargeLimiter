@@ -9,6 +9,7 @@
 #import "../CLBatteryManager.h"
 #import "../CLAPIClient.h"
 #import "../CLSymbolImageSupport.h"
+#import "../CLDiagnosticCollector.h"
 #import "../../CLLocalization.h"
 #import <objc/runtime.h>
 
@@ -521,6 +522,7 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
 @property (nonatomic, copy) NSString *lastProbeSummaryText;
 @property (nonatomic, copy) NSDictionary *lastProbePayload;
 @property (nonatomic, strong) UILabel *probeResultLabel;
+@property (nonatomic, strong, nullable) CLDiagnosticReport *lastDiagReport;
 @end
 
 @implementation CLPolicyDiagnosticsViewController
@@ -563,6 +565,7 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [self updateDiagnosticValues];
+    [self refreshEnvironmentDiagnostics];
 }
 
 - (void)dealloc {
@@ -613,6 +616,47 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
 
 - (void)setupContent {
     [self.valueLabels removeAllObjects];
+
+    // —— 主入口:一键复制完整诊断 ——
+    CLAdvSettingsCard *copyAllCard = [[CLAdvSettingsCard alloc] init];
+    [copyAllCard addPickerRowWithIcon:@"doc.on.doc.fill"
+                                title:CLL(@"一键复制完整诊断")
+                                value:CLL(@"复制")
+                                color:[UIColor systemBlueColor]
+                                  tag:920
+                               target:self
+                               action:@selector(copyFullDiagnosticTapped:)];
+    [self addTipRowToCard:copyAllCard text:CLL(@"点最上方按钮可把以上信息连同策略信号一键复制给开发者。")];
+    [self.mainStack addArrangedSubview:copyAllCard];
+
+    // —— 环境与连通性 ——
+    CLAdvSettingsCard *envCard = [[CLAdvSettingsCard alloc] init];
+    [envCard addSectionHeader:CLL(@"环境与连通性")];
+    [self addDiagnosticRowToCard:envCard key:@"diag_device" icon:@"iphone" title:CLL(@"设备") color:[UIColor systemGrayColor]];
+    [envCard addSeparator];
+    [self addDiagnosticRowToCard:envCard key:@"diag_ios" icon:@"gear" title:CLL(@"系统版本") color:[UIColor systemGrayColor]];
+    [envCard addSeparator];
+    [self addDiagnosticRowToCard:envCard key:@"diag_appver" icon:@"app.badge" title:CLL(@"应用版本") color:[UIColor systemGrayColor]];
+    [envCard addSeparator];
+    [self addDiagnosticRowToCard:envCard key:@"diag_scheme" icon:@"shippingbox" title:CLL(@"包架构") color:[UIColor systemGrayColor]];
+    [envCard addSeparator];
+    [self addDiagnosticRowToCard:envCard key:@"diag_jbtype" icon:@"lock.shield" title:CLL(@"越狱类型") color:[UIColor systemGrayColor]];
+    [envCard addSeparator];
+    [self addDiagnosticRowToCard:envCard key:@"diag_daemon" icon:@"server.rack" title:CLL(@"守护进程") color:[UIColor systemGrayColor]];
+    [envCard addSeparator];
+    [self addDiagnosticRowToCard:envCard key:@"diag_http" icon:@"network" title:CLL(@"HTTP 可达") color:[UIColor systemGrayColor]];
+    [envCard addSeparator];
+    [self addDiagnosticRowToCard:envCard key:@"diag_uptime" icon:@"clock" title:CLL(@"daemon 启动时长") color:[UIColor systemGrayColor]];
+    [envCard addSeparator];
+    [self addDiagnosticRowToCard:envCard key:@"diag_service" icon:@"cpu" title:CLL(@"命中 service") color:[UIColor systemTealColor]];
+    [envCard addSeparator];
+    [self addDiagnosticRowToCard:envCard key:@"diag_key_count" icon:@"list.number" title:CLL(@"发布 key 数") color:[UIColor systemTealColor]];
+    [envCard addSeparator];
+    [self addDiagnosticRowToCard:envCard key:@"diag_key_capacity" icon:@"battery.50" title:CLL(@"CurrentCapacity 齐全") color:[UIColor systemTealColor]];
+    [envCard addSeparator];
+    [self addDiagnosticRowToCard:envCard key:@"diag_iokit" icon:@"wrench" title:CLL(@"IOKit 返回值") color:[UIColor systemTealColor]];
+    [self addTipRowToCard:envCard text:CLL(@"点最上方按钮可把以上信息连同策略信号一键复制给开发者。")];
+    [self.mainStack addArrangedSubview:envCard];
 
     CLAdvSettingsCard *runtimeCard = [[CLAdvSettingsCard alloc] init];
     [runtimeCard addSectionHeader:CLL(@"策略运行时")];
@@ -704,7 +748,7 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
                              action:@selector(runChargeControlProbeTapped:)];
     [probeCard addSeparator];
     [probeCard addPickerRowWithIcon:@"doc.on.doc"
-                              title:CLL(@"复制探针结果")
+                              title:CLL(@"复制探针→详细")
                               value:CLL(@"复制")
                               color:[UIColor systemBlueColor]
                                 tag:911
@@ -715,6 +759,7 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
                                                     value:CLL(@"尚未运行")
                                                     color:[UIColor systemGrayColor]];
     self.probeResultLabel = probeResult;
+    [self addTipRowToCard:probeCard text:CLL(@"仅含探针结论,不含环境")];
     [self addTipRowToCard:probeCard
                      text:CLL(@"建议插电后运行。将短暂尝试停充并自动恢复，用于确认 iOS 控制面是否真正生效。")];
     UIView *probeTipRow = probeCard.contentStack.arrangedSubviews.lastObject;
@@ -729,12 +774,11 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
 
     CLAdvSettingsCard *exportCard = [[CLAdvSettingsCard alloc] init];
     [exportCard addSectionHeader:CLL(@"导出与校准")];
-    [exportCard addPickerRowWithIcon:@"doc.on.doc" title:CLL(@"复制诊断摘要") value:CLL(@"复制") color:[UIColor systemBlueColor] tag:900 target:self action:@selector(copyDiagnosticSummaryTapped:)];
+    [exportCard addPickerRowWithIcon:@"doc.on.doc" title:CLL(@"复制策略信号") value:CLL(@"复制") color:[UIColor systemBlueColor] tag:900 target:self action:@selector(copyDiagnosticSummaryTapped:)];
+    [self addTipRowToCard:exportCard text:CLL(@"仅含策略/保持/信号,不含环境")];
     [exportCard addSeparator];
-    [exportCard addPickerRowWithIcon:@"square.and.arrow.up" title:CLL(@"导出事件时间线") value:CLL(@"导出") color:[UIColor systemBlueColor] tag:901 target:self action:@selector(exportPolicyEventTimelineTapped:)];
-    [exportCard addSeparator];
-    [exportCard addPickerRowWithIcon:@"list.bullet.rectangle" title:CLL(@"复制长测校准模板") value:CLL(@"复制") color:[UIColor systemBlueColor] tag:902 target:self action:@selector(copyCalibrationChecklistTapped:)];
-    [self addTipRowToCard:exportCard text:CLL(@"可导出当前关键状态、最近长时间事件，以及真机长测与阈值校准模板。")];
+    [exportCard addPickerRowWithIcon:@"square.and.arrow.up" title:CLL(@"导出事件时间线→原始") value:CLL(@"导出") color:[UIColor systemBlueColor] tag:901 target:self action:@selector(exportPolicyEventTimelineTapped:)];
+    [self addTipRowToCard:exportCard text:CLL(@"仅含持久化事件,不含环境")];
     [self.mainStack addArrangedSubview:exportCard];
 
     [self updateDiagnosticValues];
@@ -1291,6 +1335,56 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
     NSString *summary = [self calibrationChecklistTextForManager:[CLBatteryManager shared]];
     [UIPasteboard generalPasteboard].string = summary ?: @"";
     [self presentInfoAlertWithTitle:CLL(@"已复制") message:CLL(@"真机长测与校准模板已复制到剪贴板。")];
+}
+
+- (void)refreshEnvironmentDiagnostics {
+    NSString *policy = [self diagnosticSummaryTextForManager:[CLBatteryManager shared]];
+    NSString *probe = self.lastProbeSummaryText;
+    __weak typeof(self) weakSelf = self;
+    [CLDiagnosticCollector collectWithPolicySummary:policy
+                                      probeSummary:probe
+                                        completion:^(CLDiagnosticReport *report) {
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self) return;
+        self.lastDiagReport = report;
+        [self applyDiagReportToLabels:report];
+    }];
+}
+
+- (void)applyDiagReportToLabels:(CLDiagnosticReport *)report {
+    CLDiagEnvironment *e = report.environment;
+    CLDiagConnectivity *c = report.connectivity;
+    CLDiagBatteryProbe *b = report.batteryProbe;
+    [self updateDiagnosticValue:(e.deviceModel.length ? e.deviceModel : @"--") forKey:@"diag_device"];
+    [self updateDiagnosticValue:(e.systemVersion.length ? e.systemVersion : @"--") forKey:@"diag_ios"];
+    [self updateDiagnosticValue:(e.appVersion.length ? e.appVersion : @"--") forKey:@"diag_appver"];
+    [self updateDiagnosticValue:(e.packageScheme.length ? e.packageScheme : @"--") forKey:@"diag_scheme"];
+    [self updateDiagnosticValue:(e.jbType.length ? e.jbType : @"--") forKey:@"diag_jbtype"];
+    [self updateDiagnosticValue:(c.daemonAlive ? @"YES" : @"NO") forKey:@"diag_daemon"];
+    [self updateDiagnosticValue:(c.httpReachable ? @"YES" : @"NO") forKey:@"diag_http"];
+    [self updateDiagnosticValue:(c.daemonUptimeText.length ? c.daemonUptimeText : @"N/A") forKey:@"diag_uptime"];
+    [self updateDiagnosticValue:(b.serviceName.length ? b.serviceName : @"--") forKey:@"diag_service"];
+    [self updateDiagnosticValue:[NSString stringWithFormat:@"%lu", (unsigned long)b.publishedKeys.count] forKey:@"diag_key_count"];
+    BOOL capOK = [b.keyPresent[@"CurrentCapacity"] boolValue];
+    [self updateDiagnosticValue:(c.httpReachable ? (capOK ? @"YES" : @"❌缺失") : @"--") forKey:@"diag_key_capacity"];
+    [self updateDiagnosticValue:(c.httpReachable ? [NSString stringWithFormat:@"%ld", (long)b.iokitReturn] : @"--") forKey:@"diag_iokit"];
+}
+
+- (void)copyFullDiagnosticTapped:(UITapGestureRecognizer *)tap {
+    NSString *policy = [self diagnosticSummaryTextForManager:[CLBatteryManager shared]];
+    NSString *probe = self.lastProbeSummaryText;
+    __weak typeof(self) weakSelf = self;
+    [CLDiagnosticCollector collectWithPolicySummary:policy
+                                      probeSummary:probe
+                                        completion:^(CLDiagnosticReport *report) {
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self) return;
+        self.lastDiagReport = report;
+        [self applyDiagReportToLabels:report];
+        NSString *text = [report markdownText] ?: @"";
+        [UIPasteboard generalPasteboard].string = text;
+        [self presentInfoAlertWithTitle:CLL(@"已复制") message:CLL(@"完整诊断已复制到剪贴板。")];
+    }];
 }
 
 - (void)updateDiagnosticValues {
