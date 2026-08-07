@@ -1283,6 +1283,82 @@ static int getBatInfo(NSDictionary* __strong* pinfo, BOOL slim=YES) {
     return 0;
 }
 
+// 只读诊断:命中 service + 发布 key + 5 个关键 key 存在性 + 库加载。
+// 硬约束:绝不 SetCFProperties / exit / kill / 写文件 / 改 g_use_smart。
+static NSString* CLJBTypeString(void) {
+    switch (getJBType()) {
+        case JBTYPE_ROOTHIDE:   return @"roothide";
+        case JBTYPE_ROOTLESS:   return @"rootless";
+        case JBTYPE_ROOT:       return @"rootful";
+        case JBTYPE_TROLLSTORE: return @"trollstore";
+        default:                return @"unknown";
+    }
+}
+
+static BOOL CLProbeLibJailbreakLoaded(void) {
+    void* h = dlopen("/usr/lib/libjailbreak.dylib", RTLD_LAZY | RTLD_NOLOAD);
+    if (h) {
+        // 已加载则 NOLOAD 成功;再尝试一次常规 dlopen 验证可打开
+        dlclose(h);
+        return YES;
+    }
+    h = dlopen("/usr/lib/libjailbreak.dylib", RTLD_LAZY);
+    if (h) {
+        dlclose(h);
+        return YES;
+    }
+    return NO;
+}
+
+static NSDictionary* getIOPMPSServDiagnostics(void) {
+    NSMutableDictionary* out = [NSMutableDictionary dictionary];
+    out[@"serv_boot"] = @(g_serv_boot);
+    out[@"use_smart"] = @(g_use_smart);
+    out[@"sysver"] = getSysVer() ?: @"";
+    out[@"devmodel"] = getDevMdoel() ?: @"";
+    out[@"ver"] = getAppVer() ?: @"";
+    out[@"jbtype"] = CLJBTypeString();
+    out[@"libjailbreak_loaded"] = @(CLProbeLibJailbreakLoaded());
+
+    io_service_t serv = getIOPMPSServ();
+    NSString* serviceName = @"(未匹配)";
+    if (serv != IO_OBJECT_NULL) {
+        serviceName = g_use_smart ? @"AppleSmartBattery" : @"IOPMPowerSource";
+    }
+    out[@"service_name"] = serviceName;
+
+    NSArray* publishedKeys = @[];
+    NSMutableDictionary* keyPresent = [@{
+        @"CurrentCapacity": @NO,
+        @"Amperage": @NO,
+        @"Voltage": @NO,
+        @"IsCharging": @NO,
+        @"Temperature": @NO,
+    } mutableCopy];
+    NSInteger iokitReturn = 0;
+
+    if (serv == IO_OBJECT_NULL) {
+        iokitReturn = -1;
+    } else {
+        CFMutableDictionaryRef props = nil;
+        kern_return_t kr = IORegistryEntryCreateCFProperties(serv, &props, kCFAllocatorDefault, 0);
+        iokitReturn = (NSInteger)kr;
+        if (props == nil) {
+            if (iokitReturn == 0) iokitReturn = -2;
+        } else {
+            NSDictionary* info = (__bridge_transfer NSDictionary*)props;
+            publishedKeys = [[info allKeys] sortedArrayUsingSelector:@selector(compare:)];
+            for (NSString* k in keyPresent.allKeys) {
+                keyPresent[k] = @(info[k] != nil);
+            }
+        }
+    }
+    out[@"published_keys"] = publishedKeys;
+    out[@"key_present"] = keyPresent;
+    out[@"iokit_return"] = @(iokitReturn);
+    return out;
+}
+
 static int setInflowStatus(BOOL flag) {
     if (g_chargeControlProbeRunning) {
         return 0; // 探针期间忽略自动写
@@ -3565,6 +3641,12 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             @"status": @0,
             @"enable": @(g_enable), // for floatwnd
             @"data": data,
+        };
+    } else if ([api isEqualToString:@"get_diag"]) {
+        NSDictionary* data = getIOPMPSServDiagnostics();
+        return @{
+            @"status": @0,
+            @"data": data ?: @{},
         };
     } else if ([api isEqualToString:@"apply_now"]) {
         refreshBatteryStateAndApplyPolicy();
