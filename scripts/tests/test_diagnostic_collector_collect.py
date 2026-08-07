@@ -34,6 +34,22 @@ class CollectContractTests(unittest.TestCase):
         self.assertIn("CLSanitizePathForDiag", self.col_m)
         self.assertIn("CLJBTypeLabelFromCode", self.col_m)
 
+    def test_collect_uses_c_linkage_wrappers(self):
+        # utils.mm 符号是 C++ mangled；collector 必须 dlsym unmangled _C wrappers
+        self.assertIn("getJBType_C", self.col_m)
+        self.assertIn("getSelfExePath_C", self.col_m)
+        self.assertIn("get_sys_boottime_C", self.col_m)
+        self.assertIn("getRuntimeDataRootPath_C", self.col_m)
+        # 禁止直接 dlsym 裸 C++ 符号名
+        self.assertNotIn('dlsym(RTLD_DEFAULT, "getJBType")', self.col_m)
+        self.assertNotIn('dlsym(RTLD_DEFAULT, "getSelfExePath")', self.col_m)
+        self.assertNotIn('dlsym(RTLD_DEFAULT, "get_sys_boottime")', self.col_m)
+
+    def test_collect_falls_back_jbtype_from_diag(self):
+        # 本地 unknown/空时用 daemon jbtype 回填
+        self.assertIn('data[@"jbtype"]', self.col_m)
+        self.assertIn("unknown", self.col_m)
+
     def test_collect_marks_offline_on_error(self):
         # 失败路径必须把 httpReachable / daemonAlive 置 NO
         self.assertTrue(

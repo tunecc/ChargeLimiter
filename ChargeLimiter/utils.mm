@@ -2397,6 +2397,10 @@ int get_sys_boottime() {
     return ts;
 }
 
+extern "C" int get_sys_boottime_C(void) {
+    return get_sys_boottime();
+}
+
 NSString* findAppPath(NSString* name) {
     if (name == nil) {
         return nil;
@@ -2488,6 +2492,10 @@ NSString* getSelfExePath() {
     return path;
 }
 
+extern "C" NSString* getSelfExePath_C(void) {
+    return getSelfExePath();
+}
+
 int getJBType() {
     /*  EXE和DAEMON路径可能不同,需要综合判断
         注意本函数里不能直接从特殊路径存在直接判断,因为可能有巨魔/越狱混合环境
@@ -2542,6 +2550,10 @@ int getJBType() {
     }
     return JBTYPE_ROOT;
     // todo
+}
+
+extern "C" int getJBType_C(void) {
+    return getJBType();
 }
 
 extern "C" int restartDaemonForApp_C(NSString* appDocs) {
