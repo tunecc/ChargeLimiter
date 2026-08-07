@@ -10,13 +10,13 @@
 #import "CLBatteryManager.h"
 #import <dlfcn.h>
 
-// 不引入 common.h/utils.h（会拉 UIKit）；仅 weak 解析所需 C 符号。
+// 不引入 common.h/utils.h（会拉 UIKit）；仅 dlsym 解析 unmangled _C 符号。
 static int CLDiagCallGetJBType(void) {
     typedef int (*fn_t)(void);
     static fn_t fn = NULL;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        fn = (fn_t)dlsym(RTLD_DEFAULT, "getJBType");
+        fn = (fn_t)dlsym(RTLD_DEFAULT, "getJBType_C");
     });
     return fn ? fn() : -1;
 }
@@ -26,7 +26,7 @@ static NSString *CLDiagCallGetSelfExePath(void) {
     static fn_t fn = NULL;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        fn = (fn_t)dlsym(RTLD_DEFAULT, "getSelfExePath");
+        fn = (fn_t)dlsym(RTLD_DEFAULT, "getSelfExePath_C");
     });
     return fn ? fn() : nil;
 }
@@ -36,11 +36,7 @@ static NSString *CLDiagCallGetRuntimeDataRootPath(void) {
     static fn_t fn = NULL;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        // Prefer C-export; fall back to ObjC mangled name if linked without _C suffix.
         fn = (fn_t)dlsym(RTLD_DEFAULT, "getRuntimeDataRootPath_C");
-        if (!fn) {
-            fn = (fn_t)dlsym(RTLD_DEFAULT, "getRuntimeDataRootPath");
-        }
     });
     return fn ? fn() : nil;
 }
@@ -50,7 +46,7 @@ static NSTimeInterval CLDiagCallGetSysBoottime(void) {
     static fn_t fn = NULL;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        fn = (fn_t)dlsym(RTLD_DEFAULT, "get_sys_boottime");
+        fn = (fn_t)dlsym(RTLD_DEFAULT, "get_sys_boottime_C");
     });
     return fn ? (NSTimeInterval)fn() : 0;
 }
@@ -256,7 +252,12 @@ NSString *CLJBTypeLabelFromCode(int code) {
                 if (dev.length > 0) env.deviceModel = dev;
                 if (sys.length > 0) env.systemVersion = sys;
                 if (ver.length > 0) env.appVersion = ver;
-                // jbtype 与本地交叉验证；保留本地值不覆盖
+                // 本地 unknown/空时用 daemon jbtype 回填；已知值保留本地
+                if (env.jbType.length == 0 || [env.jbType isEqualToString:@"unknown"]) {
+                    if ([data[@"jbtype"] isKindOfClass:[NSString class]] && [data[@"jbtype"] length] > 0) {
+                        env.jbType = data[@"jbtype"];
+                    }
+                }
                 NSNumber *servBoot = data[@"serv_boot"];
                 if ([servBoot respondsToSelector:@selector(doubleValue)] && servBoot.doubleValue > 0) {
                     NSTimeInterval up = [[NSDate date] timeIntervalSince1970] - servBoot.doubleValue;
