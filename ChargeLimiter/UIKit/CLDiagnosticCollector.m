@@ -2,11 +2,58 @@
 //  CLDiagnosticCollector.m
 //  ChargeLimiter
 //
-//  诊断模型 + markdownText + 路径/架构辅助函数。
-//  网络采集（collectWithPolicySummary:）由 Task 3 实现；此处仅空壳。
+//  诊断模型 + markdownText + 路径/架构辅助函数 + 网络采集。
 //
 
 #import "CLDiagnosticCollector.h"
+#import "CLAPIClient.h"
+#import "CLBatteryManager.h"
+#import <dlfcn.h>
+
+// 不引入 common.h/utils.h（会拉 UIKit）；仅 weak 解析所需 C 符号。
+static int CLDiagCallGetJBType(void) {
+    typedef int (*fn_t)(void);
+    static fn_t fn = NULL;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        fn = (fn_t)dlsym(RTLD_DEFAULT, "getJBType");
+    });
+    return fn ? fn() : -1;
+}
+
+static NSString *CLDiagCallGetSelfExePath(void) {
+    typedef NSString *(*fn_t)(void);
+    static fn_t fn = NULL;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        fn = (fn_t)dlsym(RTLD_DEFAULT, "getSelfExePath");
+    });
+    return fn ? fn() : nil;
+}
+
+static NSString *CLDiagCallGetRuntimeDataRootPath(void) {
+    typedef NSString *(*fn_t)(void);
+    static fn_t fn = NULL;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        // Prefer C-export; fall back to ObjC mangled name if linked without _C suffix.
+        fn = (fn_t)dlsym(RTLD_DEFAULT, "getRuntimeDataRootPath_C");
+        if (!fn) {
+            fn = (fn_t)dlsym(RTLD_DEFAULT, "getRuntimeDataRootPath");
+        }
+    });
+    return fn ? fn() : nil;
+}
+
+static NSTimeInterval CLDiagCallGetSysBoottime(void) {
+    typedef int (*fn_t)(void);
+    static fn_t fn = NULL;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        fn = (fn_t)dlsym(RTLD_DEFAULT, "get_sys_boottime");
+    });
+    return fn ? (NSTimeInterval)fn() : 0;
+}
 
 NSString *CLPackageSchemeString(void) {
 #if defined(CL_PACKAGE_ROOTHIDE) && CL_PACKAGE_ROOTHIDE
@@ -148,18 +195,90 @@ NSString *CLJBTypeLabelFromCode(int code) {
 + (void)collectWithPolicySummary:(NSString *)policySummary
                    probeSummary:(NSString *)probeSummary
                      completion:(void (^)(CLDiagnosticReport *))completion {
-    // Task 3 实现网络采集；此处返回空壳报告（主线程回调）
-    if (completion) {
-        CLDiagnosticReport *empty = [CLDiagnosticReport new];
-        empty.environment = [CLDiagEnvironment new];
-        empty.connectivity = [CLDiagConnectivity new];
-        empty.batteryProbe = [CLDiagBatteryProbe new];
-        empty.policySummaryText = policySummary;
-        empty.probeSummaryText = probeSummary;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            completion(empty);
-        });
+    CLDiagnosticReport *report = [CLDiagnosticReport new];
+    report.policySummaryText = policySummary;
+    report.probeSummaryText = probeSummary;
+
+    // 1) 本地环境（不依赖 daemon）；device/sys/app 先用 manager 缓存兜底
+    CLBatteryManager *mgr = [CLBatteryManager shared];
+    CLDiagEnvironment *env = [CLDiagEnvironment new];
+    env.packageScheme = CLPackageSchemeString();
+    int jb = CLDiagCallGetJBType();
+    env.jbType = CLJBTypeLabelFromCode(jb);
+    env.exePath = CLSanitizePathForDiag(CLDiagCallGetSelfExePath());
+    env.dataRootPath = CLSanitizePathForDiag(CLDiagCallGetRuntimeDataRootPath());
+    NSTimeInterval boot = CLDiagCallGetSysBoottime();
+    if (boot <= 0 && mgr.systemBootTime > 0) {
+        boot = mgr.systemBootTime;
     }
+    env.systemBootTime = boot;
+    env.deviceModel = mgr.deviceModel.length ? mgr.deviceModel : @"";
+    env.systemVersion = mgr.systemVersion.length ? mgr.systemVersion : @"";
+    env.appVersion = mgr.appVersion.length ? mgr.appVersion : @"";
+    report.environment = env;
+
+    CLDiagConnectivity *conn = [CLDiagConnectivity new];
+    conn.daemonAlive = NO;
+    conn.httpReachable = NO;
+    conn.daemonUptimeText = @"N/A";
+    conn.lastApiError = @"(未请求)";
+    report.connectivity = conn;
+
+    CLDiagBatteryProbe *probe = [CLDiagBatteryProbe new];
+    probe.serviceName = @"";
+    probe.publishedKeys = @[];
+    probe.keyPresent = @{};
+    probe.libroothideStatus = @"N/A";
+    report.batteryProbe = probe;
+
+    // 2) 拉 get_diag（失败不重启 daemon；离线仍产出报告）
+    [[CLAPIClient shared] getDiagWithCompletion:^(NSDictionary *response, NSError *error) {
+        if (error || response == nil || [response[@"status"] intValue] != 0) {
+            conn.httpReachable = NO;
+            conn.daemonAlive = NO;
+            if (error) {
+                conn.lastApiError = error.localizedDescription ?: @"error";
+            } else if (response[@"msg"]) {
+                conn.lastApiError = [NSString stringWithFormat:@"%@", response[@"msg"]];
+            } else {
+                conn.lastApiError = @"status!=0";
+            }
+            // manager 兜底已在本地填好 device/sys/app/boot
+        } else {
+            conn.httpReachable = YES;
+            conn.daemonAlive = YES;
+            conn.lastApiError = @"0";
+            NSDictionary *data = response[@"data"];
+            if ([data isKindOfClass:[NSDictionary class]]) {
+                NSString *dev = [NSString stringWithFormat:@"%@", data[@"devmodel"] ?: @""];
+                NSString *sys = [NSString stringWithFormat:@"%@", data[@"sysver"] ?: @""];
+                NSString *ver = [NSString stringWithFormat:@"%@", data[@"ver"] ?: @""];
+                if (dev.length > 0) env.deviceModel = dev;
+                if (sys.length > 0) env.systemVersion = sys;
+                if (ver.length > 0) env.appVersion = ver;
+                // jbtype 与本地交叉验证；保留本地值不覆盖
+                NSNumber *servBoot = data[@"serv_boot"];
+                if ([servBoot respondsToSelector:@selector(doubleValue)] && servBoot.doubleValue > 0) {
+                    NSTimeInterval up = [[NSDate date] timeIntervalSince1970] - servBoot.doubleValue;
+                    if (up < 0) up = 0;
+                    NSInteger h = (NSInteger)(up / 3600);
+                    NSInteger m = (NSInteger)((up - h * 3600) / 60);
+                    conn.daemonUptimeText = [NSString stringWithFormat:@"%ldh %ldm", (long)h, (long)m];
+                }
+                probe.serviceName = [NSString stringWithFormat:@"%@", data[@"service_name"] ?: @"(无法获取)"];
+                NSArray *keys = data[@"published_keys"];
+                probe.publishedKeys = [keys isKindOfClass:[NSArray class]] ? keys : @[];
+                NSDictionary *kp = data[@"key_present"];
+                probe.keyPresent = [kp isKindOfClass:[NSDictionary class]] ? kp : @{};
+                probe.iokitReturn = [data[@"iokit_return"] integerValue];
+                probe.useSmart = [data[@"use_smart"] boolValue];
+                probe.libjailbreakLoaded = [data[@"libjailbreak_loaded"] boolValue];
+            }
+        }
+        if (completion) {
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(report); });
+        }
+    }];
 }
 
 @end
