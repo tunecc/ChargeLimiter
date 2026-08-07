@@ -626,7 +626,7 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
                                   tag:920
                                target:self
                                action:@selector(copyFullDiagnosticTapped:)];
-    [self addTipRowToCard:copyAllCard text:CLL(@"点最上方按钮可把以上信息连同策略信号一键复制给开发者。")];
+    [self addTipRowToCard:copyAllCard text:CLL(@"查电量/连通性可直接复制。查停充请先插电并运行探针后再复制。")];
     [self.mainStack addArrangedSubview:copyAllCard];
 
     // —— 环境与连通性 ——
@@ -655,7 +655,7 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
     [self addDiagnosticRowToCard:envCard key:@"diag_key_capacity" icon:@"battery.50" title:CLL(@"CurrentCapacity 齐全") color:[UIColor systemTealColor]];
     [envCard addSeparator];
     [self addDiagnosticRowToCard:envCard key:@"diag_iokit" icon:@"wrench" title:CLL(@"IOKit 返回值") color:[UIColor systemTealColor]];
-    [self addTipRowToCard:envCard text:CLL(@"点最上方按钮可把以上信息连同策略信号一键复制给开发者。")];
+    [self addTipRowToCard:envCard text:CLL(@"上方按钮复制完整诊断（环境+连通性+读电量+策略）。roothide 下 libjailbreak 失败多为预期。")];
     [self.mainStack addArrangedSubview:envCard];
 
     CLAdvSettingsCard *runtimeCard = [[CLAdvSettingsCard alloc] init];
