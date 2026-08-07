@@ -89,6 +89,9 @@
 		A720B9AB2F2F0C0D008B9C91 /* CLSimpleHTTPServer.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9A72F2F0C0B008B9C91 /* CLSimpleHTTPServer.m */; };
 		A7FF00102F6D001000000001 /* CLLocalization.m in Sources */ = {isa = PBXBuildFile; fileRef = A7FF00012F6D000100000001 /* CLLocalization.m */; };
 		A7FF00122F6D001000000003 /* CLLocalization.m in Sources */ = {isa = PBXBuildFile; fileRef = A7FF00012F6D000100000001 /* CLLocalization.m */; };
+		A7DIAG010F6D001000000020 /* CLDiagnosticCollector.m in Sources */ = {isa = PBXBuildFile; fileRef = A7DIAG002F6D000100000011 /* CLDiagnosticCollector.m */; };
+		A7DIAG012F6D001000000021 /* CLDiagnosticCollector.m in Sources */ = {isa = PBXBuildFile; fileRef = A7DIAG002F6D000100000011 /* CLDiagnosticCollector.m */; };
+		A7DIAG014F6D001000000022 /* CLDiagnosticCollector.m in Sources */ = {isa = PBXBuildFile; fileRef = A7DIAG002F6D000100000011 /* CLDiagnosticCollector.m */; };
 		709F8F77F5C149D68E5FF7F0 /* UserNotifications.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 184FE8032B70BE8100525080 /* UserNotifications.framework */; };
 		F081E08732BD415089A7DD56 /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 18257CBC2B88652600DC5F70 /* CoreGraphics.framework */; };
 		5F09E8E8DA7B46418220B2ED /* utils.mm in Sources */ = {isa = PBXBuildFile; fileRef = 18C50C652B6D2D5D00793FA9 /* utils.mm */; };
@@ -219,6 +222,8 @@
 		A720B9A62F2F0C0B008B9C91 /* CLSimpleHTTPServer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CLSimpleHTTPServer.h; sourceTree = "<group>"; };
 		A720B9A72F2F0C0B008B9C91 /* CLSimpleHTTPServer.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = CLSimpleHTTPServer.m; sourceTree = "<group>"; };
 		A7FF00012F6D000100000001 /* CLLocalization.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = CLLocalization.m; sourceTree = "<group>"; };
+		A7DIAG001F6D000100000010 /* CLDiagnosticCollector.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CLDiagnosticCollector.h; sourceTree = "<group>"; };
+		A7DIAG002F6D000100000011 /* CLDiagnosticCollector.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = CLDiagnosticCollector.m; sourceTree = "<group>"; };
 		A7FF00002F6D000100000000 /* CLLocalization.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CLLocalization.h; sourceTree = "<group>"; };
 		3BA98F1EC30741B397797E29 /* ChargeLimiter.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ChargeLimiter.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		2FADB8D146704A7A9BD901DF /* ChargeLimiterDaemon_roothide.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ChargeLimiterDaemon_roothide.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -436,6 +441,8 @@
 				A720B9722F2F0995008B9C91 /* Views */,
 				A720B9732F2F0995008B9C91 /* CLAPIClient.h */,
 				A720B9742F2F0995008B9C91 /* CLAPIClient.m */,
+				A7DIAG001F6D000100000010 /* CLDiagnosticCollector.h */,
+				A7DIAG002F6D000100000011 /* CLDiagnosticCollector.m */,
 				A720B9752F2F0995008B9C91 /* CLBatteryManager.h */,
 				A720B9762F2F0995008B9C91 /* CLBatteryManager.m */,
 				A720B9772F2F0995008B9C91 /* CLTestApp.m */,
@@ -760,6 +767,7 @@
 				A720B9822F2F0995008B9C91 /* CLAPIClient.m in Sources */,
 				A720B9832F2F0995008B9C91 /* CLTestApp.m in Sources */,
 				A7FF00102F6D001000000001 /* CLLocalization.m in Sources */,
+				A7DIAG010F6D001000000020 /* CLDiagnosticCollector.m in Sources */,
 				A720B9842F2F0995008B9C91 /* CLAdvancedSettingsViewController.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -780,6 +788,7 @@
 				A720B9A32F2F0995008B9C91 /* CLAPIClient.m in Sources */,
 				A720B9A42F2F0995008B9C91 /* CLTestApp.m in Sources */,
 				A7FF00122F6D001000000003 /* CLLocalization.m in Sources */,
+				A7DIAG012F6D001000000021 /* CLDiagnosticCollector.m in Sources */,
 				A720B9A52F2F0995008B9C91 /* CLAdvancedSettingsViewController.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -820,6 +829,7 @@
 				21D44B46C60148ADA33F021A /* CLAPIClient.m in Sources */,
 				AD15D596C3804CF08D7EB2F5 /* CLTestApp.m in Sources */,
 				876448EE6523421DA13762B6 /* CLLocalization.m in Sources */,
+				A7DIAG014F6D001000000022 /* CLDiagnosticCollector.m in Sources */,
 				5469A50775CC4D6F83F5C016 /* CLAdvancedSettingsViewController.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -908,7 +918,10 @@
 				MonkeyDevInstallOnAnyBuild = NO;
 					MonkeyDevPath = /opt/MonkeyDev;
 					MonkeyDevTheosPath = /opt/theos_rootless;
-					OTHER_CFLAGS = "-DTHEOS_PACKAGE_INSTALL_PREFIX=\"/var/jb\"";
+					OTHER_CFLAGS = (
+					"-DTHEOS_PACKAGE_INSTALL_PREFIX=\"/var/jb\"",
+					"-DCL_PACKAGE_ROOTLESS=2",
+				);
 					OTHER_LDFLAGS = (
 						"$(inherited)",
 						"-lroot",
@@ -960,7 +973,10 @@
 				MonkeyDevInstallOnAnyBuild = NO;
 					MonkeyDevPath = /opt/MonkeyDev;
 					MonkeyDevTheosPath = /opt/theos_rootless;
-					OTHER_CFLAGS = "-DTHEOS_PACKAGE_INSTALL_PREFIX=\"/var/jb\"";
+					OTHER_CFLAGS = (
+					"-DTHEOS_PACKAGE_INSTALL_PREFIX=\"/var/jb\"",
+					"-DCL_PACKAGE_ROOTLESS=2",
+				);
 					OTHER_LDFLAGS = (
 						"$(inherited)",
 						"-lroot",
@@ -1451,6 +1467,7 @@
 				MonkeyDevTheosPath = /opt/theos;
 				OTHER_CFLAGS = (
 					"-DTHEOS_PACKAGE_SCHEME_ROOTHIDE=1",
+					"-DCL_PACKAGE_ROOTHIDE=1",
 				);
 				OTHER_LDFLAGS = (
 					"$(inherited)",
@@ -1507,6 +1524,7 @@
 				MonkeyDevTheosPath = /opt/theos;
 				OTHER_CFLAGS = (
 					"-DTHEOS_PACKAGE_SCHEME_ROOTHIDE=1",
+					"-DCL_PACKAGE_ROOTHIDE=1",
 				);
 				OTHER_LDFLAGS = (
 					"$(inherited)",
