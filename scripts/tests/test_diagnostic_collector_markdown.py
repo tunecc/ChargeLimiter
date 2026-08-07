@@ -51,5 +51,13 @@ class DiagnosticCollectorContractTests(unittest.TestCase):
         self.assertNotIn("#import <UIKit/UIKit.h>", self.h)
 
 
+    def test_usage_and_live_battery_lines(self):
+        self.assertIn("# 使用说明", self.m)
+        self.assertIn("当前电量/电流", self.m)
+        self.assertIn("停充控制探针结论", self.m)
+        # roothide expected wording present in formatter
+        self.assertIn("roothide 预期", self.m)
+
+
 if __name__ == "__main__":
     unittest.main()

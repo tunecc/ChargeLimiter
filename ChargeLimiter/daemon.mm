@@ -1298,7 +1298,7 @@ static NSString* CLJBTypeString(void) {
 static BOOL CLProbeLibJailbreakLoaded(void) {
     void* h = dlopen("/usr/lib/libjailbreak.dylib", RTLD_LAZY | RTLD_NOLOAD);
     if (h) {
-        // 已加载则 NOLOAD 成功;再尝试一次常规 dlopen 验证可打开
+        // 已加载则 NOLOAD 成功
         dlclose(h);
         return YES;
     }
@@ -1310,6 +1310,40 @@ static BOOL CLProbeLibJailbreakLoaded(void) {
     return NO;
 }
 
+// roothide 下真实 /usr/lib 通常没有 libjailbreak；失败是预期，勿当故障。
+static NSString* CLLibjailbreakStatusString(BOOL loaded) {
+    if (loaded) {
+        return @"OK";
+    }
+    if (getJBType() == JBTYPE_ROOTHIDE) {
+        return @"N/A(roothide 预期:真实 /usr/lib 无此库)";
+    }
+    return @"❌dlopen失败";
+}
+
+static NSString* CLLibroothideStatusString(void) {
+    if (getJBType() != JBTYPE_ROOTHIDE) {
+        return @"N/A";
+    }
+    // 尝试若干常见路径（只读探测，立即 dlclose）
+    const char* candidates[] = {
+        "/usr/lib/libroothide.dylib",
+        NULL,
+    };
+    for (int i = 0; candidates[i]; i++) {
+        void* h = dlopen(candidates[i], RTLD_LAZY | RTLD_NOLOAD);
+        if (!h) {
+            h = dlopen(candidates[i], RTLD_LAZY);
+        }
+        if (h) {
+            dlclose(h);
+            return @"OK";
+        }
+    }
+    // jbroot 内路径因随机前缀无法穷举；能判定 roothide 即说明运行时路径启发式可用
+    return @"N/A(由 roothide 运行时解析,未在固定路径找到)";
+}
+
 static NSDictionary* getIOPMPSServDiagnostics(void) {
     NSMutableDictionary* out = [NSMutableDictionary dictionary];
     out[@"serv_boot"] = @(g_serv_boot);
@@ -1318,7 +1352,21 @@ static NSDictionary* getIOPMPSServDiagnostics(void) {
     out[@"devmodel"] = getDevMdoel() ?: @"";
     out[@"ver"] = getAppVer() ?: @"";
     out[@"jbtype"] = CLJBTypeString();
-    out[@"libjailbreak_loaded"] = @(CLProbeLibJailbreakLoaded());
+
+    BOOL jbLoaded = CLProbeLibJailbreakLoaded();
+    out[@"libjailbreak_loaded"] = @(jbLoaded);
+    out[@"libjailbreak_status"] = CLLibjailbreakStatusString(jbLoaded);
+    out[@"libroothide_status"] = CLLibroothideStatusString();
+
+    // daemon 视角路径（App 侧 dlsym 失败时的权威来源）
+    NSString* exe = getSelfExePath();
+    if (exe.length > 0) {
+        out[@"exe_path"] = exe;
+    }
+    NSString* dataRoot = getRuntimeDataRootPath();
+    if (dataRoot.length > 0) {
+        out[@"data_root"] = dataRoot;
+    }
 
     io_service_t serv = getIOPMPSServ();
     NSString* serviceName = @"(未匹配)";
@@ -1336,6 +1384,9 @@ static NSDictionary* getIOPMPSServDiagnostics(void) {
         @"Temperature": @NO,
     } mutableCopy];
     NSInteger iokitReturn = 0;
+    NSInteger currentCapacity = 0;
+    NSInteger amperage = 0;
+    NSInteger instantAmperage = 0;
 
     if (serv == IO_OBJECT_NULL) {
         iokitReturn = -1;
@@ -1351,11 +1402,23 @@ static NSDictionary* getIOPMPSServDiagnostics(void) {
             for (NSString* k in keyPresent.allKeys) {
                 keyPresent[k] = @(info[k] != nil);
             }
+            if ([info[@"CurrentCapacity"] respondsToSelector:@selector(integerValue)]) {
+                currentCapacity = [info[@"CurrentCapacity"] integerValue];
+            }
+            if ([info[@"Amperage"] respondsToSelector:@selector(integerValue)]) {
+                amperage = [info[@"Amperage"] integerValue];
+            }
+            if ([info[@"InstantAmperage"] respondsToSelector:@selector(integerValue)]) {
+                instantAmperage = [info[@"InstantAmperage"] integerValue];
+            }
         }
     }
     out[@"published_keys"] = publishedKeys;
     out[@"key_present"] = keyPresent;
     out[@"iokit_return"] = @(iokitReturn);
+    out[@"current_capacity"] = @(currentCapacity);
+    out[@"amperage"] = @(amperage);
+    out[@"instant_amperage"] = @(instantAmperage);
     return out;
 }
 
