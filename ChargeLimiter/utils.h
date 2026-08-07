@@ -124,6 +124,10 @@ extern "C" int cleanupAppDataContainer_C(void);
 extern "C" NSString* getConfPath_C(void);
 extern "C" NSString* getConfDirPath_C(void);
 extern "C" NSString* getRuntimeDataRootPath_C(void);
+// Thin C-linkage wrappers for App-side dlsym (utils.mm symbols are C++ mangled).
+extern "C" int getJBType_C(void);
+extern "C" NSString* getSelfExePath_C(void);
+extern "C" int get_sys_boottime_C(void);
 extern "C" void setlocalKV_C(NSString* key, id val);
 extern "C" id getlocalKV_C(NSString* key);
 extern "C" void reloadLocalKVFromDisk_C(void);
