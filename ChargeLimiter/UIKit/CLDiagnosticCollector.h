@@ -33,8 +33,13 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy) NSDictionary<NSString *, NSNumber *> *keyPresent;
 @property (nonatomic, assign) NSInteger iokitReturn;
 @property (nonatomic, assign) BOOL useSmart;
-@property (nonatomic, assign) BOOL libjailbreakLoaded;
-@property (nonatomic, copy, nullable) NSString *libroothideStatus;
+/// 展示用文案：OK / 预期失败(roothide) / ❌dlopen失败 / N/A
+@property (nonatomic, copy) NSString *libjailbreakStatus;
+@property (nonatomic, copy) NSString *libroothideStatus;
+/// 当前读到的电量/电流（来自 App 侧 manager 缓存；daemon 离线时仍可能有上次值）
+@property (nonatomic, assign) NSInteger currentCapacityPercent;
+@property (nonatomic, assign) NSInteger amperageMilliAmps;
+@property (nonatomic, assign) BOOL hasLiveBatterySample;
 @end
 
 @interface CLDiagnosticReport : NSObject
