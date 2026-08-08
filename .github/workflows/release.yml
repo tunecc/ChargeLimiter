@@ -243,24 +243,24 @@ jobs:
             && [ ! -f ChargeLimiter/libroot.a ]
           then
             cat >&2 <<'EOF'
-[ERR] Native roothide/rootless link dependency libroot.a is missing.
+            [ERR] Native roothide/rootless link dependency libroot.a is missing.
 
-ChargeLimiter links with -lroot. Required (any one, preferably all mirrored):
-  /opt/theos/vendor/lib/iphone/roothide/libroot.a
-  /opt/theos/vendor/lib/libroot.a
-  /opt/theos/vendor/lib/iphone/rootless/libroot.a
-  ChargeLimiter/libroot.a   (local stub; gitignored; filled by build_packages.sh)
+            ChargeLimiter links with -lroot. Required (any one, preferably all mirrored):
+              /opt/theos/vendor/lib/iphone/roothide/libroot.a
+              /opt/theos/vendor/lib/libroot.a
+              /opt/theos/vendor/lib/iphone/rootless/libroot.a
+              ChargeLimiter/libroot.a   (local stub; gitignored; filled by build_packages.sh)
 
-CI tried:
-  1) clone https://github.com/roothide/theos.git → /opt/theos_roothide and rsync vendor
-  2) promote any existing vendor/rootless libroot into roothide path
-  3) optional header-only devkit (does NOT provide libroot.a)
+            CI tried:
+              1) clone https://github.com/roothide/theos.git → /opt/theos_roothide and rsync vendor
+              2) promote any existing vendor/rootless libroot into roothide path
+              3) optional header-only devkit (does NOT provide libroot.a)
 
-libroothide.tbd alone is NOT enough for -lroot.
+            libroothide.tbd alone is NOT enough for -lroot.
 
-Fix on the runner image or in this workflow: install a full Theos vendor that
-contains libroot.a (same as a working local /opt/theos or Develop/theos-roothide).
-EOF
+            Fix on the runner image or in this workflow: install a full Theos vendor that
+            contains libroot.a (same as a working local /opt/theos or Develop/theos-roothide).
+            EOF
             exit 1
           fi
 
