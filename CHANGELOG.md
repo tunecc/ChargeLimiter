@@ -4,6 +4,36 @@
 
 写法参考了 Keep a Changelog 和一些成熟项目常见的结构：每个版本先说明主线，再按少量分类列出用户真正会感知到的变化，尽量详细，但不写成长文。
 
+## v1.14.1 - 2026-08-07
+
+本版主线是 **策略诊断可复制给开发者** 与 **原生 roothide 构建链路**：在「充电高级 → 策略诊断」提供一键完整诊断（环境 / 连通性 / 读电量 IOKit 链路 / 策略信号），并默认用原生 roothide scheme 出包；同时补强诊断字段，避免 roothide 误报与路径空白。
+
+### Added
+
+- **一键复制完整诊断**（充电高级 → 策略诊断）：复制 Markdown 分段报告，含环境、daemon 连通性、读电量 service/关键 key、策略信号；daemon 离线时仍可复制并带 `⚠️ daemon 离线` 横幅，便于区分「daemon 没起来」与「IOKit 读不到电量」。
+- **环境与连通性卡片**：诊断页实时展示包架构、越狱类型、daemon 在线/HTTP、命中 service、`CurrentCapacity` 是否齐全等，进页自动拉取。
+- **daemon 只读 `get_diag` API**：上报命中 service、发布 key 清单、五关键 key 存在性、IOKit 返回值、`use_smart`、越狱类型、路径与即时电量/电流等，无写盘/不停充副作用。
+- **原生 roothide 打包路径**：默认 `ChargeLimiter roothide` scheme + `Package_roothide` 出 `iphoneos-arm64e` deb（可用 `--legacy-roothide-convert` / `--skip-roothide` 切换）。
+
+### Fixed
+
+- **修复构建链接失败 `Undefined symbols: CLDiagnosticCollector`**：将诊断采集源码接入三个 App target（rootful/rootless/roothide），Daemon 不链接；并为 roothide/rootless App 增加 `CL_PACKAGE_ROOTHIDE` / `CL_PACKAGE_ROOTLESS` 宏。
+- **修复完整诊断中可执行路径/数据根路径常为「无法获取」**：App 在 `dlsym` 失败时用 dyld/`NSBundle`/Documents 兜底；daemon `get_diag` 回传 `exe_path` / `data_root` 作为权威补充。
+- **修复 roothide 下 `libjailbreak.dylib ❌dlopen失败` 误导**：真实 `/usr/lib` 无该库时改为「N/A（roothide 预期）」，避免当成越狱损坏。
+- **修复诊断页导出入口易混淆**：复制探针/策略/事件时间线按钮改名并加说明；移除与诊断无关的「复制长测校准模板」入口。
+
+### Changed
+
+- 完整诊断读电量段增加 **当前电量/电流** 一行；复制文本末尾增加 **使用说明**（查电量直接复制；查停充请先插电并运行探针后再复制）。
+- 策略诊断页 tip 文案同步说明查电量 vs 查停充流程。
+- roothide 正式发布线改为原生构建；本地 libroot 由脚本/CI 填充，不再依赖误提交的本地 stub。
+
+### Notes
+
+- **若完整诊断显示 daemon 离线 / Could not connect to the server**：属于 LaunchDaemon 或进程未监听 `127.0.0.1:1230`，不是 iOS 17 读电量 key 未适配。请在 jbroot shell 检查 `launchctl` 与前台运行 `ChargeLimiterDaemon`（详见排障说明）。
+- 回归建议：roothide 安装后打开策略诊断 → 一键复制，确认路径非空、库状态文案合理；daemon 在线机确认 service/key/电量行有数；`./scripts/build_packages.sh` 能产出 tipa + 三份 deb。
+- 适用于 rootful / rootless / roothide / TrollStore；roothide 用户请安装 `ChargeLimiter_*_roothide_arm64e.deb`。
+
 ## v1.14.0 - 2026-08-06
 
 本版主要解决了 roothide（iOS 17）环境下充电控制失效与 App 语言/设置重启后丢失两大问题：新增 iOS 17 停充写法探针并落地了专用的 override 充电控制平面，同时把 App 专属设置抽离到独立 store 彻底修复重启丢失。
