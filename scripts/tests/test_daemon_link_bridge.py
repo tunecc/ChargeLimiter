@@ -36,6 +36,22 @@ class DaemonLinkBridgeTests(unittest.TestCase):
         for key in ("daemon_path", "daemon_exists", "initial_port_open", "log_tail"):
             self.assertIn(f'@"{key}"', body, f"probe 缺 key {key}")
 
+    def test_repair_export_and_steps(self):
+        self.assertIn("clRepairDaemonForApp_C", self.u)
+        idx = self.u.find("clRepairDaemonForApp_C")
+        end = self.u.find('extern "C"', idx + 1)
+        body = self.u[idx:end] if idx >= 0 and end > idx else ""
+        for kw in ("killall", "launchctl", "bootstrap", "--app-docs"):
+            self.assertIn(kw, body, f"repair 应含 {kw}")
+
+    def test_repair_returns_keys(self):
+        idx = self.u.find("clRepairDaemonForApp_C")
+        end = self.u.find('extern "C"', idx + 1)
+        body = self.u[idx:end] if idx >= 0 and end > idx else ""
+        for key in ("repair_result", "root_spawn_rc", "nonroot_spawn_rc",
+                    "port_after_spawn", "final_port_open", "log_tail"):
+            self.assertIn(f'@"{key}"', body, f"repair 缺 key {key}")
+
 
 if __name__ == "__main__":
     unittest.main()

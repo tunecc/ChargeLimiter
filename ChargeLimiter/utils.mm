@@ -2744,6 +2744,110 @@ extern "C" NSDictionary* clDaemonLaunchProbe_C(void) {
     return out;
 }
 
+extern "C" NSDictionary* clRepairDaemonForApp_C(void) {
+    // 自愈 + 报告：用户显式触发。kill 残留 → spawn(root→非root) → 等端口 → launchctl 尽力而为。
+    // nonroot_spawn_rc：根/便携回退失败时的 rc；仅在 root 失败且非 TrollStore 环境时尝试，否则 -999。
+    NSString* daemonPath = CLDaemonPathForApp();
+    NSMutableDictionary* out = [NSMutableDictionary dictionary];
+    out[@"daemon_path"] = daemonPath ?: @"";
+    BOOL exists = [[NSFileManager defaultManager] fileExistsAtPath:daemonPath];
+    out[@"daemon_exists"] = @(exists);
+
+    BOOL alreadyOpen = localPortOpen(GSERV_PORT);
+    out[@"initial_port_open"] = @(alreadyOpen);
+    if (alreadyOpen) {
+        out[@"repair_result"] = @"already_up";
+        out[@"final_port_open"] = @YES;
+        out[@"log_tail"] = CLReadDaemonLogTail(20);
+        return out;
+    }
+    if (!exists) {
+        out[@"repair_result"] = @"path_missing";
+        out[@"final_port_open"] = @NO;
+        out[@"log_tail"] = CLReadDaemonLogTail(20);
+        return out;
+    }
+
+    int jbType = getJBType();
+    int rootFlags = (jbType != JBTYPE_TROLLSTORE) ? SPAWN_FLAG_ROOT : 0;
+
+    // 1) 杀残留 daemon（best-effort；EPERM/ENOENT 属预期，rc 记录）
+    out[@"kill_rc"] = @(spawn(@[@"/usr/bin/killall", @"-9", @"ChargeLimiterDaemon"],
+                              nil, nil, nil, SPAWN_FLAG_NOWAIT | rootFlags, nil));
+
+    // 2) spawn daemon：root 优先，EPERM 时 nonroot（口径与 restartDaemonForApp_C 一致）
+    NSMutableArray* argv = [NSMutableArray arrayWithObject:daemonPath];
+    NSString* appDocs = getAppDocumentsPath();
+    if (appDocs.length > 0) {
+        [argv addObject:@"--app-docs"];
+        [argv addObject:appDocs];
+    }
+    int rootRc = spawn(argv, nil, nil, nil, SPAWN_FLAG_NOWAIT | rootFlags, nil);
+    out[@"root_spawn_rc"] = @(rootRc);
+    int nonrootRc = -999;
+    if (rootRc != 0 && rootFlags) {
+        nonrootRc = spawn(argv, nil, nil, nil, SPAWN_FLAG_NOWAIT, nil);
+    }
+    out[@"nonroot_spawn_rc"] = @(nonrootRc);
+
+    // 3) 轮询 1230 至多 ~5s（300ms × 17）
+    BOOL afterSpawn = NO;
+    for (int i = 0; i < 17; i++) {
+        if (localPortOpen(GSERV_PORT)) {
+            afterSpawn = YES;
+            break;
+        }
+        usleep(300 * 1000);
+    }
+    out[@"port_after_spawn"] = @(afterSpawn);
+
+    // 4) launchctl 尽力而为（relaxin App sandbox 下常 EPERM；只留证，不重试）
+    NSInteger lrc = -1;
+    NSString* lout = @"";
+    BOOL attempted = NO;
+    if (!afterSpawn) {
+        NSMutableArray* candidates = [NSMutableArray arrayWithObject:
+            @"/Library/LaunchDaemons/com.chargelimiter.mod.plist"];
+        NSString* jbRoot = CLDaemonJbRootPath();
+        if (jbRoot.length > 0) {
+            [candidates addObject:
+                [jbRoot stringByAppendingPathComponent:@"Library/LaunchDaemons/com.chargelimiter.mod.plist"]];
+        }
+        for (NSString* plist in candidates) {
+            if (![[NSFileManager defaultManager] fileExistsAtPath:plist]) {
+                continue;
+            }
+            NSString* bootOut = nil;
+            NSString* bootErr = nil;
+            spawn(@[@"/bin/launchctl", @"bootout", @"system/com.chargelimiter.mod"],
+                  &bootOut, &bootErr, nil, rootFlags, nil);
+            NSString* splash = bootErr ?: (bootOut ?: @"");
+            NSString* bOut = nil;
+            NSString* bErr = nil;
+            lrc = spawn(@[@"/bin/launchctl", @"bootstrap", @"system", plist],
+                        &bOut, &bErr, nil, rootFlags, nil);
+            attempted = YES;
+            lout = bErr.length ? bErr : (bOut.length ? bOut : splash);
+            for (int i = 0; i < 10; i++) {
+                if (localPortOpen(GSERV_PORT)) {
+                    break;
+                }
+                usleep(300 * 1000);
+            }
+            break;
+        }
+    }
+    out[@"launchctl_attempted"] = @(attempted);
+    out[@"launchctl_rc"] = @((int)lrc);
+    out[@"launchctl_out"] = lout ?: @"";
+
+    BOOL finalOpen = localPortOpen(GSERV_PORT);
+    out[@"final_port_open"] = @(finalOpen);
+    out[@"repair_result"] = finalOpen ? @"recovered" : @"still_down";
+    out[@"log_tail"] = CLReadDaemonLogTail(20);
+    return out;
+}
+
 extern "C" {
 int proc_pidinfo(int pid, int flavor, uint64_t arg, void *buffer, int buffersize);
 }
