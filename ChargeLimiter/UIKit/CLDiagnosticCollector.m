@@ -202,6 +202,9 @@ NSString *CLJBTypeLabelFromCode(int code) {
 @implementation CLDiagBatteryProbe
 @end
 
+@implementation CLDiagDaemonLink
+@end
+
 @implementation CLDiagnosticReport
 
 - (NSString *)markdownText {
