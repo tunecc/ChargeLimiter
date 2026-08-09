@@ -533,6 +533,7 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
 @property (nonatomic, copy) NSDictionary *lastProbePayload;
 @property (nonatomic, strong) UILabel *probeResultLabel;
 @property (nonatomic, strong, nullable) CLDiagnosticReport *lastDiagReport;
+@property (nonatomic, copy, nullable) NSDictionary *lastRepairResult;
 @property (nonatomic, strong, nullable) CLAdvSettingsCard *repairCard;
 @end
 
@@ -1357,9 +1358,11 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
 - (void)refreshEnvironmentDiagnostics {
     NSString *policy = [self diagnosticSummaryTextForManager:[CLBatteryManager shared]];
     NSString *probe = self.lastProbeSummaryText;
+    NSString *repair = [self repairSummaryTextForResult:self.lastRepairResult];
     __weak typeof(self) weakSelf = self;
     [CLDiagnosticCollector collectWithPolicySummary:policy
                                       probeSummary:probe
+                                     repairSummary:repair
                                         completion:^(CLDiagnosticReport *report) {
         __strong typeof(weakSelf) self = weakSelf;
         if (!self) return;
@@ -1390,9 +1393,11 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
 - (void)copyFullDiagnosticTapped:(UITapGestureRecognizer *)tap {
     NSString *policy = [self diagnosticSummaryTextForManager:[CLBatteryManager shared]];
     NSString *probe = self.lastProbeSummaryText;
+    NSString *repair = [self repairSummaryTextForResult:self.lastRepairResult];
     __weak typeof(self) weakSelf = self;
     [CLDiagnosticCollector collectWithPolicySummary:policy
                                       probeSummary:probe
+                                     repairSummary:repair
                                         completion:^(CLDiagnosticReport *report) {
         __strong typeof(weakSelf) self = weakSelf;
         if (!self) return;
@@ -1449,6 +1454,7 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
 }
 
 - (void)handleDaemonRepairResult:(NSDictionary *)result {
+    self.lastRepairResult = result;
     NSString *verdict = result[@"repair_result"] ?: @"";
     NSString *msg;
     if ([verdict isEqualToString:@"recovered"]) {
@@ -1469,6 +1475,40 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
     }
     [self presentInfoAlertWithTitle:CLL(@"修复") message:msg];
     [self refreshEnvironmentDiagnostics];
+}
+
+// 把最近一次修复结果格式化成诊断报告里的「最近修复尝试」段。
+// 含 verdict / spawn rc / 端口前后变化 / launchctl rc，便于离线定位 spawn 失败 vs 端口未开 vs launchctl 失败。
+- (NSString *)repairSummaryTextForResult:(NSDictionary *)result {
+    if (![result isKindOfClass:[NSDictionary class]]) {
+        return @"";
+    }
+    NSString *verdict = result[@"repair_result"] ?: @"";
+    NSMutableArray<NSString *> *lines = [NSMutableArray array];
+    [lines addObject:[NSString stringWithFormat:@"结果: %@", verdict.length ? verdict : @"(未知)"]];
+    [lines addObject:[NSString stringWithFormat:@"初始端口: %@",
+        [result[@"initial_port_open"] boolValue] ? @"YES" : @"NO"]];
+    [lines addObject:[NSString stringWithFormat:@"root spawn rc: %@",
+        CLDiagErrnoLabel([result[@"root_spawn_rc"] integerValue])]];
+    [lines addObject:[NSString stringWithFormat:@"nonroot spawn rc: %@",
+        CLDiagErrnoLabel([result[@"nonroot_spawn_rc"] integerValue])]];
+    [lines addObject:[NSString stringWithFormat:@"spawn 后端口: %@",
+        [result[@"port_after_spawn"] boolValue] ? @"YES" : @"NO"]];
+    if ([result[@"launchctl_attempted"] boolValue]) {
+        [lines addObject:[NSString stringWithFormat:@"launchctl rc: %@",
+            CLDiagErrnoLabel([result[@"launchctl_rc"] integerValue])]];
+        NSString *lout = result[@"launchctl_out"];
+        if ([lout isKindOfClass:[NSString class]] && lout.length > 0) {
+            NSString *oneLine = [[lout componentsSeparatedByString:@"\n"]
+                                 componentsJoinedByString:@" ⏎ "];
+            [lines addObject:[NSString stringWithFormat:@"launchctl 输出: %@", oneLine]];
+        }
+    } else {
+        [lines addObject:@"launchctl: 未尝试"];
+    }
+    [lines addObject:[NSString stringWithFormat:@"最终端口: %@",
+        [result[@"final_port_open"] boolValue] ? @"YES" : @"NO"]];
+    return [lines componentsJoinedByString:@"\n"];
 }
 
 - (void)updateDiagnosticValues {

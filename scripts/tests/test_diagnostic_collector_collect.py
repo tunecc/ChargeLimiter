@@ -5,6 +5,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 API_H = REPO / "ChargeLimiter" / "UIKit" / "CLAPIClient.h"
 API_M = REPO / "ChargeLimiter" / "UIKit" / "CLAPIClient.m"
+COL_H = REPO / "ChargeLimiter" / "UIKit" / "CLDiagnosticCollector.h"
 COL_M = REPO / "ChargeLimiter" / "UIKit" / "CLDiagnosticCollector.m"
 
 
@@ -12,6 +13,7 @@ class CollectContractTests(unittest.TestCase):
     def setUp(self):
         self.api_h = API_H.read_text(encoding="utf-8")
         self.api_m = API_M.read_text(encoding="utf-8")
+        self.col_h = COL_H.read_text(encoding="utf-8") if COL_H.exists() else ""
         self.col_m = COL_M.read_text(encoding="utf-8")
 
     def test_get_diag_declared(self):
@@ -28,6 +30,11 @@ class CollectContractTests(unittest.TestCase):
     def test_collect_calls_get_diag(self):
         self.assertIn("getDiagWithCompletion", self.col_m)
 
+    def test_collect_signature_has_repair_summary(self):
+        # 采集签名必须含 repairSummary，让「修复 daemon 启动」结果进报告
+        self.assertIn("repairSummary:(nullable NSString *)repairSummary", self.col_h)
+        self.assertIn("repairSummaryText", self.col_h)
+
     def test_collect_fills_environment_locally(self):
         # 本地环境不依赖 daemon
         self.assertIn("CLPackageSchemeString", self.col_m)
@@ -35,15 +42,27 @@ class CollectContractTests(unittest.TestCase):
         self.assertIn("CLJBTypeLabelFromCode", self.col_m)
 
     def test_collect_uses_c_linkage_wrappers(self):
-        # utils.mm 符号是 C++ mangled；collector 必须 dlsym unmangled _C wrappers
+        # utils.mm 符号是 C++ mangled；collector 通过 extern 声明直接调用 unmangled _C wrappers。
+        # 直接调用走链接期绑定，不依赖导出表；stripped Mach-O executable 不导出本地符号，
+        # dlsym(RTLD_DEFAULT, ...) 会返回 NULL，故禁止用 dlsym 调 _C wrapper。
         self.assertIn("getJBType_C", self.col_m)
         self.assertIn("getSelfExePath_C", self.col_m)
         self.assertIn("get_sys_boottime_C", self.col_m)
         self.assertIn("getRuntimeDataRootPath_C", self.col_m)
-        # 禁止直接 dlsym 裸 C++ 符号名
+        self.assertIn("clDaemonLaunchProbe_C", self.col_m)
+        # 必须有 extern 声明（直接调用前置）
+        self.assertIn("extern NSDictionary *clDaemonLaunchProbe_C", self.col_m)
+        self.assertIn("extern int getJBType_C", self.col_m)
+        # 禁止 dlsym 裸 C++ 符号名
         self.assertNotIn('dlsym(RTLD_DEFAULT, "getJBType")', self.col_m)
         self.assertNotIn('dlsym(RTLD_DEFAULT, "getSelfExePath")', self.col_m)
         self.assertNotIn('dlsym(RTLD_DEFAULT, "get_sys_boottime")', self.col_m)
+        # 禁止 dlsym 调 _C wrapper（stripped binary 不导出，dlsym 必失败）
+        self.assertNotIn('dlsym(RTLD_DEFAULT, "getJBType_C")', self.col_m)
+        self.assertNotIn('dlsym(RTLD_DEFAULT, "getSelfExePath_C")', self.col_m)
+        self.assertNotIn('dlsym(RTLD_DEFAULT, "get_sys_boottime_C")', self.col_m)
+        self.assertNotIn('dlsym(RTLD_DEFAULT, "getRuntimeDataRootPath_C")', self.col_m)
+        self.assertNotIn('dlsym(RTLD_DEFAULT, "clDaemonLaunchProbe_C")', self.col_m)
 
     def test_collect_falls_back_jbtype_from_diag(self):
         # 本地 unknown/空时用 daemon jbtype 回填

@@ -63,6 +63,18 @@ class DiagnosticCollectorContractTests(unittest.TestCase):
         self.assertIn("CLDiagErrnoLabel", self.h)
         self.assertIn("CLDiagErrnoLabel", self.m)
 
+    def test_daemon_link_renders_port_and_log_path(self):
+        # 离线段必须渲染初始端口状态与日志文件路径，以区分
+        # "端口没开" / "日志路径解析失败" / "没进 serve" 三种离线根因
+        self.assertIn("初始端口(1230)", self.m)
+        self.assertIn("日志文件路径", self.m)
+        self.assertIn("日志文件存在", self.m)
+
+    def test_repair_summary_section(self):
+        # 最近修复尝试段（spawn rc / launchctl rc / 端口变化）进报告
+        self.assertIn("# 最近修复尝试", self.m)
+        self.assertIn("repairSummaryText", self.h)
+
     def test_daemon_link_model(self):
         self.assertIn("CLDiagDaemonLink", self.h)
         self.assertIn("daemonLink", self.h)

@@ -2736,10 +2736,13 @@ NSArray* getUnusedFds() { // posix_spawn会将socket等fd继承给子进程
 // 只读探针：不做任何副作用，供诊断报告离线段使用
 extern "C" NSDictionary* clDaemonLaunchProbe_C(void) {
     NSString* daemonPath = CLDaemonPathForApp();
+    NSString* logPath = getLogPath();
     NSMutableDictionary* out = [NSMutableDictionary dictionary];
     out[@"daemon_path"] = daemonPath ?: @"";
     out[@"daemon_exists"] = @([[NSFileManager defaultManager] fileExistsAtPath:daemonPath]);
     out[@"initial_port_open"] = @(localPortOpen(GSERV_PORT));
+    out[@"log_path"] = logPath ?: @"";
+    out[@"log_exists"] = @([[NSFileManager defaultManager] fileExistsAtPath:logPath]);
     out[@"log_tail"] = CLReadDaemonLogTail(20);
     return out;
 }
