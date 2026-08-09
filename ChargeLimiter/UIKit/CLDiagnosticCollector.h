@@ -15,6 +15,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy) NSString *appVersion;
 @property (nonatomic, copy) NSString *packageScheme;
 @property (nonatomic, copy) NSString *jbType;
+@property (nonatomic, assign) int jbRawCode;              // getJBType 原始 code；-1=未取到
+@property (nonatomic, copy) NSString *jbProbeDetail;       // symbol/jbroot/libroot 探测串
 @property (nonatomic, copy) NSString *exePath;
 @property (nonatomic, copy) NSString *dataRootPath;
 @property (nonatomic, assign) NSTimeInterval systemBootTime;
@@ -42,10 +44,26 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, assign) BOOL hasLiveBatterySample;
 @end
 
+@interface CLDiagDaemonLink : NSObject
+@property (nonatomic, copy) NSString *daemonPath;
+@property (nonatomic, assign) BOOL daemonExists;
+@property (nonatomic, assign) BOOL initialPortOpen;
+@property (nonatomic, assign) NSInteger rootSpawnRc;
+@property (nonatomic, assign) NSInteger nonrootSpawnRc;
+@property (nonatomic, assign) BOOL portAfterSpawn;
+@property (nonatomic, assign) BOOL launchctlAttempted;
+@property (nonatomic, assign) NSInteger launchctlRc;
+@property (nonatomic, copy) NSString *launchctlOut;
+@property (nonatomic, assign) BOOL finalPortOpen;
+@property (nonatomic, copy) NSString *repairResult;
+@property (nonatomic, copy) NSString *logTail;
+@end
+
 @interface CLDiagnosticReport : NSObject
 @property (nonatomic, strong) CLDiagEnvironment *environment;
 @property (nonatomic, strong) CLDiagConnectivity *connectivity;
 @property (nonatomic, strong) CLDiagBatteryProbe *batteryProbe;
+@property (nonatomic, strong) CLDiagDaemonLink *daemonLink; // 离线时才填充
 @property (nonatomic, copy, nullable) NSString *policySummaryText;
 @property (nonatomic, copy, nullable) NSString *probeSummaryText;
 - (NSString *)markdownText;
@@ -61,5 +79,6 @@ NS_ASSUME_NONNULL_BEGIN
 FOUNDATION_EXPORT NSString *CLPackageSchemeString(void);
 FOUNDATION_EXPORT NSString *CLSanitizePathForDiag(NSString * _Nullable path);
 FOUNDATION_EXPORT NSString *CLJBTypeLabelFromCode(int code);
+FOUNDATION_EXPORT NSString *CLDiagErrnoLabel(NSInteger rc);
 
 NS_ASSUME_NONNULL_END
