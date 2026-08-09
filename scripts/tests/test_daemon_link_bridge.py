@@ -33,7 +33,8 @@ class DaemonLinkBridgeTests(unittest.TestCase):
         idx = self.u.find("clDaemonLaunchProbe_C")
         end = self.u.find('extern "C"', idx + 1)
         body = self.u[idx:end] if idx >= 0 and end > idx else ""
-        for key in ("daemon_path", "daemon_exists", "initial_port_open", "log_tail"):
+        for key in ("daemon_path", "daemon_exists", "initial_port_open",
+                    "log_path", "log_exists", "log_tail"):
             self.assertIn(f'@"{key}"', body, f"probe 缺 key {key}")
 
     def test_repair_export_and_steps(self):

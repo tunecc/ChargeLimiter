@@ -12,7 +12,14 @@
 #import <mach-o/dyld.h>
 
 // 不引入 common.h/utils.h（会拉 UIKit）。
-// 优先 dlsym unmangled _C 符号；失败则用本进程 dyld / bundle 路径兜底。
+// 本项目 utils.mm 的 _C wrapper 直接 extern 调用（链接期绑定，不依赖导出表，
+// 也不依赖 dlsym——stripped Mach-O executable 不导出本地符号，dlsym 会失败）。
+// 仅 jbroot / libroot_dyn_jbrootpath 这类外部库符号仍走 dlsym 运行时查找。
+extern NSDictionary *clDaemonLaunchProbe_C(void);
+extern int getJBType_C(void);
+extern NSString *getSelfExePath_C(void);
+extern NSString *getRuntimeDataRootPath_C(void);
+extern int get_sys_boottime_C(void);
 
 NSString *CLDiagErrnoLabel(NSInteger rc) {
     if (rc == -999)   return @"-999(未尝试)";
@@ -24,28 +31,14 @@ NSString *CLDiagErrnoLabel(NSInteger rc) {
 }
 
 static NSDictionary *CLDiagCallDaemonLaunchProbe(void) {
-    typedef NSDictionary *(*fn_t)(void);
-    static fn_t fn = NULL;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        fn = (fn_t)dlsym(RTLD_DEFAULT, "clDaemonLaunchProbe_C");
-    });
-    return fn ? fn() : nil;
+    return clDaemonLaunchProbe_C();
 }
 
 static int CLDiagGetJBTypeCode(BOOL *outFound) {
-    typedef int (*fn_t)(void);
-    static BOOL resolved = NO;
-    static fn_t fn = NULL;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        fn = (fn_t)dlsym(RTLD_DEFAULT, "getJBType_C");
-        resolved = (fn != NULL);
-    });
     if (outFound) {
-        *outFound = resolved;
+        *outFound = YES;
     }
-    return fn ? fn() : -1;
+    return getJBType_C();
 }
 
 static NSString *CLDiagJbProbeDetail(BOOL symbolFound) {
@@ -78,13 +71,7 @@ static NSString *CLDiagLocalExecutablePath(void) {
 }
 
 static NSString *CLDiagCallGetSelfExePath(void) {
-    typedef NSString *(*fn_t)(void);
-    static fn_t fn = NULL;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        fn = (fn_t)dlsym(RTLD_DEFAULT, "getSelfExePath_C");
-    });
-    NSString *viaC = fn ? fn() : nil;
+    NSString *viaC = getSelfExePath_C();
     if (viaC.length > 0) {
         return viaC;
     }
@@ -92,13 +79,7 @@ static NSString *CLDiagCallGetSelfExePath(void) {
 }
 
 static NSString *CLDiagCallGetRuntimeDataRootPath(void) {
-    typedef NSString *(*fn_t)(void);
-    static fn_t fn = NULL;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        fn = (fn_t)dlsym(RTLD_DEFAULT, "getRuntimeDataRootPath_C");
-    });
-    NSString *viaC = fn ? fn() : nil;
+    NSString *viaC = getRuntimeDataRootPath_C();
     if (viaC.length > 0) {
         return viaC;
     }
@@ -112,13 +93,7 @@ static NSString *CLDiagCallGetRuntimeDataRootPath(void) {
 }
 
 static NSTimeInterval CLDiagCallGetSysBoottime(void) {
-    typedef int (*fn_t)(void);
-    static fn_t fn = NULL;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        fn = (fn_t)dlsym(RTLD_DEFAULT, "get_sys_boottime_C");
-    });
-    return fn ? (NSTimeInterval)fn() : 0;
+    return (NSTimeInterval)get_sys_boottime_C();
 }
 
 /// roothide 上 /usr/lib/libjailbreak.dylib 常不在真实 rootfs → 失败是预期，不应标成故障。
@@ -252,8 +227,18 @@ NSString *CLJBTypeLabelFromCode(int code) {
         [lines addObject:@"# daemon 启动链路（离线诊断）"];
         [lines addObject:[NSString stringWithFormat:@"daemon 路径:     %@", dk.daemonPath.length ? dk.daemonPath : @"(无法获取)"]];
         [lines addObject:[NSString stringWithFormat:@"二进制存在:      %@", dk.daemonExists ? @"YES" : @"NO"]];
+        [lines addObject:[NSString stringWithFormat:@"初始端口(1230): %@", dk.initialPortOpen ? @"YES(已被监听)" : @"NO(无人监听)"]];
+        [lines addObject:[NSString stringWithFormat:@"日志文件路径:    %@", dk.logPath.length ? dk.logPath : @"(无法获取)"]];
+        [lines addObject:[NSString stringWithFormat:@"日志文件存在:    %@", dk.logExists ? @"YES" : @"NO"]];
         [lines addObject:@"日志尾部(aldente.log):"];
         [lines addObjectsFromArray:[self daemonLogTailLines:dk.logTail]];
+        [lines addObject:@""];
+    }
+
+    // 最近一次「修复 daemon 启动」结果（若有）：spawn rc / launchctl rc / 端口变化
+    if (self.repairSummaryText.length > 0) {
+        [lines addObject:@"# 最近修复尝试"];
+        [lines addObject:self.repairSummaryText];
         [lines addObject:@""];
     }
 
@@ -336,10 +321,12 @@ NSString *CLJBTypeLabelFromCode(int code) {
 
 + (void)collectWithPolicySummary:(NSString *)policySummary
                    probeSummary:(NSString *)probeSummary
+                 repairSummary:(NSString *)repairSummary
                      completion:(void (^)(CLDiagnosticReport *))completion {
     CLDiagnosticReport *report = [CLDiagnosticReport new];
     report.policySummaryText = policySummary;
     report.probeSummaryText = probeSummary;
+    report.repairSummaryText = repairSummary;
 
     // 1) 本地环境（不依赖 daemon）；device/sys/app 先用 manager 缓存兜底
     CLBatteryManager *mgr = [CLBatteryManager shared];
@@ -405,6 +392,8 @@ NSString *CLJBTypeLabelFromCode(int code) {
             link.daemonPath = CLSanitizePathForDiag(probeRaw[@"daemon_path"]);
             link.daemonExists = [probeRaw[@"daemon_exists"] boolValue];
             link.initialPortOpen = [probeRaw[@"initial_port_open"] boolValue];
+            link.logPath = CLSanitizePathForDiag(probeRaw[@"log_path"]);
+            link.logExists = [probeRaw[@"log_exists"] boolValue];
             link.logTail = [probeRaw[@"log_tail"] isKindOfClass:[NSString class]] ? probeRaw[@"log_tail"] : @"";
             report.daemonLink = link;
             // 离线时仍用本地 scheme 格式化 jailbreak 状态，避免误导

@@ -48,6 +48,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy) NSString *daemonPath;
 @property (nonatomic, assign) BOOL daemonExists;
 @property (nonatomic, assign) BOOL initialPortOpen;
+@property (nonatomic, copy) NSString *logPath;
+@property (nonatomic, assign) BOOL logExists;
 @property (nonatomic, copy) NSString *logTail;
 @end
 
@@ -58,6 +60,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, strong) CLDiagDaemonLink *daemonLink; // 离线时才填充
 @property (nonatomic, copy, nullable) NSString *policySummaryText;
 @property (nonatomic, copy, nullable) NSString *probeSummaryText;
+@property (nonatomic, copy, nullable) NSString *repairSummaryText; // 最近一次「修复 daemon 启动」结果摘要
 - (NSString *)markdownText;
 @end
 
@@ -65,6 +68,7 @@ NS_ASSUME_NONNULL_BEGIN
 /// 异步采集完整诊断。completion 保证在主线程回调。
 + (void)collectWithPolicySummary:(nullable NSString *)policySummary
                    probeSummary:(nullable NSString *)probeSummary
+                 repairSummary:(nullable NSString *)repairSummary
                      completion:(void (^)(CLDiagnosticReport *report))completion;
 @end
 
