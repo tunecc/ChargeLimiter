@@ -2733,6 +2733,17 @@ NSArray* getUnusedFds() { // posix_spawn会将socket等fd继承给子进程
 #define PROC_PIDPATHINFO                11
 #define PROC_PIDPATHINFO_SIZE           (MAXPATHLEN)
 
+// 只读探针：不做任何副作用，供诊断报告离线段使用
+extern "C" NSDictionary* clDaemonLaunchProbe_C(void) {
+    NSString* daemonPath = CLDaemonPathForApp();
+    NSMutableDictionary* out = [NSMutableDictionary dictionary];
+    out[@"daemon_path"] = daemonPath ?: @"";
+    out[@"daemon_exists"] = @([[NSFileManager defaultManager] fileExistsAtPath:daemonPath]);
+    out[@"initial_port_open"] = @(localPortOpen(GSERV_PORT));
+    out[@"log_tail"] = CLReadDaemonLogTail(20);
+    return out;
+}
+
 extern "C" {
 int proc_pidinfo(int pid, int flavor, uint64_t arg, void *buffer, int buffersize);
 }

@@ -22,6 +22,20 @@ class DaemonLinkBridgeTests(unittest.TestCase):
     def test_log_tail_helper(self):
         self.assertIn("CLReadDaemonLogTail", self.u)
 
+    def test_probe_is_read_only(self):
+        idx = self.u.find("clDaemonLaunchProbe_C")
+        end = self.u.find('extern "C"', idx + 1)
+        body = self.u[idx:end] if idx >= 0 and end > idx else ""
+        for kw in ("killall", "launchctl", "bootout", "bootstrap", "posix_spawn"):
+            self.assertNotIn(kw, body, f"探针只读，不应含 {kw}")
+
+    def test_probe_returns_keys(self):
+        idx = self.u.find("clDaemonLaunchProbe_C")
+        end = self.u.find('extern "C"', idx + 1)
+        body = self.u[idx:end] if idx >= 0 and end > idx else ""
+        for key in ("daemon_path", "daemon_exists", "initial_port_open", "log_tail"):
+            self.assertIn(f'@"{key}"', body, f"probe 缺 key {key}")
+
 
 if __name__ == "__main__":
     unittest.main()
