@@ -14,14 +14,46 @@
 // 不引入 common.h/utils.h（会拉 UIKit）。
 // 优先 dlsym unmangled _C 符号；失败则用本进程 dyld / bundle 路径兜底。
 
-static int CLDiagCallGetJBType(void) {
+NSString *CLDiagErrnoLabel(NSInteger rc) {
+    if (rc == 0)      return @"0";
+    if (rc == 1)      return @"1(EPERM 权限)";
+    if (rc == 2)      return @"2(ENOENT 无此文件)";
+    if (rc == 13)     return @"13(EACCES 权限拒绝)";
+    return [NSString stringWithFormat:@"%ld", (long)rc];
+}
+
+static NSDictionary *CLDiagCallDaemonLaunchProbe(void) {
+    typedef NSDictionary *(*fn_t)(void);
+    static fn_t fn = NULL;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        fn = (fn_t)dlsym(RTLD_DEFAULT, "clDaemonLaunchProbe_C");
+    });
+    return fn ? fn() : nil;
+}
+
+static int CLDiagGetJBTypeCode(BOOL *outFound) {
     typedef int (*fn_t)(void);
+    static BOOL resolved = NO;
     static fn_t fn = NULL;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         fn = (fn_t)dlsym(RTLD_DEFAULT, "getJBType_C");
+        resolved = (fn != NULL);
     });
+    if (outFound) {
+        *outFound = resolved;
+    }
     return fn ? fn() : -1;
+}
+
+static NSString *CLDiagJbProbeDetail(BOOL symbolFound) {
+    BOOL jbrootSym = (dlsym(RTLD_DEFAULT, "jbroot") != NULL);
+    BOOL librootSym = (dlsym(RTLD_DEFAULT, "libroot_dyn_jbrootpath") != NULL);
+    return [NSString stringWithFormat:@"symbol=%@ jbroot=%@ libroot=%@",
+            symbolFound ? @"YES" : @"NO",
+            jbrootSym ? @"YES" : @"NO",
+            librootSym ? @"YES" : @"NO"];
 }
 
 static NSString *CLDiagLocalExecutablePath(void) {
@@ -210,6 +242,28 @@ NSString *CLJBTypeLabelFromCode(int code) {
     [lines addObject:[NSString stringWithFormat:@"最近 API 错误码: %@", c.lastApiError.length ? c.lastApiError : @"(无法获取)"]];
     [lines addObject:@""];
 
+    // # daemon 启动链路（仅离线时渲染；在线时 daemon 本身可回答，无需诊断链路）
+    CLDiagDaemonLink *dk = self.daemonLink;
+    if (!c.httpReachable && dk) {
+        [lines addObject:@"# daemon 启动链路（离线诊断）"];
+        [lines addObject:[NSString stringWithFormat:@"daemon 路径:     %@", dk.daemonPath.length ? dk.daemonPath : @"(无法获取)"]];
+        [lines addObject:[NSString stringWithFormat:@"二进制存在:      %@", dk.daemonExists ? @"YES" : @"NO"]];
+        if (dk.repairResult.length) {
+            [lines addObject:[NSString stringWithFormat:@"修复结果:        %@", dk.repairResult]];
+            [lines addObject:[NSString stringWithFormat:@"App spawn rc:    root=%@ 非root=%@",
+                              CLDiagErrnoLabel(dk.rootSpawnRc), CLDiagErrnoLabel(dk.nonrootSpawnRc)]];
+            [lines addObject:[NSString stringWithFormat:@"spawn 后端口:    %@", dk.portAfterSpawn ? @"YES" : @"NO"]];
+            [lines addObject:[NSString stringWithFormat:@"launchctl:       %@ rc=%@ out=\"%@\"",
+                              dk.launchctlAttempted ? @"已尝试" : @"未尝试",
+                              CLDiagErrnoLabel(dk.launchctlRc),
+                              dk.launchctlOut ?: @""]];
+            [lines addObject:[NSString stringWithFormat:@"最终端口:        %@", dk.finalPortOpen ? @"YES" : @"NO"]];
+        }
+        [lines addObject:@"日志尾部(aldente.log):"];
+        [lines addObjectsFromArray:[self daemonLogTailLines:dk.logTail]];
+        [lines addObject:@""];
+    }
+
     // # 读电量链路
     [lines addObject:@"# 读电量链路"];
     CLDiagBatteryProbe *b = self.batteryProbe;
@@ -270,6 +324,19 @@ NSString *CLJBTypeLabelFromCode(int code) {
     return [lines componentsJoinedByString:@"\n"];
 }
 
+- (NSArray<NSString *> *)daemonLogTailLines:(NSString *)tail {
+    if (tail.length == 0) {
+        return @[@"  (空/无日志)"];
+    }
+    NSMutableArray<NSString *> *out = [NSMutableArray array];
+    for (NSString *line in [tail componentsSeparatedByString:@"\n"]) {
+        if (line.length > 0) {
+            [out addObject:[NSString stringWithFormat:@"  %@", line]];
+        }
+    }
+    return out.count ? out : @[@"  (空)"];
+}
+
 @end
 
 @implementation CLDiagnosticCollector
@@ -285,8 +352,11 @@ NSString *CLJBTypeLabelFromCode(int code) {
     CLBatteryManager *mgr = [CLBatteryManager shared];
     CLDiagEnvironment *env = [CLDiagEnvironment new];
     env.packageScheme = CLPackageSchemeString();
-    int jb = CLDiagCallGetJBType();
+    BOOL jbFound = NO;
+    int jb = CLDiagGetJBTypeCode(&jbFound);
     env.jbType = CLJBTypeLabelFromCode(jb);
+    env.jbRawCode = jb;
+    env.jbProbeDetail = CLDiagJbProbeDetail(jbFound);
     env.exePath = CLSanitizePathForDiag(CLDiagCallGetSelfExePath());
     env.dataRootPath = CLSanitizePathForDiag(CLDiagCallGetRuntimeDataRootPath());
     NSTimeInterval boot = CLDiagCallGetSysBoottime();
@@ -337,6 +407,13 @@ NSString *CLJBTypeLabelFromCode(int code) {
             } else {
                 conn.lastApiError = @"status!=0";
             }
+            NSDictionary *probeRaw = CLDiagCallDaemonLaunchProbe();
+            CLDiagDaemonLink *link = [CLDiagDaemonLink new];
+            link.daemonPath = CLSanitizePathForDiag(probeRaw[@"daemon_path"]);
+            link.daemonExists = [probeRaw[@"daemon_exists"] boolValue];
+            link.initialPortOpen = [probeRaw[@"initial_port_open"] boolValue];
+            link.logTail = [probeRaw[@"log_tail"] isKindOfClass:[NSString class]] ? probeRaw[@"log_tail"] : @"";
+            report.daemonLink = link;
             // 离线时仍用本地 scheme 格式化 jailbreak 状态，避免误导
             probe.libjailbreakStatus = CLFormatLibjailbreakStatus(NO, env.packageScheme, env.jbType);
         } else {

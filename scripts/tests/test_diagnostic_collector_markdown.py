@@ -58,6 +58,19 @@ class DiagnosticCollectorContractTests(unittest.TestCase):
         # roothide expected wording present in formatter
         self.assertIn("roothide 预期", self.m)
 
+    def test_daemon_link_offline_section(self):
+        self.assertIn("# daemon 启动链路", self.m)
+        self.assertIn("CLDiagErrnoLabel", self.h)
+        self.assertIn("CLDiagErrnoLabel", self.m)
+
+    def test_daemon_link_model(self):
+        self.assertIn("CLDiagDaemonLink", self.h)
+        self.assertIn("daemonLink", self.h)
+
+    def test_jb_dual_source(self):
+        self.assertIn("jbRawCode", self.h)
+        self.assertIn("jbProbeDetail", self.h)
+
 
 if __name__ == "__main__":
     unittest.main()
