@@ -397,3 +397,9 @@
 "仅含持久化事件,不含环境" = "Persisted events only; no environment";
 "查电量/连通性可直接复制。查停充请先插电并运行探针后再复制。" = "For battery/connectivity issues, copy this report. For charge-stop issues, plug in, run the probe, then copy again.";
 "上方按钮复制完整诊断（环境+连通性+读电量+策略）。roothide 下 libjailbreak 失败多为预期。" = "Top button copies full diagnostics (env, connectivity, battery path, policy). On roothide, libjailbreak failure is usually expected.";
+"修复 daemon 启动" = "Repair daemon launch";
+"修复" = "Repair";
+"修复完成：daemon 已在线" = "Repair done: daemon online";
+"daemon 已在运行" = "Daemon already running";
+"未找到 daemon 二进制，请重装包" = "Daemon binary not found, reinstall the package";
+"仍不在线（见下方诊断报告）" = "Still offline (see diagnostic report below)";
