@@ -1,0 +1,66 @@
+# sqlite-race-repro.yml
+# 一次性回归：ChargeLimiterDaemon 的全局 sqlite 句柄并发竞态。
+#
+# 背景：真机崩溃 EXC_BAD_ACCESS（故障地址 0x61746164 == "data"），
+#   崩溃在 http 并发队列 get_statistics -> getDBData() 的 sqlite3_prepare/step。
+#   修复 = daemon.mm 所有 sqlite 调用统一走同一把递归锁 +
+#          CLSimpleHTTPServer 请求处理改串行队列。
+#
+# 回归断言：tests/run_repro.sh 的 locked 变体在 TSan/ASan 下必须干净。
+#   baseline 无锁变体会复现崩溃（PASS_REPRODUCED），仅作日志参考，不做断言——
+#   竞态是概率性的，CI 上断言「无锁必然崩」会引入 flaky 红。
+#
+# 触发：daemon/http 服务器/tests 相关文件变更，或手动 workflow_dispatch。
+name: Sqlite race regression
+
+on:
+  push:
+    paths:
+      - "ChargeLimiter/daemon.mm"
+      - "ChargeLimiter/CLSimpleHTTPServer.m"
+      - "ChargeLimiter/CLSimpleHTTPServer.h"
+      - "tests/**"
+      - ".github/workflows/sqlite-race-repro.yml"
+  pull_request:
+    paths:
+      - "ChargeLimiter/daemon.mm"
+      - "ChargeLimiter/CLSimpleHTTPServer.m"
+      - "ChargeLimiter/CLSimpleHTTPServer.h"
+      - "tests/**"
+      - ".github/workflows/sqlite-race-repro.yml"
+  workflow_dispatch:
+    inputs:
+      iters:
+        description: "压测迭代数（越大越容易复现 baseline 崩溃）"
+        required: false
+        default: "20000"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sqlite-race-repro
+  cancel-in-progress: true
+
+jobs:
+  repro:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Run sqlite race repro
+        env:
+          ITERS: ${{ inputs.iters || '20000' }}
+        run: |
+          ./tests/run_repro.sh "${ITERS}" | tee /tmp/repro.log
+
+      - name: Gate — 加锁修复必须保持干净
+        run: |
+          if ! grep -q 'PASS_FIX_CLEAN' /tmp/repro.log; then
+            echo "::error::sqlite 加锁修复在 sanitizer 下不再干净 —— 竞态回归"
+            exit 1
+          fi
+          echo "baseline 复现状态: $(grep -oE 'PASS_REPRODUCED|NOISE_THIS_RUN' /tmp/repro.log || echo '(未识别)')"
+          echo "locked 状态: $(grep -oE 'PASS_FIX_CLEAN|FAIL_FIX' /tmp/repro.log || echo '(未识别)')"
