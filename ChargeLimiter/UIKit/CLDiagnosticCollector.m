@@ -15,6 +15,7 @@
 // 优先 dlsym unmangled _C 符号；失败则用本进程 dyld / bundle 路径兜底。
 
 NSString *CLDiagErrnoLabel(NSInteger rc) {
+    if (rc == -999)   return @"-999(未尝试)";
     if (rc == 0)      return @"0";
     if (rc == 1)      return @"1(EPERM 权限)";
     if (rc == 2)      return @"2(ENOENT 无此文件)";
@@ -251,17 +252,6 @@ NSString *CLJBTypeLabelFromCode(int code) {
         [lines addObject:@"# daemon 启动链路（离线诊断）"];
         [lines addObject:[NSString stringWithFormat:@"daemon 路径:     %@", dk.daemonPath.length ? dk.daemonPath : @"(无法获取)"]];
         [lines addObject:[NSString stringWithFormat:@"二进制存在:      %@", dk.daemonExists ? @"YES" : @"NO"]];
-        if (dk.repairResult.length) {
-            [lines addObject:[NSString stringWithFormat:@"修复结果:        %@", dk.repairResult]];
-            [lines addObject:[NSString stringWithFormat:@"App spawn rc:    root=%@ 非root=%@",
-                              CLDiagErrnoLabel(dk.rootSpawnRc), CLDiagErrnoLabel(dk.nonrootSpawnRc)]];
-            [lines addObject:[NSString stringWithFormat:@"spawn 后端口:    %@", dk.portAfterSpawn ? @"YES" : @"NO"]];
-            [lines addObject:[NSString stringWithFormat:@"launchctl:       %@ rc=%@ out=\"%@\"",
-                              dk.launchctlAttempted ? @"已尝试" : @"未尝试",
-                              CLDiagErrnoLabel(dk.launchctlRc),
-                              dk.launchctlOut ?: @""]];
-            [lines addObject:[NSString stringWithFormat:@"最终端口:        %@", dk.finalPortOpen ? @"YES" : @"NO"]];
-        }
         [lines addObject:@"日志尾部(aldente.log):"];
         [lines addObjectsFromArray:[self daemonLogTailLines:dk.logTail]];
         [lines addObject:@""];
