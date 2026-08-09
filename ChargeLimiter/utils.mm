@@ -1062,6 +1062,10 @@ extern "C" NSString* getRuntimeDataRootPath_C(void) {
     return getRuntimeDataRootPath();
 }
 
+extern "C" NSString* getLogPath_C(void) {
+    return getLogPath();
+}
+
 NSString* getLogPath() {
     ensureAppPathsWithLibroot();
     return g_logPath;
@@ -2591,6 +2595,54 @@ extern "C" int restartDaemonForApp_C(NSString* appDocs) {
         }
     }
     return rc;
+}
+
+// === daemon 链路修复工具（App 侧）===
+// 定位逻辑与 restartDaemonForApp_C 相同：App 自身 bundle 目录下的 ChargeLimiterDaemon
+static NSString* CLDaemonPathForApp(void) {
+    NSString* bundlePath = [getSelfExePath() stringByDeletingLastPathComponent];
+    if (bundlePath.length == 0) {
+        return @"";
+    }
+    return [bundlePath stringByAppendingPathComponent:@"ChargeLimiterDaemon"];
+}
+
+// 从自身 exe 截取 .jbroot-XXX 前缀（launchctl plist 候选路径推导用）
+static NSString* CLDaemonJbRootPath(void) {
+    NSString* exe = getSelfExePath();
+    NSArray* parts = [exe componentsSeparatedByString:@"/"];
+    NSMutableArray* kept = [NSMutableArray array];
+    for (NSString* p in parts) {
+        [kept addObject:p];
+        if ([p hasPrefix:@".jbroot-"]) {
+            break;
+        }
+    }
+    NSString* root = [kept componentsJoinedByString:@"/"];
+    return (root.length > 1) ? root : @"";
+}
+
+// aldente.log 尾部（daemon 离线时的“尸检报告”）
+static NSString* CLReadDaemonLogTail(NSInteger maxLines) {
+    if (maxLines <= 0) {
+        maxLines = 1;
+    }
+    NSString* logPath = getLogPath();
+    if (logPath.length == 0 || ![[NSFileManager defaultManager] fileExistsAtPath:logPath]) {
+        return @"";
+    }
+    NSString* content = [NSString stringWithContentsOfFile:logPath
+                                                  encoding:NSUTF8StringEncoding
+                                                     error:nil];
+    if (content.length == 0) {
+        return @"";
+    }
+    NSArray<NSString*>* lines = [content componentsSeparatedByString:@"\n"];
+    NSInteger count = (NSInteger)lines.count;
+    NSInteger keep = MIN(count, maxLines);
+    NSArray<NSString*>* tail = [lines subarrayWithRange:NSMakeRange((NSUInteger)(count - keep),
+                                                                   (NSUInteger)keep)];
+    return [tail componentsJoinedByString:@"\n"];
 }
 
 static void NSFileLogWithArguments(NSString* fmt, va_list va) {
