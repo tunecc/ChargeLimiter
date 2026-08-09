@@ -56,6 +56,11 @@ class DiagnosticsPanelUITests(unittest.TestCase):
             self.assertIn(f'"{key}"', self.zh, f"zh missing {key}")
             self.assertIn(f'"{key}"', self.en, f"en missing {key}")
 
+    def test_repair_daemon_button(self):
+        self.assertIn("修复 daemon 启动", self.src)
+        self.assertIn("repairDaemonTapped", self.src)
+        self.assertIn("clRepairDaemonForApp_C", self.src)
+
 
 if __name__ == "__main__":
     unittest.main()
