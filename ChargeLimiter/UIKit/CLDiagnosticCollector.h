@@ -48,14 +48,6 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy) NSString *daemonPath;
 @property (nonatomic, assign) BOOL daemonExists;
 @property (nonatomic, assign) BOOL initialPortOpen;
-@property (nonatomic, assign) NSInteger rootSpawnRc;
-@property (nonatomic, assign) NSInteger nonrootSpawnRc;
-@property (nonatomic, assign) BOOL portAfterSpawn;
-@property (nonatomic, assign) BOOL launchctlAttempted;
-@property (nonatomic, assign) NSInteger launchctlRc;
-@property (nonatomic, copy) NSString *launchctlOut;
-@property (nonatomic, assign) BOOL finalPortOpen;
-@property (nonatomic, copy) NSString *repairResult;
 @property (nonatomic, copy) NSString *logTail;
 @end
 
