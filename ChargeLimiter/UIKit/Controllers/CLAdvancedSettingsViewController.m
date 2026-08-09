@@ -15,6 +15,14 @@
 
 extern NSDictionary *clRepairDaemonForApp_C(void);
 
+static char kCLDaemonRepairRunningKey;
+static BOOL CLDaemonRepairRunning(id self) {
+    return [objc_getAssociatedObject(self, &kCLDaemonRepairRunningKey) boolValue];
+}
+static void CLSetDaemonRepairRunning(id self, BOOL running) {
+    objc_setAssociatedObject(self, &kCLDaemonRepairRunningKey, @(running), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
 #pragma mark - 毛玻璃卡片（复用）
 
 static char kCLAdvPickerColorKey;
@@ -628,6 +636,11 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
                                   tag:920
                                target:self
                                action:@selector(copyFullDiagnosticTapped:)];
+    [copyAllCard addSeparator];
+    [copyAllCard addPickerRowWithIcon:@"arrow.clockwise.circle"
+                                title:CLL(@"修复 daemon 启动") value:CLL(@"修复")
+                                color:[UIColor systemOrangeColor] tag:315
+                               target:self action:@selector(repairDaemonTapped)];
     [self addTipRowToCard:copyAllCard text:CLL(@"查电量/连通性可直接复制。查停充请先插电并运行探针后再复制。")];
     [self.mainStack addArrangedSubview:copyAllCard];
 
@@ -1389,6 +1402,49 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
     }];
 }
 
+- (void)repairDaemonTapped {
+    if (CLDaemonRepairRunning(self)) {
+        return;
+    }
+    CLSetDaemonRepairRunning(self, YES);
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSDictionary *result = clRepairDaemonForApp_C() ?: @{};
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(weakSelf) self = weakSelf;
+            if (!self) {
+                return;
+            }
+            CLSetDaemonRepairRunning(self, NO);
+            [self handleDaemonRepairResult:result];
+        });
+    });
+}
+
+- (void)handleDaemonRepairResult:(NSDictionary *)result {
+    NSString *verdict = result[@"repair_result"] ?: @"";
+    NSString *msg;
+    if ([verdict isEqualToString:@"recovered"]) {
+        msg = CLL(@"修复完成：daemon 已在线");
+    } else if ([verdict isEqualToString:@"already_up"]) {
+        msg = CLL(@"daemon 已在运行");
+    } else if ([verdict isEqualToString:@"path_missing"]) {
+        msg = CLL(@"未找到 daemon 二进制，请重装包");
+    } else {
+        NSInteger r = [result[@"root_spawn_rc"] integerValue];
+        NSInteger nr = [result[@"nonroot_spawn_rc"] integerValue];
+        if (nr < 0) { nr = 0; }
+        msg = [NSString stringWithFormat:@"%@ root=%@ nonroot=%@",
+               CLL(@"仍不在线（见下方诊断报告）"),
+               CLDiagErrnoLabel(r), CLDiagErrnoLabel(nr)];
+    }
+    if (![result[@"log_tail"] length]) {
+        msg = [msg stringByAppendingString:@"\n(日志为空：未进 serve 或不可读)"];
+    }
+    [self presentInfoAlertWithTitle:CLL(@"修复") message:msg];
+    [self refreshEnvironmentDiagnostics];
+}
+
 - (void)updateDiagnosticValues {
     CLBatteryManager *manager = [CLBatteryManager shared];
     NSString *smartChargeCode = [NSString stringWithFormat:@"%ld", (long)manager.smartChargeStatus];
@@ -1429,14 +1485,6 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
 @end
 
 #pragma mark - 高级设置控制器
-
-static char kCLDaemonRepairRunningKey;
-static BOOL CLDaemonRepairRunning(id self) {
-    return [objc_getAssociatedObject(self, &kCLDaemonRepairRunningKey) boolValue];
-}
-static void CLSetDaemonRepairRunning(id self, BOOL running) {
-    objc_setAssociatedObject(self, &kCLDaemonRepairRunningKey, @(running), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-}
 
 @interface CLAdvancedSettingsViewController : UIViewController
 @property (nonatomic, strong) UIScrollView *scrollView;
@@ -1747,11 +1795,6 @@ static void CLSetDaemonRepairRunning(id self, BOOL running) {
     CLAdvSettingsCard *diagnosticsCard = [[CLAdvSettingsCard alloc] init];
     [diagnosticsCard addSectionHeader:CLL(@"调试与观测")];
     [diagnosticsCard addPickerRowWithIcon:@"waveform.path.ecg" title:CLL(@"策略诊断") value:CLL(@"查看") color:[UIColor systemTealColor] tag:314 target:self action:@selector(policyDiagnosticsTapped)];
-    [diagnosticsCard addSeparator];
-    [diagnosticsCard addPickerRowWithIcon:@"arrow.clockwise.circle"
-                                    title:CLL(@"修复 daemon 启动") value:CLL(@"修复")
-                                    color:[UIColor systemOrangeColor] tag:315
-                                   target:self action:@selector(repairDaemonTapped)];
     [self addTipRowToCard:diagnosticsCard text:CLL(@"集中查看策略切换原因、hold 运行时参数和 Smart Charge 接管状态。")];
     [self.mainStack addArrangedSubview:diagnosticsCard];
     
@@ -2124,62 +2167,6 @@ static void CLSetDaemonRepairRunning(id self, BOOL running) {
     }]];
     
     [self presentViewController:alert animated:YES completion:nil];
-}
-
-- (void)presentInfoAlertWithTitle:(NSString *)title message:(NSString *)message {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
-                                                                   message:message
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"确定") style:UIAlertActionStyleDefault handler:nil]];
-    [self presentViewController:alert animated:YES completion:nil];
-}
-
-- (void)refreshEnvironmentDiagnostics {
-    // 高级设置页无实时诊断标签；修复 daemon 后刷新电池/守护状态以便后续进入诊断页时数据最新。
-    [[CLBatteryManager shared] refreshAll];
-}
-
-- (void)repairDaemonTapped {
-    if (CLDaemonRepairRunning(self)) {
-        return;
-    }
-    CLSetDaemonRepairRunning(self, YES);
-    __weak typeof(self) weakSelf = self;
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSDictionary *result = clRepairDaemonForApp_C() ?: @{};
-        dispatch_async(dispatch_get_main_queue(), ^{
-            __strong typeof(weakSelf) self = weakSelf;
-            if (!self) {
-                return;
-            }
-            CLSetDaemonRepairRunning(self, NO);
-            [self handleDaemonRepairResult:result];
-        });
-    });
-}
-
-- (void)handleDaemonRepairResult:(NSDictionary *)result {
-    NSString *verdict = result[@"repair_result"] ?: @"";
-    NSString *msg;
-    if ([verdict isEqualToString:@"recovered"]) {
-        msg = CLL(@"修复完成：daemon 已在线");
-    } else if ([verdict isEqualToString:@"already_up"]) {
-        msg = CLL(@"daemon 已在运行");
-    } else if ([verdict isEqualToString:@"path_missing"]) {
-        msg = CLL(@"未找到 daemon 二进制，请重装包");
-    } else {
-        NSInteger r = [result[@"root_spawn_rc"] integerValue];
-        NSInteger nr = [result[@"nonroot_spawn_rc"] integerValue];
-        if (nr < 0) { nr = 0; }
-        msg = [NSString stringWithFormat:@"%@ root=%@ nonroot=%@",
-               CLL(@"仍不在线（见下方诊断报告）"),
-               CLDiagErrnoLabel(r), CLDiagErrnoLabel(nr)];
-    }
-    if (![result[@"log_tail"] length]) {
-        msg = [msg stringByAppendingString:@"\n(日志为空：未进 serve 或不可读)"];
-    }
-    [self presentInfoAlertWithTitle:CLL(@"修复") message:msg];
-    [self refreshEnvironmentDiagnostics];
 }
 
 @end
