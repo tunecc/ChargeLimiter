@@ -4,6 +4,27 @@
 
 写法参考了 Keep a Changelog 和一些成熟项目常见的结构：每个版本先说明主线，再按少量分类列出用户真正会感知到的变化，尽量详细，但不写成长文。
 
+写法参考了 Keep a Changelog 和一些成熟项目常见的结构：每个版本先说明主线，再按少量分类列出用户真正会感知到的变化，尽量详细，但不写成长文。
+
+## v1.14.2 - 2026-08-09
+
+本版主线是 **修复 daemon 在运行约半小时后崩溃（EXC_BAD_ACCESS / Segmentation fault）**。根因是全局 sqlite 句柄被多个线程无锁共用：http 并发队列读统计 + battery 事件写 + `reload_conf`/`app_docs` 切换关重开同一连接互相踩踏，一个线程释放连接后，另一线程在 SQL 解析/执行时读到被字符串覆写的悬垂指针。现所有 sqlite 访问统一走同一把可重入锁，HTTP 请求处理改为串行队列；并新增可复现该崩溃的最小回归测试与 CI 门禁，防止回潮。
+
+### Fixed
+
+- **修复 daemon 崩溃（EXC_BAD_ACCESS / SIGSEGV）**：真机反馈 daemon 运行约 27 分钟后，统计读取路径 `get_statistics -> getDBData` 在 sqlite3 内部 Segfault（故障地址指向 ASCII 字符串被当地址）。已将全部 sqlite 访问（open/prepare/step/finalize/exec/close）套上同一把可重入互斥锁，并让 HTTP 请求处理串行执行，`get_statistics` 与 `reload_conf` 关重开不再并发交叠。
+- **降低并发稳定性风险**：battery 事件写入与 HTTP 读取、以及 reload 关开连接，从源头不再同时碰同一个 sqlite 连接。
+
+### Added
+
+- **sqlite 并发竞态回归测试**：`tests/sqlite_race_repro.c` 用纯 C 镜像 daemon 的 sqlite 访问与线程模型，无锁变体在 ASan / TSan / 裸跑均能复现同类 Segfault，加锁变体在 sanitizer 下干净；`tests/run_repro.sh` 一键构建运行。
+- **CI 回归门禁**：新增 `sqlite-race-repro` workflow，在 daemon / HTTP 服务器 / 测试相关文件变更时自动校验「加锁修复在 sanitizer 下保持干净」，防止竞态回潮。
+- **relaxin roothide daemon 离线自愈与可观测化**：针对部分 relaxin 越狱 roothide 设备上「装好即 daemon 离线」的问题，新增「修复 daemon 启动」入口（后台 kill 残留 → 重新拉起 daemon → 尽力而为的 launchctl 复位 → 回读日志），一键将 daemon 拉回在线；完整诊断报告新增「daemon 启动链路（离线诊断）」段与越狱类型双源判读，离线即可定位失败环节（spawn rc / 端口 / launchctl / 日志尾）。
+
+### Notes
+
+- 本版无用户侧功能/配置变化；重点回归方向是在装有新构建后打开统计页拉取 `get_statistics`，同时触发一次 `reload_conf`（旧版迁移提示）或 App 更新后首次请求，观察 30 分钟以上确认无崩溃。
+
 ## v1.14.1 - 2026-08-07
 
 本版主线是 **策略诊断可复制给开发者** 与 **原生 roothide 构建链路**：在「充电高级 → 策略诊断」提供一键完整诊断（环境 / 连通性 / 读电量 IOKit 链路 / 策略信号），并默认用原生 roothide scheme 出包；同时补强诊断字段，避免 roothide 误报与路径空白。
