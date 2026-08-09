@@ -61,6 +61,13 @@ class DiagnosticsPanelUITests(unittest.TestCase):
         self.assertIn("repairDaemonTapped", self.src)
         self.assertIn("clRepairDaemonForApp_C", self.src)
 
+    def test_repair_localization_keys(self):
+        for key in ("修复 daemon 启动", "修复", "修复完成：daemon 已在线",
+                    "daemon 已在运行", "未找到 daemon 二进制，请重装包",
+                    "仍不在线（见下方诊断报告）"):
+            self.assertIn(f'"{key}"', self.zh, f"zh missing {key}")
+            self.assertIn(f'"{key}"', self.en, f"en missing {key}")
+
 
 if __name__ == "__main__":
     unittest.main()
