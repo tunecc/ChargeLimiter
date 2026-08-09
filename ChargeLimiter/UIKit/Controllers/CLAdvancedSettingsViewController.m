@@ -533,6 +533,7 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
 @property (nonatomic, copy) NSDictionary *lastProbePayload;
 @property (nonatomic, strong) UILabel *probeResultLabel;
 @property (nonatomic, strong, nullable) CLDiagnosticReport *lastDiagReport;
+@property (nonatomic, strong, nullable) CLAdvSettingsCard *repairCard;
 @end
 
 @implementation CLPolicyDiagnosticsViewController
@@ -629,6 +630,7 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
 
     // —— 主入口:一键复制完整诊断 ——
     CLAdvSettingsCard *copyAllCard = [[CLAdvSettingsCard alloc] init];
+    self.repairCard = copyAllCard;
     [copyAllCard addPickerRowWithIcon:@"doc.on.doc.fill"
                                 title:CLL(@"一键复制完整诊断")
                                 value:CLL(@"复制")
@@ -639,7 +641,7 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
     [copyAllCard addSeparator];
     [copyAllCard addPickerRowWithIcon:@"arrow.clockwise.circle"
                                 title:CLL(@"修复 daemon 启动") value:CLL(@"修复")
-                                color:[UIColor systemOrangeColor] tag:315
+                                color:[UIColor systemOrangeColor] tag:926
                                target:self action:@selector(repairDaemonTapped)];
     [self addTipRowToCard:copyAllCard text:CLL(@"查电量/连通性可直接复制。查停充请先插电并运行探针后再复制。")];
     [self.mainStack addArrangedSubview:copyAllCard];
@@ -1407,6 +1409,7 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
         return;
     }
     CLSetDaemonRepairRunning(self, YES);
+    [self setRepairButtonEnabled:NO];
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSDictionary *result = clRepairDaemonForApp_C() ?: @{};
@@ -1416,9 +1419,33 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
                 return;
             }
             CLSetDaemonRepairRunning(self, NO);
+            [self setRepairButtonEnabled:YES];
             [self handleDaemonRepairResult:result];
         });
     });
+}
+
+// 修复运行中禁点修复按钮（视觉反馈）
+- (void)setRepairButtonEnabled:(BOOL)enabled {
+    UIView *row = [self copyRepairRow];
+    if (!row) {
+        return;
+    }
+    row.userInteractionEnabled = enabled;
+    row.alpha = enabled ? 1.0 : 0.5;
+    for (UIView *sub in row.subviews) {
+        sub.alpha = enabled ? 1.0 : 0.5;
+    }
+}
+
+// 在当前 repair 卡上定位「修复 daemon 启动」行（tag 926）
+- (UIView *)copyRepairRow {
+    for (UIView *v in self.repairCard.contentStack.arrangedSubviews) {
+        if (v.tag == 926) {
+            return v;
+        }
+    }
+    return nil;
 }
 
 - (void)handleDaemonRepairResult:(NSDictionary *)result {
@@ -1433,13 +1460,12 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
     } else {
         NSInteger r = [result[@"root_spawn_rc"] integerValue];
         NSInteger nr = [result[@"nonroot_spawn_rc"] integerValue];
-        if (nr < 0) { nr = 0; }
         msg = [NSString stringWithFormat:@"%@ root=%@ nonroot=%@",
                CLL(@"仍不在线（见下方诊断报告）"),
                CLDiagErrnoLabel(r), CLDiagErrnoLabel(nr)];
     }
     if (![result[@"log_tail"] length]) {
-        msg = [msg stringByAppendingString:@"\n(日志为空：未进 serve 或不可读)"];
+        msg = [msg stringByAppendingString:[NSString stringWithFormat:@"\n%@", CLL(@"日志为空：未进 serve 或不可读")]];
     }
     [self presentInfoAlertWithTitle:CLL(@"修复") message:msg];
     [self refreshEnvironmentDiagnostics];

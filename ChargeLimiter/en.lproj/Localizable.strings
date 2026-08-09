@@ -403,3 +403,4 @@
 "daemon 已在运行" = "Daemon already running";
 "未找到 daemon 二进制，请重装包" = "Daemon binary not found, reinstall the package";
 "仍不在线（见下方诊断报告）" = "Still offline (see diagnostic report below)";
+"日志为空：未进 serve 或不可读" = "Log empty: never reached serve, or unreadable";
