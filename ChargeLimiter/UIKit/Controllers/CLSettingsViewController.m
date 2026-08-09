@@ -1671,6 +1671,8 @@ static NSString *CLHistoryEventTimestampLabel(NSTimeInterval timestamp) {
 @property (nonatomic, assign) NSInteger policyEventFilterIndex;
 @property (nonatomic, assign) BOOL showAmperage;
 @property (nonatomic, assign) BOOL showVoltage;
+// 事件卡片渲染缓存：记录上次渲染对应的 (segment 维度, 时间范围, 过滤, 取值开关)，未变时跳过重建
+@property (nonatomic, strong) NSString *eventCardRenderSignature;
 @property (nonatomic, strong) NSTimer *refreshTimer;
 @property (nonatomic, assign) NSInteger offsetMin5;
 @property (nonatomic, assign) NSInteger offsetHour;
@@ -2132,6 +2134,8 @@ static NSString *CLHistoryEventTimestampLabel(NSTimeInterval timestamp) {
             weakSelf.policyEventHistory = [weakSelf appendPolicyEvents:weakSelf.policyEventHistory withNew:eventHistory];
         }
         weakSelf.policyEventLastID = [weakSelf lastPolicyEventID];
+        // 数据变化后使事件卡片签名缓存失效，确保时间窗内新到的策略事件能被重建渲染出来
+        weakSelf.eventCardRenderSignature = nil;
         [weakSelf rebuildPolicyEventCardForCurrentSelection];
     }];
 }
@@ -2156,6 +2160,13 @@ static NSString *CLHistoryEventTimestampLabel(NSTimeInterval timestamp) {
             continue;
         }
         [merged addObject:item];
+    }
+    // 与服务端 policy_events DB 上限一致，避免 UI 侧镜像无限增长：
+    // 镜像过大时每次切维度都全量遍历 + 整卡重建，是历史统计页卡死的放大器。
+    NSUInteger cap = 5000;
+    if (merged.count > cap) {
+        NSRange keep = NSMakeRange(merged.count - cap, cap);
+        merged = [[merged subarrayWithRange:keep] mutableCopy];
     }
     return merged;
 }
@@ -2497,6 +2508,20 @@ static NSString *CLHistoryEventTimestampLabel(NSTimeInterval timestamp) {
     if (self.eventCard == nil) {
         return;
     }
+
+    // 变化签名：segment 维度 + 可见时间范围 + 过滤 + 数据源是否相同。
+    // 快速点击“同维度/同页/同过滤”时内容未变，跳过整卡重建，避免反复销毁重建一堆视图 + 整页重布局。
+    NSTimeInterval visStart = [visible.firstObject[@"UpdateTime"] doubleValue];
+    NSTimeInterval visEnd   = [visible.lastObject[@"UpdateTime"] doubleValue];
+    NSString *signature = [NSString stringWithFormat:@"%ld|%.0f|%.0f|%ld|%d|%d",
+                           (long)segment, floor(visStart), floor(visEnd),
+                           (long)self.policyEventFilterIndex,
+                           self.showAmperage, self.showVoltage];
+    if ([self.eventCardRenderSignature isEqualToString:signature]) {
+        return;
+    }
+    self.eventCardRenderSignature = signature;
+
     for (UIView *view in self.eventCard.contentStack.arrangedSubviews) {
         [self.eventCard.contentStack removeArrangedSubview:view];
         [view removeFromSuperview];
@@ -2533,14 +2558,17 @@ static NSString *CLHistoryEventTimestampLabel(NSTimeInterval timestamp) {
         return;
     }
 
+    // 渲染封顶：最多展示时间窗内最近 kPolicyEventCardMaxRows 条，避免事件多时一次点击创建几十上百个行视图 + 约束。
+    const NSUInteger kPolicyEventCardMaxRows = 8;
+    NSUInteger renderCount = MIN(events.count, kPolicyEventCardMaxRows);
     [self.eventCard addSeparator];
-    for (NSUInteger i = 0; i < events.count; i++) {
+    for (NSUInteger i = 0; i < renderCount; i++) {
         UIView *row = [self policyEventRowWithItem:events[i]];
         if (i % 2 == 1) {
             row.backgroundColor = [[UIColor secondarySystemGroupedBackgroundColor] colorWithAlphaComponent:0.5];
         }
         [self.eventCard.contentStack addArrangedSubview:row];
-        if (i < events.count - 1) {
+        if (i < renderCount - 1) {
             [self.eventCard addSeparator];
         }
     }
