@@ -14,6 +14,7 @@ int main(int argc, char** argv) {
 #else
 
 #include <sqlite3.h>
+#include <pthread.h>
 #import <Foundation/Foundation.h>
 #import <UserNotifications/UserNotifications.h>
 #include <notify.h>
@@ -2259,6 +2260,42 @@ static void notifyForChargeCommandTransition(BOOL previousExternalConnected,
 }
 
 static sqlite3* db = NULL;
+
+// ---------------------------------------------------------------------------
+// sqlite 全局句柄锁：所有对 `db` 的访问必须经由同一把可重入锁串行。
+// 背景：真机崩溃（EXC_BAD_ACCESS，故障地址 0x61746164 == "data"）——
+// http 并发队列的 get_statistics/get_bat_info 读 + battery 事件写 +
+// reload_conf/app_docs 的 uninitDB+initDB 关重开，同时操作同一连接，
+// 其中一个线程释放连接后，另一线程 prepare/step 读到被字符串覆写的悬垂指针。
+// 系统 libsqlite3 为 THREADSAFE=2（multi-thread），同一连接本就不允许跨线程并发。
+// 相关函数如 insertPolicyEventDBData->prune、migrate->insert 等存在互相嵌套调用，
+// 故用 PTHREAD_MUTEX_RECURSIVE；CL_DB_GUARD 借 cleanup 保证任何 return 路径都解锁。
+// ---------------------------------------------------------------------------
+static pthread_mutex_t g_dbMutex;
+static pthread_once_t g_dbMutexOnce = PTHREAD_ONCE_INIT;
+static void clDbMutexInit(void) {
+    pthread_mutexattr_t attr;
+    pthread_mutexattr_init(&attr);
+    pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&g_dbMutex, &attr);
+    pthread_mutexattr_destroy(&attr);
+}
+static void clDbLock(void) {
+    pthread_once(&g_dbMutexOnce, clDbMutexInit);
+    pthread_mutex_lock(&g_dbMutex);
+}
+static void clDbUnlock(void) {
+    pthread_mutex_unlock(&g_dbMutex);
+}
+typedef struct CLDbLockGuard { char _pad; } CLDbLockGuard;
+static void CLDbLockGuardCleanup(CLDbLockGuard* guard) {
+    (void)guard;
+    clDbUnlock();
+}
+#define CL_DB_GUARD()                                                               \
+    CLDbLockGuard cl_db_guard __attribute__((cleanup(CLDbLockGuardCleanup)));       \
+    clDbLock()
+
 static NSSet<NSString*>* allowedStatsTableSuffixes() {
     static NSSet<NSString*>* set = nil;
     static dispatch_once_t onceToken;
@@ -2339,6 +2376,7 @@ static BOOL historyStatsEnabled(void) {
 }
 
 static void updateDBData(NSString* tbl, int tid, NSDictionary* info) {
+    CL_DB_GUARD();
     @autoreleasepool {
         if (!db) {
             return;
@@ -2368,6 +2406,7 @@ static void updateDBData(NSString* tbl, int tid, NSDictionary* info) {
 }
 
 static void prunePolicyEventDBIfNeeded(void) {
+    CL_DB_GUARD(); // insertPolicyEventDBData 嵌套调用，可重入
     if (!db) {
         return;
     }
@@ -2388,6 +2427,7 @@ static void prunePolicyEventDBIfNeeded(void) {
 }
 
 static void insertPolicyEventDBData(NSDictionary* event) {
+    CL_DB_GUARD();
     @autoreleasepool {
         if (!db || ![event isKindOfClass:[NSDictionary class]] || event.count == 0) {
             return;
@@ -2421,6 +2461,7 @@ static void insertPolicyEventDBData(NSDictionary* event) {
 }
 
 static void initDB(NSString* batId) {
+    CL_DB_GUARD();
     @autoreleasepool {
         if (!db) {
             sqlite3* cdb = NULL;
@@ -2466,6 +2507,7 @@ static void initDB(NSString* batId) {
 }
 
 static void uninitDB() {
+    CL_DB_GUARD();
     if (db != NULL) {
         int rc = sqlite3_close(db);
         if (rc != SQLITE_OK) {
@@ -2476,6 +2518,7 @@ static void uninitDB() {
 }
 
 static NSArray* getPolicyEventDBData(int n, int last_id) {
+    CL_DB_GUARD();
     @autoreleasepool {
         if (!db) {
             return @[];
@@ -2529,6 +2572,7 @@ static NSArray* getPolicyEventDBData(int n, int last_id) {
 }
 
 static void migrateStoredPolicyEventsToDBIfNeeded(NSArray* history) {
+    CL_DB_GUARD(); // 内部会调 insertPolicyEventDBData，可重入
     if (!db || ![history isKindOfClass:[NSArray class]] || history.count == 0) {
         return;
     }
@@ -2558,6 +2602,7 @@ static void migrateStoredPolicyEventsToDBIfNeeded(NSArray* history) {
 }
 
 static NSArray* getDBData(NSString* tbl, int n, int last_id) {
+    CL_DB_GUARD();
     @autoreleasepool {
         if (!db) {
             return @[];
@@ -2647,6 +2692,7 @@ static void updateStatistics() {
 }
 
 static void clearStatisticsTablesForBattery(NSString* batId) {
+    CL_DB_GUARD(); // clearAllStatisticsData 内部调用，可重入
     if (!db) {
         return;
     }
@@ -2669,6 +2715,7 @@ static void clearStatisticsTablesForBattery(NSString* batId) {
 }
 
 static void clearAllStatisticsData(void) {
+    CL_DB_GUARD();
     clearStatisticsTablesForBattery(nil);
     NSString* serial = [gUPSPS.props[@"Serial"] isKindOfClass:[NSString class]] ? gUPSPS.props[@"Serial"] : nil;
     if (serial.length > 0) {
