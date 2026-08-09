@@ -96,6 +96,7 @@ static NSData *CLJSONResponseData(id object, NSInteger *statusCode) {
 @property (nonatomic, copy) CLHTTPRequestHandler postHandler;
 @property (nonatomic, assign) BOOL running;
 @property (nonatomic, strong) dispatch_queue_t serverQueue;
+@property (nonatomic, strong) dispatch_queue_t handlerQueue;
 @property (nonatomic, assign) NSUInteger serverPort;
 @end
 
@@ -106,7 +107,11 @@ static NSData *CLJSONResponseData(id object, NSInteger *statusCode) {
     if (self) {
         _serverSocket = -1;
         _running = NO;
-        _serverQueue = dispatch_queue_create("com.chargelimiter.httpserver", DISPATCH_QUEUE_CONCURRENT);
+        _serverQueue = dispatch_queue_create("com.chargelimiter.httpserver", DISPATCH_QUEUE_SERIAL);
+        // 请求处理走独立串行队列：acceptLoop 是死循环，不能与 handler 共用同一串行队列，
+        // 否则 acceptLoop 永不返回会饿死后续请求；同时串行保证 handleReq 不会并发执行
+        // （真机崩溃：并发队列里 get_statistics 与 reload_conf 的 uninitDB+initDB 互踩）。
+        _handlerQueue = dispatch_queue_create("com.chargelimiter.httpserver.handler", DISPATCH_QUEUE_SERIAL);
     }
     return self;
 }
@@ -201,8 +206,8 @@ static NSData *CLJSONResponseData(id object, NSInteger *statusCode) {
             continue;
         }
         
-        // 在并发队列中处理请求
-        dispatch_async(_serverQueue, ^{
+        // 在串行 handler 队列中串行处理请求（保证 handleReq 幂等于同一时刻仅一条在跑）
+        dispatch_async(_handlerQueue, ^{
             [self handleClient:clientSocket];
         });
     }
