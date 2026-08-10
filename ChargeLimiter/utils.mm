@@ -4,6 +4,7 @@
 #include <limits.h>
 #include <pwd.h>
 #include <stdlib.h>
+#include <sys/wait.h>
 #include <sys/utsname.h>
 #include <sys/sysctl.h>
 #include <notify.h>
@@ -2450,8 +2451,21 @@ NSString* getLocalIP() { // 获取wifi ipv4
     return result;
 }
 
-BOOL localPortOpen(int port) {
+static NSDictionary* CLLocalPortProbe(int port) {
+    NSMutableDictionary* result = [@{
+        @"socket_errno": @0,
+        @"connect_rc": @(-1),
+        @"connect_errno": @0,
+        @"select_rc": @(-1),
+        @"select_errno": @0,
+        @"so_error": @(-1),
+        @"open": @NO,
+    } mutableCopy];
     int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) {
+        result[@"socket_errno"] = @(errno);
+        return result;
+    }
     struct sockaddr_in ip4;
     memset(&ip4, 0, sizeof(struct sockaddr_in));
     ip4.sin_len = sizeof(ip4);
@@ -2461,18 +2475,38 @@ BOOL localPortOpen(int port) {
     int so_error = -1;
     struct timeval tv;
     fd_set fdset;
-    fcntl(sock, F_SETFL, O_NONBLOCK);
-    connect(sock, (struct sockaddr*)&ip4, sizeof(ip4));
+    int currentFlags = fcntl(sock, F_GETFL, 0);
+    if (currentFlags >= 0) {
+        fcntl(sock, F_SETFL, currentFlags | O_NONBLOCK);
+    }
+    errno = 0;
+    int connectRc = connect(sock, (struct sockaddr*)&ip4, sizeof(ip4));
+    int connectErrno = connectRc == 0 ? 0 : errno;
+    result[@"connect_rc"] = @(connectRc);
+    result[@"connect_errno"] = @(connectErrno);
     FD_ZERO(&fdset);
     FD_SET(sock, &fdset);
     tv.tv_sec = 1;
     tv.tv_usec = 0;
-    if (select(sock + 1, NULL, &fdset, NULL, &tv) == 1) {
+    errno = 0;
+    int selectRc = select(sock + 1, NULL, &fdset, NULL, &tv);
+    int selectErrno = selectRc < 0 ? errno : 0;
+    result[@"select_rc"] = @(selectRc);
+    result[@"select_errno"] = @(selectErrno);
+    if (selectRc == 1) {
         socklen_t len = sizeof(so_error);
-        getsockopt(sock, SOL_SOCKET, SO_ERROR, &so_error, &len);
+        if (getsockopt(sock, SOL_SOCKET, SO_ERROR, &so_error, &len) < 0) {
+            so_error = errno;
+        }
     }
     close(sock);
-    return 0 == so_error;
+    result[@"so_error"] = @(so_error);
+    result[@"open"] = @(so_error == 0);
+    return result;
+}
+
+BOOL localPortOpen(int port) {
+    return [CLLocalPortProbe(port)[@"open"] boolValue];
 }
 
 extern "C" int _NSGetExecutablePath(char* buf, uint32_t* bufsize);
@@ -2645,6 +2679,55 @@ static NSString* CLReadDaemonLogTail(NSInteger maxLines) {
     return [tail componentsJoinedByString:@"\n"];
 }
 
+static void CLRecordChildLifecycle(NSMutableDictionary* out, NSString* prefix, pid_t pid) {
+    NSString* safePrefix = prefix.length ? prefix : @"child";
+    NSString* pidKey = [safePrefix stringByAppendingString:@"_pid"];
+    NSString* aliveKey = [safePrefix stringByAppendingString:@"_alive"];
+    NSString* waitKey = [safePrefix stringByAppendingString:@"_wait_status"];
+    NSString* exitKey = [safePrefix stringByAppendingString:@"_exit_code"];
+    NSString* signalKey = [safePrefix stringByAppendingString:@"_signal"];
+    NSString* waitErrnoKey = [safePrefix stringByAppendingString:@"_wait_errno"];
+    NSString* probeErrnoKey = [safePrefix stringByAppendingString:@"_probe_errno"];
+    out[pidKey] = @(pid);
+    out[aliveKey] = @NO;
+    out[waitKey] = @(-1);
+    out[exitKey] = @(-1);
+    out[signalKey] = @(-1);
+    out[waitErrnoKey] = @(0);
+    out[probeErrnoKey] = @(0);
+    if (pid <= 0) {
+        return;
+    }
+
+    int status = 0;
+    pid_t waitResult = waitpid(pid, &status, WNOHANG);
+    if (waitResult == 0) {
+        errno = 0;
+        int probe = kill(pid, 0);
+        int probeErrno = (probe == 0) ? 0 : errno;
+        out[aliveKey] = @((probe == 0) || (probe < 0 && probeErrno == EPERM));
+        out[probeErrnoKey] = @(probeErrno);
+        return;
+    }
+    if (waitResult < 0) {
+        int waitErrno = errno;
+        errno = 0;
+        int probe = kill(pid, 0);
+        int probeErrno = (probe == 0) ? 0 : errno;
+        out[aliveKey] = @((probe == 0) || (probe < 0 && probeErrno == EPERM));
+        out[waitErrnoKey] = @(waitErrno);
+        out[probeErrnoKey] = @(probeErrno);
+        return;
+    }
+
+    out[waitKey] = @(status);
+    if (WIFEXITED(status)) {
+        out[exitKey] = @(WEXITSTATUS(status));
+    } else if (WIFSIGNALED(status)) {
+        out[signalKey] = @(WTERMSIG(status));
+    }
+}
+
 static void NSFileLogWithArguments(NSString* fmt, va_list va) {
     NSDateFormatter* formatter = [NSDateFormatter new];
     [formatter setDateFormat:@"yyyy-MM-dd HH:mm:ss"];
@@ -2737,12 +2820,38 @@ NSArray* getUnusedFds() { // posix_spawn会将socket等fd继承给子进程
 extern "C" NSDictionary* clDaemonLaunchProbe_C(void) {
     NSString* daemonPath = CLDaemonPathForApp();
     NSString* logPath = getLogPath();
+    NSFileManager* fm = [NSFileManager defaultManager];
     NSMutableDictionary* out = [NSMutableDictionary dictionary];
     out[@"daemon_path"] = daemonPath ?: @"";
-    out[@"daemon_exists"] = @([[NSFileManager defaultManager] fileExistsAtPath:daemonPath]);
-    out[@"initial_port_open"] = @(localPortOpen(GSERV_PORT));
+    out[@"daemon_exists"] = @([fm fileExistsAtPath:daemonPath]);
+    out[@"daemon_executable"] = @([fm isExecutableFileAtPath:daemonPath]);
+    NSError* daemonAttrError = nil;
+    NSDictionary* daemonAttrs = [fm attributesOfItemAtPath:daemonPath error:&daemonAttrError];
+    out[@"daemon_mode"] = daemonAttrs[NSFilePosixPermissions] ?: @(-1);
+    out[@"daemon_owner_uid"] = daemonAttrs[NSFileOwnerAccountID] ?: @(-1);
+    out[@"daemon_group_gid"] = daemonAttrs[NSFileGroupOwnerAccountID] ?: @(-1);
+    out[@"daemon_attr_error"] = daemonAttrError.localizedDescription ?: @"";
+    out[@"daemon_process_pid"] = @(get_pid_of("ChargeLimiterDaemon"));
+    NSDictionary* portProbe = CLLocalPortProbe(GSERV_PORT);
+    out[@"port_probe"] = portProbe;
+    out[@"initial_port_open"] = portProbe[@"open"] ?: @NO;
     out[@"log_path"] = logPath ?: @"";
-    out[@"log_exists"] = @([[NSFileManager defaultManager] fileExistsAtPath:logPath]);
+    out[@"log_exists"] = @([fm fileExistsAtPath:logPath]);
+    out[@"log_writable"] = @([fm isWritableFileAtPath:logPath]);
+    out[@"log_parent_writable"] = @([fm isWritableFileAtPath:logPath.stringByDeletingLastPathComponent]);
+    NSError* logAttrError = nil;
+    NSDictionary* logAttrs = [fm attributesOfItemAtPath:logPath error:&logAttrError];
+    out[@"log_size"] = logAttrs[NSFileSize] ?: @(-1);
+    out[@"log_mode"] = logAttrs[NSFilePosixPermissions] ?: @(-1);
+    out[@"log_owner_uid"] = logAttrs[NSFileOwnerAccountID] ?: @(-1);
+    out[@"log_group_gid"] = logAttrs[NSFileGroupOwnerAccountID] ?: @(-1);
+    NSDate* logMtime = logAttrs[NSFileModificationDate];
+    out[@"log_mtime"] = logMtime ? @(logMtime.timeIntervalSince1970) : @0;
+    NSError* logReadError = nil;
+    if (logPath.length > 0 && [fm fileExistsAtPath:logPath]) {
+        [NSString stringWithContentsOfFile:logPath encoding:NSUTF8StringEncoding error:&logReadError];
+    }
+    out[@"log_read_error"] = logReadError.localizedDescription ?: (logAttrError.localizedDescription ?: @"");
     out[@"log_tail"] = CLReadDaemonLogTail(20);
     return out;
 }
@@ -2774,9 +2883,56 @@ extern "C" NSDictionary* clRepairDaemonForApp_C(void) {
     int jbType = getJBType();
     int rootFlags = (jbType != JBTYPE_TROLLSTORE) ? SPAWN_FLAG_ROOT : 0;
 
+    NSString* jbRoot = CLDaemonJbRootPath();
+    NSMutableArray* launchctlCandidates = [NSMutableArray arrayWithObjects:
+        @"/bin/launchctl", @"/usr/bin/launchctl", nil];
+    if (jbRoot.length > 0) {
+        [launchctlCandidates addObject:[jbRoot stringByAppendingPathComponent:@"bin/launchctl"]];
+        [launchctlCandidates addObject:[jbRoot stringByAppendingPathComponent:@"usr/bin/launchctl"]];
+    }
+    NSString* launchctlPath = launchctlCandidates.firstObject;
+    for (NSString* candidate in launchctlCandidates) {
+        if ([[NSFileManager defaultManager] isExecutableFileAtPath:candidate]) {
+            launchctlPath = candidate;
+            break;
+        }
+    }
+    out[@"launchctl_path_candidates"] = launchctlCandidates.copy;
+    out[@"launchctl_path"] = launchctlPath ?: @"";
+    out[@"launchctl_exists"] = @([[NSFileManager defaultManager] isExecutableFileAtPath:launchctlPath]);
+    NSMutableArray* plistCandidates = [NSMutableArray arrayWithObject:
+        @"/Library/LaunchDaemons/com.chargelimiter.mod.plist"];
+    if (jbRoot.length > 0) {
+        [plistCandidates addObject:
+            [jbRoot stringByAppendingPathComponent:@"Library/LaunchDaemons/com.chargelimiter.mod.plist"]];
+    }
+    NSMutableArray* plistExisting = [NSMutableArray array];
+    for (NSString* plist in plistCandidates) {
+        if ([[NSFileManager defaultManager] fileExistsAtPath:plist]) {
+            [plistExisting addObject:plist];
+        }
+    }
+    out[@"plist_candidates"] = plistCandidates.copy;
+    out[@"plist_existing"] = plistExisting.copy;
+
     // 1) 杀残留 daemon（best-effort；EPERM/ENOENT 属预期，rc 记录）
-    out[@"kill_rc"] = @(spawn(@[@"/usr/bin/killall", @"-9", @"ChargeLimiterDaemon"],
-                              nil, nil, nil, SPAWN_FLAG_NOWAIT | rootFlags, nil));
+    NSMutableArray* killallCandidates = [NSMutableArray arrayWithObjects:
+        @"/usr/bin/killall", @"/bin/killall", nil];
+    if (jbRoot.length > 0) {
+        [killallCandidates addObject:[jbRoot stringByAppendingPathComponent:@"usr/bin/killall"]];
+        [killallCandidates addObject:[jbRoot stringByAppendingPathComponent:@"bin/killall"]];
+    }
+    NSString* killallPath = killallCandidates.firstObject;
+    for (NSString* candidate in killallCandidates) {
+        if ([[NSFileManager defaultManager] isExecutableFileAtPath:candidate]) {
+            killallPath = candidate;
+            break;
+        }
+    }
+    out[@"killall_path"] = killallPath ?: @"";
+    out[@"killall_exists"] = @([[NSFileManager defaultManager] isExecutableFileAtPath:killallPath]);
+    out[@"kill_rc"] = @(spawn(@[killallPath, @"-9", @"ChargeLimiterDaemon"],
+                               nil, nil, nil, rootFlags, nil));
 
     // 2) spawn daemon：root 优先，EPERM 时 nonroot（口径与 restartDaemonForApp_C 一致）
     NSMutableArray* argv = [NSMutableArray arrayWithObject:daemonPath];
@@ -2785,13 +2941,17 @@ extern "C" NSDictionary* clRepairDaemonForApp_C(void) {
         [argv addObject:@"--app-docs"];
         [argv addObject:appDocs];
     }
-    int rootRc = spawn(argv, nil, nil, nil, SPAWN_FLAG_NOWAIT | rootFlags, nil);
+    pid_t rootPid = -1;
+    int rootRc = spawn(argv, nil, nil, &rootPid, SPAWN_FLAG_NOWAIT | rootFlags, nil);
     out[@"root_spawn_rc"] = @(rootRc);
+    out[@"root_spawn_pid"] = @(rootPid);
     int nonrootRc = -999;
+    pid_t nonrootPid = -1;
     if (rootRc != 0 && rootFlags) {
-        nonrootRc = spawn(argv, nil, nil, nil, SPAWN_FLAG_NOWAIT, nil);
+        nonrootRc = spawn(argv, nil, nil, &nonrootPid, SPAWN_FLAG_NOWAIT, nil);
     }
     out[@"nonroot_spawn_rc"] = @(nonrootRc);
+    out[@"nonroot_spawn_pid"] = @(nonrootPid);
 
     // 3) 轮询 1230 至多 ~5s（300ms × 17）
     BOOL afterSpawn = NO;
@@ -2804,30 +2964,47 @@ extern "C" NSDictionary* clRepairDaemonForApp_C(void) {
     }
     out[@"port_after_spawn"] = @(afterSpawn);
 
+    // 记录 spawn 返回 0 后子进程是否还活着，以及退出码/信号。
+    pid_t observedPid = (rootRc == 0) ? rootPid : nonrootPid;
+    CLRecordChildLifecycle(out, @"child", observedPid);
+    out[@"child_alive"] = out[@"child_alive"] ?: @NO;
+    out[@"child_wait_status"] = out[@"child_wait_status"] ?: @(-1);
+    out[@"child_exit_code"] = out[@"child_exit_code"] ?: @(-1);
+    out[@"child_signal"] = out[@"child_signal"] ?: @(-1);
+    out[@"child_probe_errno"] = out[@"child_probe_errno"] ?: @(0);
+
     // 4) launchctl 尽力而为（relaxin App sandbox 下常 EPERM；只留证，不重试）
     NSInteger lrc = -1;
+    NSInteger bootoutRc = -1;
+    NSInteger printRc = -1;
+    NSString* printOut = @"";
     NSString* lout = @"";
     BOOL attempted = NO;
+    BOOL printAttempted = NO;
     if (!afterSpawn) {
-        NSMutableArray* candidates = [NSMutableArray arrayWithObject:
-            @"/Library/LaunchDaemons/com.chargelimiter.mod.plist"];
-        NSString* jbRoot = CLDaemonJbRootPath();
-        if (jbRoot.length > 0) {
-            [candidates addObject:
-                [jbRoot stringByAppendingPathComponent:@"Library/LaunchDaemons/com.chargelimiter.mod.plist"]];
+        if ([out[@"launchctl_exists"] boolValue]) {
+            NSString* statusOut = nil;
+            NSString* statusErr = nil;
+            printAttempted = YES;
+            printRc = spawn(@[launchctlPath, @"print", @"system/com.chargelimiter.mod"],
+                            &statusOut, &statusErr, nil, rootFlags, nil);
+            printOut = statusErr.length ? statusErr : (statusOut ?: @"");
+            if (printOut.length > 4096) {
+                printOut = [printOut substringToIndex:4096];
+            }
         }
-        for (NSString* plist in candidates) {
-            if (![[NSFileManager defaultManager] fileExistsAtPath:plist]) {
-                continue;
+        for (NSString* plist in plistExisting) {
+            if (![out[@"launchctl_exists"] boolValue]) {
+                break;
             }
             NSString* bootOut = nil;
             NSString* bootErr = nil;
-            spawn(@[@"/bin/launchctl", @"bootout", @"system/com.chargelimiter.mod"],
-                  &bootOut, &bootErr, nil, rootFlags, nil);
+            bootoutRc = spawn(@[launchctlPath, @"bootout", @"system/com.chargelimiter.mod"],
+                              &bootOut, &bootErr, nil, rootFlags, nil);
             NSString* splash = bootErr ?: (bootOut ?: @"");
             NSString* bOut = nil;
             NSString* bErr = nil;
-            lrc = spawn(@[@"/bin/launchctl", @"bootstrap", @"system", plist],
+            lrc = spawn(@[launchctlPath, @"bootstrap", @"system", plist],
                         &bOut, &bErr, nil, rootFlags, nil);
             attempted = YES;
             lout = bErr.length ? bErr : (bOut.length ? bOut : splash);
@@ -2841,6 +3018,12 @@ extern "C" NSDictionary* clRepairDaemonForApp_C(void) {
         }
     }
     out[@"launchctl_attempted"] = @(attempted);
+    out[@"launchctl_print_attempted"] = @(printAttempted);
+    if (printAttempted) {
+        out[@"launchctl_print_rc"] = @((int)printRc);
+        out[@"launchctl_print_out"] = printOut ?: @"";
+    }
+    out[@"launchctl_bootout_rc"] = @((int)bootoutRc);
     out[@"launchctl_rc"] = @((int)lrc);
     out[@"launchctl_out"] = lout ?: @"";
 

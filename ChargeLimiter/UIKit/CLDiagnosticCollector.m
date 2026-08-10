@@ -10,6 +10,8 @@
 #import "CLBatteryManager.h"
 #import <dlfcn.h>
 #import <mach-o/dyld.h>
+#import <sys/utsname.h>
+#import <string.h>
 
 // 不引入 common.h/utils.h（会拉 UIKit）。
 // 本项目 utils.mm 的 _C wrapper 直接 extern 调用（链接期绑定，不依赖导出表，
@@ -26,7 +28,15 @@ NSString *CLDiagErrnoLabel(NSInteger rc) {
     if (rc == 0)      return @"0";
     if (rc == 1)      return @"1(EPERM 权限)";
     if (rc == 2)      return @"2(ENOENT 无此文件)";
+    if (rc == 12)     return @"12(ENOMEM 内存不足)";
     if (rc == 13)     return @"13(EACCES 权限拒绝)";
+    if (rc == 22)     return @"22(EINVAL 参数无效)";
+    if (rc == 23)     return @"23(ENFILE 系统文件表已满)";
+    if (rc == 24)     return @"24(EMFILE 进程文件描述符已满)";
+    if (rc == 47)     return @"47(EAFNOSUPPORT 地址族不支持)";
+    if (rc == 48)     return @"48(EADDRINUSE 地址已占用)";
+    if (rc == 49)     return @"49(EADDRNOTAVAIL 地址不可用)";
+    if (rc == 55)     return @"55(ENOBUFS 缓冲区不足)";
     return [NSString stringWithFormat:@"%ld", (long)rc];
 }
 
@@ -96,6 +106,29 @@ static NSTimeInterval CLDiagCallGetSysBoottime(void) {
     return (NSTimeInterval)get_sys_boottime_C();
 }
 
+static NSString *CLDiagLocalDeviceModel(void) {
+    struct utsname name;
+    memset(&name, 0, sizeof(name));
+    if (uname(&name) == 0 && name.machine[0] != '\0') {
+        return [NSString stringWithUTF8String:name.machine] ?: @"";
+    }
+    return @"";
+}
+
+static NSString *CLDiagLocalSystemVersion(void) {
+    NSOperatingSystemVersion version = NSProcessInfo.processInfo.operatingSystemVersion;
+    if (version.majorVersion <= 0) {
+        return @"";
+    }
+    return [NSString stringWithFormat:@"%ld.%ld.%ld", (long)version.majorVersion,
+            (long)version.minorVersion, (long)version.patchVersion];
+}
+
+static NSString *CLDiagLocalAppVersion(void) {
+    id value = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
+    return [value isKindOfClass:[NSString class]] ? value : @"";
+}
+
 /// roothide 上 /usr/lib/libjailbreak.dylib 常不在真实 rootfs → 失败是预期，不应标成故障。
 static NSString *CLFormatLibjailbreakStatus(BOOL loaded, NSString *packageScheme, NSString *jbType) {
     if (loaded) {
@@ -157,6 +190,51 @@ NSString *CLSanitizePathForDiag(NSString *path) {
         return [@"…/" stringByAppendingString:[tail componentsJoinedByString:@"/"]];
     }
     return path;
+}
+
+static NSString *CLRedactJBRootTokensForDiag(NSString *text) {
+    if (![text isKindOfClass:[NSString class]] || text.length == 0) {
+        return @"";
+    }
+    NSError *error = nil;
+    NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:@"\\.jbroot-[^/\\s]+"
+                                                                           options:0
+                                                                             error:&error];
+    if (!regex || error) {
+        return text;
+    }
+    return [regex stringByReplacingMatchesInString:text
+                                           options:0
+                                             range:NSMakeRange(0, text.length)
+                                      withTemplate:@".jbroot-…"];
+}
+
+static NSString *CLDiagValueBetween(NSString *text, NSString *startToken, NSString *endToken) {
+    if (![text isKindOfClass:[NSString class]] || text.length == 0
+        || startToken.length == 0) {
+        return @"";
+    }
+    NSArray<NSString *> *lines = [text componentsSeparatedByString:@"\n"];
+    for (NSString *line in [lines reverseObjectEnumerator]) {
+        NSRange start = [line rangeOfString:startToken];
+        if (start.location == NSNotFound) {
+            continue;
+        }
+        NSUInteger valueStart = NSMaxRange(start);
+        NSUInteger valueEnd = line.length;
+        if (endToken.length > 0) {
+            NSRange end = [line rangeOfString:endToken options:0 range:NSMakeRange(valueStart, line.length - valueStart)];
+            if (end.location != NSNotFound) {
+                valueEnd = end.location;
+            }
+        }
+        if (valueEnd <= valueStart) {
+            return @"";
+        }
+        return [[line substringWithRange:NSMakeRange(valueStart, valueEnd - valueStart)]
+                stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    }
+    return @"";
 }
 
 NSString *CLJBTypeLabelFromCode(int code) {
@@ -227,9 +305,28 @@ NSString *CLJBTypeLabelFromCode(int code) {
         [lines addObject:@"# daemon 启动链路（离线诊断）"];
         [lines addObject:[NSString stringWithFormat:@"daemon 路径:     %@", dk.daemonPath.length ? dk.daemonPath : @"(无法获取)"]];
         [lines addObject:[NSString stringWithFormat:@"二进制存在:      %@", dk.daemonExists ? @"YES" : @"NO"]];
+        [lines addObject:[NSString stringWithFormat:@"daemon 进程:     %@", dk.daemonProcessPID > 0 ? [NSString stringWithFormat:@"PID %ld", (long)dk.daemonProcessPID] : @"未发现"]];
+        NSString *mode = dk.daemonMode >= 0 ? [NSString stringWithFormat:@"0%lo", (unsigned long)dk.daemonMode] : @"unknown";
+        [lines addObject:[NSString stringWithFormat:@"二进制权限:      executable=%@ mode=%@ uid=%ld gid=%ld",
+                          dk.daemonExecutable ? @"YES" : @"NO", mode,
+                          (long)dk.daemonOwnerUID, (long)dk.daemonGroupGID]];
         [lines addObject:[NSString stringWithFormat:@"初始端口(1230): %@", dk.initialPortOpen ? @"YES(已被监听)" : @"NO(无人监听)"]];
+        NSDictionary *pp = dk.portProbe;
+        [lines addObject:[NSString stringWithFormat:@"端口探测:        socket_errno=%@ connect=%@/%@ select=%@/%@ so_error=%@",
+                          pp[@"socket_errno"] ?: @(-1), pp[@"connect_rc"] ?: @(-1),
+                          pp[@"connect_errno"] ?: @(-1), pp[@"select_rc"] ?: @(-1),
+                          pp[@"select_errno"] ?: @(-1), pp[@"so_error"] ?: @(-1)]];
         [lines addObject:[NSString stringWithFormat:@"日志文件路径:    %@", dk.logPath.length ? dk.logPath : @"(无法获取)"]];
         [lines addObject:[NSString stringWithFormat:@"日志文件存在:    %@", dk.logExists ? @"YES" : @"NO"]];
+        NSString *logMode = dk.logMode >= 0 ? [NSString stringWithFormat:@"0%lo", (unsigned long)dk.logMode] : @"unknown";
+        [lines addObject:[NSString stringWithFormat:@"日志元数据:      size=%lld mtime=%.0f mode=%@ uid=%ld gid=%ld writable=%@ parent_writable=%@ read_error=%@",
+                          dk.logSize, dk.logModificationTime, logMode,
+                          (long)dk.logOwnerUID, (long)dk.logGroupGID,
+                          dk.logWritable ? @"YES" : @"NO", dk.logParentWritable ? @"YES" : @"NO",
+                          dk.logReadError.length ? dk.logReadError : @"none"]];
+        [lines addObject:[NSString stringWithFormat:@"启动阶段:        %@", dk.startupStage.length ? dk.startupStage : @"(日志未提供)"]];
+        [lines addObject:[NSString stringWithFormat:@"启动 errno:       %@", dk.startupErrno >= 0 ? CLDiagErrnoLabel(dk.startupErrno) : @"(日志未提供)"]];
+        [lines addObject:[NSString stringWithFormat:@"启动错误:         %@", dk.startupError.length ? dk.startupError : @"(日志未提供)"]];
         [lines addObject:@"日志尾部(aldente.log):"];
         [lines addObjectsFromArray:[self daemonLogTailLines:dk.logTail]];
         [lines addObject:@""];
@@ -309,7 +406,7 @@ NSString *CLJBTypeLabelFromCode(int code) {
     NSMutableArray<NSString *> *out = [NSMutableArray array];
     for (NSString *line in [tail componentsSeparatedByString:@"\n"]) {
         if (line.length > 0) {
-            [out addObject:[NSString stringWithFormat:@"  %@", line]];
+            [out addObject:[NSString stringWithFormat:@"  %@", CLRedactJBRootTokensForDiag(line)]];
         }
     }
     return out.count ? out : @[@"  (空)"];
@@ -344,9 +441,9 @@ NSString *CLJBTypeLabelFromCode(int code) {
         boot = mgr.systemBootTime;
     }
     env.systemBootTime = boot;
-    env.deviceModel = mgr.deviceModel.length ? mgr.deviceModel : @"";
-    env.systemVersion = mgr.systemVersion.length ? mgr.systemVersion : @"";
-    env.appVersion = mgr.appVersion.length ? mgr.appVersion : @"";
+    env.deviceModel = mgr.deviceModel.length ? mgr.deviceModel : CLDiagLocalDeviceModel();
+    env.systemVersion = mgr.systemVersion.length ? mgr.systemVersion : CLDiagLocalSystemVersion();
+    env.appVersion = mgr.appVersion.length ? mgr.appVersion : CLDiagLocalAppVersion();
     report.environment = env;
 
     CLDiagConnectivity *conn = [CLDiagConnectivity new];
@@ -391,10 +488,28 @@ NSString *CLJBTypeLabelFromCode(int code) {
             CLDiagDaemonLink *link = [CLDiagDaemonLink new];
             link.daemonPath = CLSanitizePathForDiag(probeRaw[@"daemon_path"]);
             link.daemonExists = [probeRaw[@"daemon_exists"] boolValue];
+            link.daemonExecutable = [probeRaw[@"daemon_executable"] boolValue];
+            link.daemonMode = [probeRaw[@"daemon_mode"] integerValue];
+            link.daemonOwnerUID = [probeRaw[@"daemon_owner_uid"] integerValue];
+            link.daemonGroupGID = [probeRaw[@"daemon_group_gid"] integerValue];
+            link.daemonProcessPID = [probeRaw[@"daemon_process_pid"] integerValue];
             link.initialPortOpen = [probeRaw[@"initial_port_open"] boolValue];
+            link.portProbe = [probeRaw[@"port_probe"] isKindOfClass:[NSDictionary class]] ? probeRaw[@"port_probe"] : @{};
             link.logPath = CLSanitizePathForDiag(probeRaw[@"log_path"]);
             link.logExists = [probeRaw[@"log_exists"] boolValue];
+            link.logWritable = [probeRaw[@"log_writable"] boolValue];
+            link.logParentWritable = [probeRaw[@"log_parent_writable"] boolValue];
+            link.logMode = [probeRaw[@"log_mode"] integerValue];
+            link.logOwnerUID = [probeRaw[@"log_owner_uid"] integerValue];
+            link.logGroupGID = [probeRaw[@"log_group_gid"] integerValue];
+            link.logSize = [probeRaw[@"log_size"] longLongValue];
+            link.logModificationTime = [probeRaw[@"log_mtime"] doubleValue];
+            link.logReadError = [probeRaw[@"log_read_error"] isKindOfClass:[NSString class]] ? probeRaw[@"log_read_error"] : @"";
             link.logTail = [probeRaw[@"log_tail"] isKindOfClass:[NSString class]] ? probeRaw[@"log_tail"] : @"";
+            NSString *startupErrno = CLDiagValueBetween(link.logTail, @" errno=", @" error=");
+            link.startupStage = CLDiagValueBetween(link.logTail, @" startup_stage=", @" errno=");
+            link.startupErrno = startupErrno.length ? startupErrno.integerValue : -1;
+            link.startupError = CLDiagValueBetween(link.logTail, @" error=", @" port=");
             report.daemonLink = link;
             // 离线时仍用本地 scheme 格式化 jailbreak 状态，避免误导
             probe.libjailbreakStatus = CLFormatLibjailbreakStatus(NO, env.packageScheme, env.jbType);

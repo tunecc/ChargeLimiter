@@ -47,10 +47,27 @@ NS_ASSUME_NONNULL_BEGIN
 @interface CLDiagDaemonLink : NSObject
 @property (nonatomic, copy) NSString *daemonPath;
 @property (nonatomic, assign) BOOL daemonExists;
+@property (nonatomic, assign) BOOL daemonExecutable;
+@property (nonatomic, assign) NSInteger daemonMode;
+@property (nonatomic, assign) NSInteger daemonOwnerUID;
+@property (nonatomic, assign) NSInteger daemonGroupGID;
+@property (nonatomic, assign) NSInteger daemonProcessPID;
 @property (nonatomic, assign) BOOL initialPortOpen;
+@property (nonatomic, copy) NSDictionary<NSString *, NSNumber *> *portProbe;
 @property (nonatomic, copy) NSString *logPath;
 @property (nonatomic, assign) BOOL logExists;
+@property (nonatomic, assign) BOOL logWritable;
+@property (nonatomic, assign) BOOL logParentWritable;
+@property (nonatomic, assign) NSInteger logMode;
+@property (nonatomic, assign) NSInteger logOwnerUID;
+@property (nonatomic, assign) NSInteger logGroupGID;
+@property (nonatomic, assign) long long logSize;
+@property (nonatomic, assign) NSTimeInterval logModificationTime;
+@property (nonatomic, copy) NSString *logReadError;
 @property (nonatomic, copy) NSString *logTail;
+@property (nonatomic, copy) NSString *startupStage;
+@property (nonatomic, assign) NSInteger startupErrno;
+@property (nonatomic, copy) NSString *startupError;
 @end
 
 @interface CLDiagnosticReport : NSObject

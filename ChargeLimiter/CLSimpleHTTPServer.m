@@ -11,6 +11,8 @@
 #import <netinet/in.h>
 #import <arpa/inet.h>
 #import <unistd.h>
+#import <errno.h>
+#import <string.h>
 #include <math.h>
 
 static id CLJSONSafeObject(id object) {
@@ -98,6 +100,9 @@ static NSData *CLJSONResponseData(id object, NSInteger *statusCode) {
 @property (nonatomic, strong) dispatch_queue_t serverQueue;
 @property (nonatomic, strong) dispatch_queue_t handlerQueue;
 @property (nonatomic, assign) NSUInteger serverPort;
+@property (nonatomic, copy, readwrite) NSString *failureStage;
+@property (nonatomic, assign, readwrite) int failureErrno;
+@property (nonatomic, copy, readwrite) NSString *failureErrnoMessage;
 @end
 
 @implementation CLSimpleHTTPServer
@@ -112,6 +117,9 @@ static NSData *CLJSONResponseData(id object, NSInteger *statusCode) {
         // 否则 acceptLoop 永不返回会饿死后续请求；同时串行保证 handleReq 不会并发执行
         // （真机崩溃：并发队列里 get_statistics 与 reload_conf 的 uninitDB+initDB 互踩）。
         _handlerQueue = dispatch_queue_create("com.chargelimiter.httpserver.handler", DISPATCH_QUEUE_SERIAL);
+        _failureStage = @"";
+        _failureErrno = 0;
+        _failureErrnoMessage = @"";
     }
     return self;
 }
@@ -140,16 +148,37 @@ static NSData *CLJSONResponseData(id object, NSInteger *statusCode) {
     if (_running) {
         return YES;
     }
+
+    _failureStage = @"";
+    _failureErrno = 0;
+    _failureErrnoMessage = @"";
+
+    // Keep the failure at the exact syscall boundary. The daemon copies these
+    // fields into aldente.log because NSLog is not reliably available to users.
+    BOOL (^recordFailure)(NSString *, int) = ^BOOL(NSString *stage, int code) {
+        self.failureStage = stage;
+        self.failureErrno = code;
+        self.failureErrnoMessage = [NSString stringWithUTF8String:strerror(code)] ?: @"unknown";
+        NSLog(@"[CLSimpleHTTPServer] startup_failure stage=%@ errno=%d error=%@ port=%lu pid=%d uid=%d euid=%d",
+              stage, code, self.failureErrnoMessage, (unsigned long)port,
+              getpid(), getuid(), geteuid());
+        return NO;
+    };
     
     _serverSocket = socket(AF_INET, SOCK_STREAM, 0);
     if (_serverSocket < 0) {
-        NSLog(@"[CLSimpleHTTPServer] Failed to create socket");
-        return NO;
+        int code = errno;
+        return recordFailure(@"socket", code);
     }
     
     // 允许端口重用
     int opt = 1;
-    setsockopt(_serverSocket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    if (setsockopt(_serverSocket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        int code = errno;
+        close(_serverSocket);
+        _serverSocket = -1;
+        return recordFailure(@"setsockopt", code);
+    }
     
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
@@ -158,23 +187,24 @@ static NSData *CLJSONResponseData(id object, NSInteger *statusCode) {
     addr.sin_addr.s_addr = localhost ? inet_addr("127.0.0.1") : INADDR_ANY;
     
     if (bind(_serverSocket, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        NSLog(@"[CLSimpleHTTPServer] Failed to bind to port %lu", (unsigned long)port);
+        int code = errno;
         close(_serverSocket);
         _serverSocket = -1;
-        return NO;
+        return recordFailure(@"bind", code);
     }
     
     if (listen(_serverSocket, 10) < 0) {
-        NSLog(@"[CLSimpleHTTPServer] Failed to listen");
+        int code = errno;
         close(_serverSocket);
         _serverSocket = -1;
-        return NO;
+        return recordFailure(@"listen", code);
     }
     
     _serverPort = port;
     _running = YES;
     
-    NSLog(@"[CLSimpleHTTPServer] Started on port %lu", (unsigned long)port);
+    NSLog(@"[CLSimpleHTTPServer] listen_ready port=%lu localhost=%d pid=%d ppid=%d uid=%d euid=%d",
+          (unsigned long)port, localhost ? 1 : 0, getpid(), getppid(), getuid(), geteuid());
     
     // 启动接受连接的循环
     dispatch_async(_serverQueue, ^{

@@ -6,12 +6,14 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 H = REPO / "ChargeLimiter" / "UIKit" / "CLDiagnosticCollector.h"
 M = REPO / "ChargeLimiter" / "UIKit" / "CLDiagnosticCollector.m"
+UI = REPO / "ChargeLimiter" / "UIKit" / "Controllers" / "CLAdvancedSettingsViewController.m"
 
 
 class DiagnosticCollectorContractTests(unittest.TestCase):
     def setUp(self):
         self.h = H.read_text(encoding="utf-8") if H.exists() else ""
         self.m = M.read_text(encoding="utf-8") if M.exists() else ""
+        self.ui = UI.read_text(encoding="utf-8") if UI.exists() else ""
 
     def test_files_exist(self):
         self.assertTrue(H.exists(), "CLDiagnosticCollector.h missing")
@@ -78,6 +80,29 @@ class DiagnosticCollectorContractTests(unittest.TestCase):
     def test_daemon_link_model(self):
         self.assertIn("CLDiagDaemonLink", self.h)
         self.assertIn("daemonLink", self.h)
+
+    def test_daemon_link_renders_server_failure_evidence(self):
+        for label in ("启动阶段", "errno", "daemon 进程", "二进制权限", "端口探测", "日志元数据"):
+            self.assertIn(label, self.m)
+        for label in ("子进程 PID", "子进程状态", "launchctl 命令", "plist 候选"):
+            self.assertIn(label, self.ui)
+        self.assertIn("CLSanitizeLaunchctlPrintOutput", self.ui)
+
+    def test_repair_summary_does_not_default_missing_steps_to_success(self):
+        start = self.ui.find("- (NSString *)repairSummaryTextForResult")
+        end = self.ui.find("- (void)updateDiagnosticValues", start)
+        body = self.ui[start:end] if start >= 0 and end > start else ""
+        for key in ("kill_rc", "root_spawn_rc", "nonroot_spawn_rc",
+                    "port_after_spawn", "child_pid"):
+            self.assertIn(f'if (result[@"{key}"])', body,
+                          f"repair summary must guard optional field {key}")
+        self.assertIn('if ([result[@"launchctl_print_attempted"] boolValue]', body)
+
+    def test_daemon_log_tail_redacts_old_jbroot_tokens(self):
+        self.assertIn("CLRedactJBRootTokensForDiag", self.m)
+        start = self.m.find("- (NSArray<NSString *> *)daemonLogTailLines")
+        body = self.m[start:start + 1000] if start >= 0 else ""
+        self.assertIn("CLRedactJBRootTokensForDiag(line)", body)
 
     def test_jb_dual_source(self):
         self.assertIn("jbRawCode", self.h)
