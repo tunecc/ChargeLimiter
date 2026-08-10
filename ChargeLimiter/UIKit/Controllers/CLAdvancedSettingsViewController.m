@@ -23,6 +23,44 @@ static void CLSetDaemonRepairRunning(id self, BOOL running) {
     objc_setAssociatedObject(self, &kCLDaemonRepairRunningKey, @(running), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
+static NSString *CLRedactJBRootTokens(NSString *text) {
+    if (![text isKindOfClass:[NSString class]] || text.length == 0) {
+        return @"";
+    }
+    NSError *error = nil;
+    NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:@"\\.jbroot-[^/\\s]+"
+                                                                           options:0
+                                                                             error:&error];
+    if (!regex || error) {
+        return text;
+    }
+    return [regex stringByReplacingMatchesInString:text
+                                           options:0
+                                             range:NSMakeRange(0, text.length)
+                                      withTemplate:@".jbroot-…"];
+}
+
+static NSString *CLSanitizeLaunchctlPrintOutput(NSString *text) {
+    if (![text isKindOfClass:[NSString class]] || text.length == 0) {
+        return @"";
+    }
+    NSArray<NSString *> *allowedKeys = @[
+        @"state", @"path", @"program", @"pid", @"runs", @"last exit code", @"reason"
+    ];
+    NSMutableArray<NSString *> *kept = [NSMutableArray array];
+    for (NSString *rawLine in [text componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]]) {
+        NSString *line = [rawLine stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+        NSString *lowercase = line.lowercaseString;
+        for (NSString *key in allowedKeys) {
+            if ([lowercase hasPrefix:[key stringByAppendingString:@" ="]]) {
+                [kept addObject:CLRedactJBRootTokens(line)];
+                break;
+            }
+        }
+    }
+    return [kept componentsJoinedByString:@" ⏎ "];
+}
+
 #pragma mark - 毛玻璃卡片（复用）
 
 static char kCLAdvPickerColorKey;
@@ -1488,23 +1526,95 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
     [lines addObject:[NSString stringWithFormat:@"结果: %@", verdict.length ? verdict : @"(未知)"]];
     [lines addObject:[NSString stringWithFormat:@"初始端口: %@",
         [result[@"initial_port_open"] boolValue] ? @"YES" : @"NO"]];
-    [lines addObject:[NSString stringWithFormat:@"root spawn rc: %@",
-        CLDiagErrnoLabel([result[@"root_spawn_rc"] integerValue])]];
-    [lines addObject:[NSString stringWithFormat:@"nonroot spawn rc: %@",
-        CLDiagErrnoLabel([result[@"nonroot_spawn_rc"] integerValue])]];
-    [lines addObject:[NSString stringWithFormat:@"spawn 后端口: %@",
-        [result[@"port_after_spawn"] boolValue] ? @"YES" : @"NO"]];
-    if ([result[@"launchctl_attempted"] boolValue]) {
-        [lines addObject:[NSString stringWithFormat:@"launchctl rc: %@",
-            CLDiagErrnoLabel([result[@"launchctl_rc"] integerValue])]];
-        NSString *lout = result[@"launchctl_out"];
-        if ([lout isKindOfClass:[NSString class]] && lout.length > 0) {
-            NSString *oneLine = [[lout componentsSeparatedByString:@"\n"]
-                                 componentsJoinedByString:@" ⏎ "];
-            [lines addObject:[NSString stringWithFormat:@"launchctl 输出: %@", oneLine]];
+    if (result[@"kill_rc"]) {
+        [lines addObject:[NSString stringWithFormat:@"killall: %@ rc=%@",
+            CLSanitizePathForDiag(result[@"killall_path"]),
+            CLDiagErrnoLabel([result[@"kill_rc"] integerValue])]];
+    }
+    if (result[@"root_spawn_rc"]) {
+        [lines addObject:[NSString stringWithFormat:@"root spawn rc: %@",
+            CLDiagErrnoLabel([result[@"root_spawn_rc"] integerValue])]];
+        [lines addObject:[NSString stringWithFormat:@"root spawn PID: %@",
+            result[@"root_spawn_pid"] ?: @(-1)]];
+    }
+    if (result[@"nonroot_spawn_rc"]) {
+        [lines addObject:[NSString stringWithFormat:@"nonroot spawn rc: %@",
+            CLDiagErrnoLabel([result[@"nonroot_spawn_rc"] integerValue])]];
+        [lines addObject:[NSString stringWithFormat:@"nonroot spawn PID: %@",
+            result[@"nonroot_spawn_pid"] ?: @(-1)]];
+    }
+    if (result[@"port_after_spawn"]) {
+        [lines addObject:[NSString stringWithFormat:@"spawn 后端口: %@",
+            [result[@"port_after_spawn"] boolValue] ? @"YES" : @"NO"]];
+    }
+    if (result[@"child_pid"]) {
+        BOOL childAlive = [result[@"child_alive"] boolValue];
+        NSInteger childExit = [result[@"child_exit_code"] integerValue];
+        NSInteger childSignal = [result[@"child_signal"] integerValue];
+        NSInteger childWaitErrno = [result[@"child_wait_errno"] integerValue];
+        NSInteger childProbeErrno = [result[@"child_probe_errno"] integerValue];
+        NSString *childState = childAlive ? @"alive" :
+            (childExit >= 0 ? [NSString stringWithFormat:@"exited(%ld)", (long)childExit] :
+             (childSignal >= 0 ? [NSString stringWithFormat:@"signaled(%ld)", (long)childSignal] :
+              [NSString stringWithFormat:@"unknown(wait errno=%@ probe errno=%@)",
+               CLDiagErrnoLabel(childWaitErrno), CLDiagErrnoLabel(childProbeErrno)]));
+        [lines addObject:[NSString stringWithFormat:@"子进程 PID:       %@", result[@"child_pid"]]];
+        [lines addObject:[NSString stringWithFormat:@"子进程状态:      %@ wait=%@",
+            childState, result[@"child_wait_status"] ?: @(-1)]];
+        [lines addObject:[NSString stringWithFormat:@"子进程仍存活:    %@",
+            childAlive ? @"YES" : @"NO"]];
+    }
+    if (result[@"launchctl_attempted"]) {
+        if ([result[@"launchctl_attempted"] boolValue]) {
+            [lines addObject:[NSString stringWithFormat:@"launchctl rc: %@",
+                CLDiagErrnoLabel([result[@"launchctl_rc"] integerValue])]];
+            [lines addObject:[NSString stringWithFormat:@"launchctl bootout rc: %@",
+                CLDiagErrnoLabel([result[@"launchctl_bootout_rc"] integerValue])]];
+            NSString *lout = result[@"launchctl_out"];
+            if ([lout isKindOfClass:[NSString class]] && lout.length > 0) {
+                NSString *oneLine = [[lout componentsSeparatedByString:@"\n"]
+                                     componentsJoinedByString:@" ⏎ "];
+                [lines addObject:[NSString stringWithFormat:@"launchctl 输出: %@",
+                    CLRedactJBRootTokens(oneLine)]];
+            }
+        } else {
+            [lines addObject:@"launchctl: 未尝试"];
         }
-    } else {
-        [lines addObject:@"launchctl: 未尝试"];
+    }
+    if ([result[@"launchctl_print_attempted"] boolValue] && result[@"launchctl_print_rc"]) {
+        [lines addObject:[NSString stringWithFormat:@"launchctl print rc: %@",
+            CLDiagErrnoLabel([result[@"launchctl_print_rc"] integerValue])]];
+        NSString *safePrintOut = CLSanitizeLaunchctlPrintOutput(result[@"launchctl_print_out"]);
+        if (safePrintOut.length > 0) {
+            [lines addObject:[NSString stringWithFormat:@"launchctl print: %@", safePrintOut]];
+        }
+    }
+    if (result[@"launchctl_path"]) {
+        [lines addObject:[NSString stringWithFormat:@"launchctl 命令:   %@ (%@)",
+            CLSanitizePathForDiag(result[@"launchctl_path"]),
+            [result[@"launchctl_exists"] boolValue] ? @"存在" : @"不存在"]];
+    }
+    if (result[@"launchctl_path_candidates"]) {
+        NSArray *launchctlCandidates = [result[@"launchctl_path_candidates"] isKindOfClass:[NSArray class]] ? result[@"launchctl_path_candidates"] : @[];
+        NSMutableArray *safeLaunchctlCandidates = [NSMutableArray array];
+        for (NSString *path in launchctlCandidates) {
+            [safeLaunchctlCandidates addObject:CLSanitizePathForDiag(path)];
+        }
+        [lines addObject:[NSString stringWithFormat:@"launchctl 候选:   %@", safeLaunchctlCandidates.count ? [safeLaunchctlCandidates componentsJoinedByString:@" | "] : @"(无)"]];
+    }
+    if (result[@"plist_candidates"]) {
+        NSArray *plistCandidates = [result[@"plist_candidates"] isKindOfClass:[NSArray class]] ? result[@"plist_candidates"] : @[];
+        NSArray *plistExisting = [result[@"plist_existing"] isKindOfClass:[NSArray class]] ? result[@"plist_existing"] : @[];
+        NSMutableArray *safeCandidates = [NSMutableArray array];
+        for (NSString *path in plistCandidates) {
+            [safeCandidates addObject:CLSanitizePathForDiag(path)];
+        }
+        NSMutableArray *safeExisting = [NSMutableArray array];
+        for (NSString *path in plistExisting) {
+            [safeExisting addObject:CLSanitizePathForDiag(path)];
+        }
+        [lines addObject:[NSString stringWithFormat:@"plist 候选:       %@", safeCandidates.count ? [safeCandidates componentsJoinedByString:@" | "] : @"(无)"]];
+        [lines addObject:[NSString stringWithFormat:@"plist 存在:       %@", safeExisting.count ? [safeExisting componentsJoinedByString:@" | "] : @"(无)"]];
     }
     [lines addObject:[NSString stringWithFormat:@"最终端口: %@",
         [result[@"final_port_open"] boolValue] ? @"YES" : @"NO"]];

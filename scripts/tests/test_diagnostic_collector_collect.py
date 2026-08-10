@@ -76,6 +76,12 @@ class CollectContractTests(unittest.TestCase):
             or ".httpReachable = NO" in self.col_m
         )
 
+    def test_collect_has_local_environment_fallbacks(self):
+        # 离线时不能依赖 BatteryManager 缓存，设备/系统/App 信息必须本地可读。
+        self.assertIn("uname", self.col_m)
+        self.assertIn("operatingSystemVersion", self.col_m)
+        self.assertIn("CFBundleShortVersionString", self.col_m)
+
 
 if __name__ == "__main__":
     unittest.main()
