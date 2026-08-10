@@ -3083,6 +3083,19 @@ static BOOL policyNeedsSmartChargeCoordination(NSString* policyState) {
     return [@[@"hold", @"hold_recharge", @"stopped", @"temp_paused", @"no_inflow"] containsObject:policyState ?: @""];
 }
 
+static void selfHealSmartChargeOnBootstrap(void) {
+    // 启动自愈：若本地配置已放行(disable_smart_charge=NO)但系统的「优化充电」仍
+    // 处于关闭态（常见于旧版永久停用的残留），自动重新打开，让已卡死的用户
+    // 装新包重启 daemon 后无需任何手动操作即可恢复。
+    BOOL permanentlyDisableSmartCharge = getLocalBool(@"disable_smart_charge", NO);
+    if (permanentlyDisableSmartCharge) {
+        return;
+    }
+    if (!isSmartChargeEnable()) {
+        setSmartChargeEnable(YES);
+    }
+}
+
 static void syncSmartChargeCoordination(NSDictionary* info, BOOL isAdaptorConnected) {
     g_smartChargeStatus = getSmartChargeStatus();
     if (g_smartChargeStatus < 0) {
@@ -3454,6 +3467,7 @@ static void initConf(BOOL reset) {
         @"adv_hold_band": @5,
         @"adv_hold_behavior": @"balanced",
         @"adv_hold_temp_disable_smart_charge": @YES,
+        @"disable_smart_charge": @NO, // 清除配置时一并还原系统优化充电开关，避免永久停用残留无法恢复
         @"adv_thermal_avail": @(adv_thermal_avail),
         @"adv_limit_inflow": @NO,
         @"adv_limit_inflow_mode": @"moderate",
@@ -3631,6 +3645,12 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
                 }
                 evaluateFullChargeSchedule(YES);
             }
+        } else if ([key isEqualToString:@"disable_smart_charge"]) {
+            // 关闭「永久停用系统优化充电」时，必须把系统优化充电重新打开。
+            // disableSmartCharging: 写的是系统级开关，仅改本地配置不会恢复。
+            if (![val boolValue] && !isSmartChargeEnable()) {
+                setSmartChargeEnable(YES);
+            }
         } else if ([key isEqualToString:@"action"]) {
             if ([val isEqualToString:@"noti"]) {
                 [Service.inst initLocalPush];
@@ -3696,6 +3716,11 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
         };
     } else if ([api isEqualToString:@"reset_conf"]) {
         initConf(YES);
+        // 清除配置后必须把系统的「优化充电」重新打开：永久停用会写系统级开关，
+        // 仅还原本地 disable_smart_charge=NO 无法恢复，需显式 enable。
+        if (!getLocalBool(@"disable_smart_charge", NO) && !isSmartChargeEnable()) {
+            setSmartChargeEnable(YES);
+        }
         tryRestoreSmartChargeAfterCoordination(@"reset_conf");
         refreshFullChargeScheduleTimer(0);
         evaluateFullChargeSchedule(YES);
@@ -4257,6 +4282,7 @@ void detectUPSBattery() {
         isLPMEnable();
         g_smartChargeStatus = getSmartChargeStatus();
         recoverSmartChargeCoordinationOnBootstrap();
+        selfHealSmartChargeOnBootstrap();
         refreshFullChargeScheduleTimer(0);
         evaluateFullChargeSchedule(YES);
     }
