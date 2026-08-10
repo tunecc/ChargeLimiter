@@ -15,6 +15,8 @@ int main(int argc, char** argv) {
 
 #include <sqlite3.h>
 #include <pthread.h>
+#include <unistd.h>
+#include <errno.h>
 #import <Foundation/Foundation.h>
 #import <UserNotifications/UserNotifications.h>
 #include <notify.h>
@@ -31,6 +33,9 @@ int main(int argc, char** argv) {
 #endif
 
 #include "utils.h"
+
+extern "C" int csops(pid_t pid, unsigned int ops, void* useraddr, size_t usersize);
+static const unsigned int kCLCSOpsStatus = 0;
 
 #define kHIDPage_PowerDevice                    0x84
 #define kHIDUsage_PD_PeripheralDevice           0x06
@@ -4227,12 +4232,17 @@ void detectUPSBattery() {
             @"Port": @(GSERV_PORT),
             @"BindToLocalhost": @YES,
         };
-        BOOL status = [_webServer startWithOptions:options error:nil];
+        NSError *serverError = nil;
+        BOOL status = [_webServer startWithOptions:options error:&serverError];
         if (!status) {
-            NSFileErrorLog(@"%@ serve failed, exit", log_prefix);
+            NSFileErrorLog(@"%@ serve failed, exit startup_stage=gcd_start errno=-1 error=%@ port=%d pid=%d ppid=%d uid=%d euid=%d jbtype=%d",
+                           log_prefix, serverError.localizedDescription ?: @"unknown",
+                           GSERV_PORT, getpid(), getppid(), getuid(), geteuid(), getJBType());
             NSLog(@"%@ serve failed, exit", log_prefix);
             exit(0);
         }
+        NSFileErrorLog(@"%@ listen_ready backend=gcd port=%d pid=%d ppid=%d uid=%d euid=%d jbtype=%d",
+                       log_prefix, GSERV_PORT, getpid(), getppid(), getuid(), geteuid(), getJBType());
 #else
     // 使用自己的简易 HTTP 服务器，替代 GCDWebServers
     static CLSimpleHTTPServer* _webServer = nil;
@@ -4250,11 +4260,27 @@ void detectUPSBattery() {
             }
         }];
         BOOL status = [_webServer startOnPort:GSERV_PORT bindToLocalhost:YES];
+        if (!status && _webServer.failureErrno == EADDRINUSE) {
+            // A stale listener can win the launchd/spawn race. Retry once after
+            // it has had time to close; never widen the localhost exposure.
+            NSFileErrorLog(@"%@ serve retry startup_stage=bind errno=%d error=%@ port=%d pid=%d",
+                           log_prefix, _webServer.failureErrno,
+                           _webServer.failureErrnoMessage ?: @"Address already in use", GSERV_PORT, getpid());
+            usleep(300 * 1000);
+            status = [_webServer startOnPort:GSERV_PORT bindToLocalhost:YES];
+        }
         if (!status) {
-            NSFileErrorLog(@"%@ serve failed, exit", log_prefix);
+            NSFileErrorLog(@"%@ serve failed, exit startup_stage=%@ errno=%d error=%@ port=%d pid=%d ppid=%d uid=%d euid=%d jbtype=%d",
+                           log_prefix,
+                           _webServer.failureStage.length ? _webServer.failureStage : @"unknown",
+                           _webServer.failureErrno,
+                           _webServer.failureErrnoMessage.length ? _webServer.failureErrnoMessage : @"unknown",
+                           GSERV_PORT, getpid(), getppid(), getuid(), geteuid(), getJBType());
             NSLog(@"%@ serve failed, exit", log_prefix);
             exit(0);
         }
+        NSFileErrorLog(@"%@ listen_ready backend=bsd_socket port=%d pid=%d ppid=%d uid=%d euid=%d jbtype=%d",
+                       log_prefix, GSERV_PORT, getpid(), getppid(), getuid(), geteuid(), getJBType());
 #endif
         
         getBatInfo(&bat_info);
@@ -4305,13 +4331,30 @@ int main(int argc, char** argv) { // daemon_main
 
         if (argIndex >= argc) {
             g_serv_boot = (int)time(0);
+            uint32_t entryCSFlags = 0;
+            errno = 0;
+            int entryCSOpsRc = csops(getpid(), kCLCSOpsStatus, &entryCSFlags, sizeof(entryCSFlags));
+            int entryCSOpsErrno = entryCSOpsRc == 0 ? 0 : errno;
+            NSFileErrorLog(@"daemon_entry pid=%d ppid=%d uid=%d euid=%d gid=%d egid=%d csops_rc=%d csops_errno=%d csflags=0x%08x jbtype=%d app_docs_override=%d",
+                           getpid(), getppid(), getuid(), geteuid(), getgid(), getegid(),
+                           entryCSOpsRc, entryCSOpsErrno, entryCSFlags,
+                           g_jbtype, argIndex > 1 ? 1 : 0);
+            int platformizeRc = -999;
+            int memlimitRc = -999;
             if (g_jbtype == JBTYPE_TROLLSTORE) {
                 signal(SIGHUP, SIG_IGN);
                 signal(SIGTERM, SIG_IGN); // 防止App被Kill以后daemon退出
             } else {
-                platformize_me(); // for jailbreak
-                set_mem_limit(getpid(), 80);
+                platformizeRc = platformize_me(); // for jailbreak
+                memlimitRc = set_mem_limit(getpid(), 80);
             }
+            uint32_t privilegeCSFlags = 0;
+            errno = 0;
+            int privilegeCSOpsRc = csops(getpid(), kCLCSOpsStatus, &privilegeCSFlags, sizeof(privilegeCSFlags));
+            int privilegeCSOpsErrno = privilegeCSOpsRc == 0 ? 0 : errno;
+            NSFileErrorLog(@"daemon_privilege platformize_rc=%d memlimit_rc=%d pid=%d uid=%d euid=%d gid=%d egid=%d csops_rc=%d csops_errno=%d csflags=0x%08x",
+                           platformizeRc, memlimitRc, getpid(), getuid(), geteuid(), getgid(), getegid(),
+                           privilegeCSOpsRc, privilegeCSOpsErrno, privilegeCSFlags);
             [Service.inst serve];
             atexit_b(^{
                 if (g_fullChargeScheduleTimer != nil) {
