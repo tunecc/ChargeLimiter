@@ -5695,9 +5695,14 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
 - (void)setupLimitCard {
     self.limitCard = [[CLGlassCard alloc] init];
     self.limitCard.viewController = self;
-    
+
+    // 语言切换等触发重建时，旧按钮已随旧视图移除；
+    // 若不先清空，attach 的防重 guard 会误判为“已存在”而早退，导致新行上按钮丢失。
+    self.chargeAbovePresetButton = nil;
+    self.setChargeAboveCurrentButton = nil;
+
     __weak typeof(self) weakSelf = self;
-    
+
     // 停止充电滑块 - 保存引用以便更新
     self.chargeAboveRow = [self.limitCard addSliderRowWithTitle:CLL(@"停止充电 (电量 ≥)") value:self.chargeAbove minValue:15 maxValue:100 color:[UIColor systemGreenColor] tag:201 onChange:^(NSInteger value) {
         NSInteger adjustedAbove = value;
