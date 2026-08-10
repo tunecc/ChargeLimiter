@@ -8,12 +8,13 @@
 
 ## v1.14.2 - 2026-08-09
 
-本版主线是 **修复 daemon 在运行约半小时后崩溃（EXC_BAD_ACCESS / Segmentation fault）**。根因是全局 sqlite 句柄被多个线程无锁共用：http 并发队列读统计 + battery 事件写 + `reload_conf`/`app_docs` 切换关重开同一连接互相踩踏，一个线程释放连接后，另一线程在 SQL 解析/执行时读到被字符串覆写的悬垂指针。现所有 sqlite 访问统一走同一把可重入锁，HTTP 请求处理改为串行队列；并新增可复现该崩溃的最小回归测试与 CI 门禁，防止回潮。
+本版两个主线：① 修复 daemon 在运行约半小时后崩溃（EXC_BAD_ACCESS / Segmentation fault），根因是全局 sqlite 句柄被多个线程无锁共用：http 并发队列读统计 + battery 事件写 + `reload_conf`/`app_docs` 切换关重开同一连接互相踩踏，一个线程释放连接后，另一线程在 SQL 解析/执行时读到被字符串覆写的悬垂指针，现所有 sqlite 访问统一走同一把可重入锁，HTTP 请求处理改为串行队列，并新增可复现崩溃的最小回归测试与 CI 门禁防止回潮；② 修复「永久停用系统优化充电」后无法恢复（见下方 Fixed），补齐重新打开系统的路径与 daemon 启动自愈。
 
 ### Fixed
 
 - **修复 daemon 崩溃（EXC_BAD_ACCESS / SIGSEGV）**：真机反馈 daemon 运行约 27 分钟后，统计读取路径 `get_statistics -> getDBData` 在 sqlite3 内部 Segfault（故障地址指向 ASCII 字符串被当地址）。已将全部 sqlite 访问（open/prepare/step/finalize/exec/close）套上同一把可重入互斥锁，并让 HTTP 请求处理串行执行，`get_statistics` 与 `reload_conf` 关重开不再并发交叠。
 - **降低并发稳定性风险**：battery 事件写入与 HTTP 读取、以及 reload 关开连接，从源头不再同时碰同一个 sqlite 连接。
+- **修复「永久停用系统优化充电」后无法恢复**：开启「永久停用系统优化充电」会把系统的「优化电池充电」开关（`disableSmartCharging:`）写为关闭，但旧版 daemon 里没有任何路径会再把它打开，导致清配置、卸载都不一定能复原（清除/重置配置把本地 `disable_smart_charge` 清成 `NO` 后，卸载的复位逻辑会直接跳过）。现补齐三条重新打开系统的路径 + daemon 启动自愈：① 清配置/重置时把 `disable_smart_charge` 一并还原为 `NO`；② 关闭「永久停用」开关（`set_conf`）时立即 `setSmartChargeEnable(YES)`；③ 清除配置（`reset_conf`）后若系统仍关闭则显式恢复；④ daemon 启动时若配置已放行但系统优化充电仍处于关闭态则自动恢复——让已受影响的设备装新版后无需任何手动操作即可复原。
 
 ### Added
 
