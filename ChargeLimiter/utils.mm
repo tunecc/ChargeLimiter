@@ -1014,34 +1014,49 @@ static void ensureAppPathsWithLibroot() {
             NSLog2(@"[CL] CRITICAL: Path resolution failed. appDoc=%@ sharedDataRoot=%@ configRoot=%@",
                    appDoc, sharedDataRoot, configRoot);
             if (getJBType() == JBTYPE_ROOTHIDE) {
-                return;
+                // jbroot() 运行时解析失败（libroothide 缺失/不可用）时，不静默早退，
+                // 改从自身可执行路径推导 .jbroot-XXX/var/mobile/ChargeLimiter 作为共享数据根，
+                // 至少让 daemon 能落日志（aldente.log），否则 NSFileErrorLog 全程静默空转。
+                NSString* exeJbRoot = resolveJbRootFromSelfExe();
+                NSString* exeSharedRoot = exeJbRoot.length > 0
+                    ? [exeJbRoot stringByAppendingPathComponent:@"var/mobile/ChargeLimiter"]
+                    : nil;
+                if (exeSharedRoot.length == 0) {
+                    NSLog2(@"[CL] roothide exe-jbroot fallback failed: exeJbRoot=%@", exeJbRoot ?: @"(nil)");
+                    return;
+                }
+                NSLog2(@"[CL] roothide path fallback via exe jbroot: sharedDataRoot=%@", exeSharedRoot);
+                appDoc = exeSharedRoot;
+                sharedDataRoot = exeSharedRoot;
+                configRoot = exeSharedRoot;
+            } else {
+                // 降级到应用沙盒（仅在极端情况）
+                NSString* fallback = [NSHomeDirectory() stringByAppendingPathComponent:@"Documents"];
+                appDoc = appDoc ?: fallback;
+                sharedDataRoot = sharedDataRoot ?: fallback;
+                configRoot = configRoot ?: fallback;
             }
-            // 降级到应用沙盒（仅在极端情况）
-            NSString* fallback = [NSHomeDirectory() stringByAppendingPathComponent:@"Documents"];
-            appDoc = appDoc ?: fallback;
-            sharedDataRoot = sharedDataRoot ?: fallback;
-            configRoot = configRoot ?: fallback;
+
+            // 创建目录
+            NSFileManager* fm = [NSFileManager defaultManager];
+            [fm createDirectoryAtPath:appDoc withIntermediateDirectories:YES attributes:nil error:nil];
+            [fm createDirectoryAtPath:sharedDataRoot withIntermediateDirectories:YES attributes:nil error:nil];
+            [fm createDirectoryAtPath:configRoot withIntermediateDirectories:YES attributes:nil error:nil];
+
+            // 设置全局变量
+            g_appDocumentsPath = appDoc;
+            g_runtimeDataRootPath = sharedDataRoot;
+            g_logPath = [sharedDataRoot stringByAppendingPathComponent:@LOG_FILENAME];
+            g_confPath = [configRoot stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME];
+            g_dbPath = [sharedDataRoot stringByAppendingPathComponent:@DB_FILENAME];
+
+            NSLog2(@"[CL] Paths initialized (libroot):");
+            NSLog2(@"  Config: %@", g_confPath);
+            NSLog2(@"  Log: %@", g_logPath);
+            NSLog2(@"  DB: %@", g_dbPath);
+
+            cleanupLegacyContainerCacheFilesIfNeeded();
         }
-
-        // 创建目录
-        NSFileManager* fm = [NSFileManager defaultManager];
-        [fm createDirectoryAtPath:appDoc withIntermediateDirectories:YES attributes:nil error:nil];
-        [fm createDirectoryAtPath:sharedDataRoot withIntermediateDirectories:YES attributes:nil error:nil];
-        [fm createDirectoryAtPath:configRoot withIntermediateDirectories:YES attributes:nil error:nil];
-
-        // 设置全局变量
-        g_appDocumentsPath = appDoc;
-        g_runtimeDataRootPath = sharedDataRoot;
-        g_logPath = [sharedDataRoot stringByAppendingPathComponent:@LOG_FILENAME];
-        g_confPath = [configRoot stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME];
-        g_dbPath = [sharedDataRoot stringByAppendingPathComponent:@DB_FILENAME];
-
-        NSLog2(@"[CL] Paths initialized (libroot):");
-        NSLog2(@"  Config: %@", g_confPath);
-        NSLog2(@"  Log: %@", g_logPath);
-        NSLog2(@"  DB: %@", g_dbPath);
-
-        cleanupLegacyContainerCacheFilesIfNeeded();
     }
 }
 
