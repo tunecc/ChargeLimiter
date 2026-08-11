@@ -193,6 +193,9 @@
 "策略诊断" = "Policy Diagnostics";
 "查看" = "View";
 "集中查看策略切换原因、hold 运行时参数和 Smart Charge 接管状态。" = "Inspect policy transition reasons, hold runtime parameters, and Smart Charge takeover state in one place.";
+"日志级别" = "Log Level";
+"标准" = "Normal";
+"仅错误" = "Errors Only";
 "策略运行时" = "Policy Runtime";
 "当前状态原因" = "Current State Reason";
 "最近策略切换时间" = "Last Policy Switch Time";
