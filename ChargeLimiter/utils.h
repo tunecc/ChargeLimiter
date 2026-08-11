@@ -124,6 +124,7 @@ extern "C" int cleanupAppDataContainer_C(void);
 extern "C" NSString* getConfPath_C(void);
 extern "C" NSString* getConfDirPath_C(void);
 extern "C" NSString* getRuntimeDataRootPath_C(void);
+extern "C" NSDictionary* getConfigPersistenceDiagnostics_C(void);
 // Thin C-linkage wrappers for App-side dlsym (utils.mm symbols are C++ mangled).
 extern "C" int getJBType_C(void);
 extern "C" NSString* getSelfExePath_C(void);
