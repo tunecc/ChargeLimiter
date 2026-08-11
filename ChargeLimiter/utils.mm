@@ -21,6 +21,8 @@ static NSString* g_confPath = nil;
 static NSString* g_dbPath = nil;
 static NSString* g_appDocumentsPathOverride = nil;
 static NSString* g_runtimeDataRootPath = nil;
+static NSString* g_pathResolutionSource = @"uninitialized";
+static NSDictionary* g_lastConfigWriteDiagnostics = nil;
 static NSString* const kLegacyContainerCacheFileName = @"com.chargelimiter.mod.containerpath";
 static NSString* const kRoothideDataRoot = @"/var/mobile/ChargeLimiter";
 static NSString* const kRoothideLegacySharedDataRoot = @"/var/mobile/Library/Application Support/ChargeLimiter";
@@ -801,6 +803,7 @@ void setAppDocumentsPathOverride(NSString* docsPath) {
         g_logPath = nil;
         g_confPath = nil;
         g_dbPath = nil;
+        g_pathResolutionSource = @"uninitialized";
     }
     NSLog2(@"[CL] app documents override set: %@", fixed);
 }
@@ -1010,6 +1013,7 @@ static void ensureAppPathsWithLibroot() {
         NSString* sharedDataRoot = getSharedDataRootPathWithLibroot();
         NSString* configRoot = getConfigRootPathWithLibroot();  // config 用 app 数据容器（不依赖 jbroot）
 
+        BOOL usedFallback = NO;
         if (!appDoc || !sharedDataRoot || !configRoot) {
             NSLog2(@"[CL] CRITICAL: Path resolution failed. appDoc=%@ sharedDataRoot=%@ configRoot=%@",
                    appDoc, sharedDataRoot, configRoot);
@@ -1029,34 +1033,50 @@ static void ensureAppPathsWithLibroot() {
                 appDoc = exeSharedRoot;
                 sharedDataRoot = exeSharedRoot;
                 configRoot = exeSharedRoot;
+                usedFallback = YES;
             } else {
                 // 降级到应用沙盒（仅在极端情况）
                 NSString* fallback = [NSHomeDirectory() stringByAppendingPathComponent:@"Documents"];
                 appDoc = appDoc ?: fallback;
                 sharedDataRoot = sharedDataRoot ?: fallback;
                 configRoot = configRoot ?: fallback;
+                usedFallback = YES;
             }
-
-            // 创建目录
-            NSFileManager* fm = [NSFileManager defaultManager];
-            [fm createDirectoryAtPath:appDoc withIntermediateDirectories:YES attributes:nil error:nil];
-            [fm createDirectoryAtPath:sharedDataRoot withIntermediateDirectories:YES attributes:nil error:nil];
-            [fm createDirectoryAtPath:configRoot withIntermediateDirectories:YES attributes:nil error:nil];
-
-            // 设置全局变量
-            g_appDocumentsPath = appDoc;
-            g_runtimeDataRootPath = sharedDataRoot;
-            g_logPath = [sharedDataRoot stringByAppendingPathComponent:@LOG_FILENAME];
-            g_confPath = [configRoot stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME];
-            g_dbPath = [sharedDataRoot stringByAppendingPathComponent:@DB_FILENAME];
-
-            NSLog2(@"[CL] Paths initialized (libroot):");
-            NSLog2(@"  Config: %@", g_confPath);
-            NSLog2(@"  Log: %@", g_logPath);
-            NSLog2(@"  DB: %@", g_dbPath);
-
-            cleanupLegacyContainerCacheFilesIfNeeded();
         }
+
+        // Finalize primary and fallback paths through one exit
+        if (appDoc.length == 0 || sharedDataRoot.length == 0 || configRoot.length == 0) {
+            NSLog2(@"[CL] CRITICAL: Refusing incomplete paths after fallback");
+            return;
+        }
+
+        NSFileManager* fm = [NSFileManager defaultManager];
+        for (NSString* dir in @[appDoc, sharedDataRoot, configRoot]) {
+            NSError* mkdirError = nil;
+            if (![fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:&mkdirError]) {
+                NSLog2(@"[CL] CRITICAL: Path directory create failed path=%@ error=%@", dir, mkdirError);
+                return;
+            }
+        }
+
+        g_appDocumentsPath = appDoc;
+        g_runtimeDataRootPath = sharedDataRoot;
+        g_logPath = [sharedDataRoot stringByAppendingPathComponent:@LOG_FILENAME];
+        g_confPath = [configRoot stringByAppendingPathComponent:@CONFIG_PLIST_FILENAME];
+        g_dbPath = [sharedDataRoot stringByAppendingPathComponent:@DB_FILENAME];
+        if (usedFallback) {
+            g_pathResolutionSource = @"exe-fallback";
+        } else if (getJBType() == JBTYPE_ROOTHIDE) {
+            g_pathResolutionSource = @"libroothide";
+        } else if (getJBType() == JBTYPE_TROLLSTORE) {
+            g_pathResolutionSource = @"sandbox";
+        } else {
+            g_pathResolutionSource = @"libroot";
+        }
+        NSFileErrorLog(@"path_init source=%@ pid=%d uid=%d euid=%d gid=%d egid=%d conf=%@ log=%@ db=%@",
+                       g_pathResolutionSource, getpid(), getuid(), geteuid(), getgid(), getegid(),
+                       g_confPath, g_logPath, g_dbPath);
+        cleanupLegacyContainerCacheFilesIfNeeded();
     }
 }
 
@@ -1324,6 +1344,65 @@ static NSArray<NSString*>* getConfigReadPathsWithLibroot(void) {
 // REFACTOR: 简化的配置读写函数（使用 libroot）
 // ============================================================================
 
+static NSDictionary* configPathMetadata(NSString* path) {
+    NSMutableDictionary* out = [NSMutableDictionary dictionary];
+    out[@"config_path"] = path ?: @"";
+    NSString* parent = path.length > 0 ? path.stringByDeletingLastPathComponent : @"";
+    out[@"config_parent_path"] = parent;
+    out[@"config_parent_writable"] = @(parent.length > 0 && access(parent.fileSystemRepresentation, W_OK) == 0);
+
+    struct stat st = {};
+    if (path.length > 0 && stat(path.fileSystemRepresentation, &st) == 0) {
+        out[@"config_exists"] = @YES;
+        out[@"config_size"] = @(st.st_size);
+        out[@"config_mtime"] = @(st.st_mtime);
+        out[@"config_mode"] = @(st.st_mode & 07777);
+        out[@"config_owner_uid"] = @(st.st_uid);
+        out[@"config_group_gid"] = @(st.st_gid);
+    } else {
+        out[@"config_exists"] = @NO;
+        out[@"config_size"] = @0;
+        out[@"config_mtime"] = @0;
+        out[@"config_mode"] = @(-1);
+        out[@"config_owner_uid"] = @(-1);
+        out[@"config_group_gid"] = @(-1);
+    }
+    return out;
+}
+
+static void recordConfigWriteDiagnostics(NSString* stage, NSError* error, int savedErrno, BOOL verified) {
+    @synchronized(NSFileManager.defaultManager) {
+        g_lastConfigWriteDiagnostics = @{
+            @"last_write_stage": stage ?: @"unknown",
+            @"last_write_error_domain": error.domain ?: @"",
+            @"last_write_error_code": @(error ? error.code : 0),
+            @"last_write_errno": @(savedErrno),
+            @"last_write_verified": @(verified),
+        };
+    }
+}
+
+static BOOL verifyWrittenConfigData(NSString* path, NSError** errorOut) {
+    NSData* data = [NSData dataWithContentsOfFile:path options:0 error:errorOut];
+    if (data.length == 0) {
+        return NO;
+    }
+    NSPropertyListFormat format = NSPropertyListBinaryFormat_v1_0;
+    id plist = [NSPropertyListSerialization propertyListWithData:data
+                                                         options:NSPropertyListImmutable
+                                                          format:&format
+                                                           error:errorOut];
+    if ([plist isKindOfClass:[NSDictionary class]]) {
+        return YES;
+    }
+    if (errorOut && *errorOut == nil) {
+        *errorOut = [NSError errorWithDomain:@"ChargeLimiter"
+                                        code:-3
+                                    userInfo:@{NSLocalizedDescriptionKey: @"Written config is not a dictionary plist"}];
+    }
+    return NO;
+}
+
 /**
  * 写入配置数据到磁盘（新实现 - 单一路径）
  *
@@ -1331,23 +1410,26 @@ static NSArray<NSString*>* getConfigReadPathsWithLibroot(void) {
  * 当前路径初始化已按越狱类型解析，所以不需要多次写入尝试。
  */
 static BOOL writeConfigDataToDiskWithLibroot(NSData* plistData, NSString** pathOut, NSError** errorOut) {
+    if (pathOut) {
+        *pathOut = nil;
+    }
     if (!plistData || plistData.length == 0) {
-        if (errorOut) {
-            *errorOut = [NSError errorWithDomain:@"ChargeLimiter"
-                                            code:-1
-                                        userInfo:@{NSLocalizedDescriptionKey: @"Empty plist data"}];
-        }
+        NSError* error = [NSError errorWithDomain:@"ChargeLimiter"
+                                             code:-1
+                                         userInfo:@{NSLocalizedDescriptionKey: @"Empty plist data"}];
+        recordConfigWriteDiagnostics(@"write_failed", error, 0, NO);
+        if (errorOut) *errorOut = error;
         return NO;
     }
 
     NSString* confPath = getConfigWritePathWithLibroot();
     if (!confPath || confPath.length == 0) {
         NSLog2(@"[CL] ERROR: Failed to get config write path");
-        if (errorOut) {
-            *errorOut = [NSError errorWithDomain:@"ChargeLimiter"
-                                            code:-2
-                                        userInfo:@{NSLocalizedDescriptionKey: @"Invalid config path"}];
-        }
+        NSError* error = [NSError errorWithDomain:@"ChargeLimiter"
+                                             code:-2
+                                         userInfo:@{NSLocalizedDescriptionKey: @"Invalid config path"}];
+        recordConfigWriteDiagnostics(@"invalid_path", error, 0, NO);
+        if (errorOut) *errorOut = error;
         return NO;
     }
 
@@ -1358,31 +1440,71 @@ static BOOL writeConfigDataToDiskWithLibroot(NSData* plistData, NSString** pathO
 
     if (![fm createDirectoryAtPath:parent withIntermediateDirectories:YES attributes:nil error:&mkdirError]) {
         NSLog2(@"[CL] ERROR: Failed to create directory %@: %@", parent, mkdirError);
-        if (errorOut) {
-            *errorOut = mkdirError;
-        }
+        recordConfigWriteDiagnostics(@"mkdir_failed", mkdirError, errno, NO);
+        if (errorOut) *errorOut = mkdirError;
         return NO;
     }
 
     // 原子写入
     NSError* writeError = nil;
     if ([plistData writeToFile:confPath options:NSDataWritingAtomic error:&writeError]) {
-        NSLog2(@"[CL] Config written successfully: %@ (%lu bytes)", confPath, (unsigned long)plistData.length);
-        if (pathOut) {
-            *pathOut = confPath;
+        NSError* verifyError = nil;
+        if (verifyWrittenConfigData(confPath, &verifyError)) {
+            recordConfigWriteDiagnostics(@"atomic_verified", nil, 0, YES);
+            NSLog2(@"[CL] Config written successfully: %@ (%lu bytes)", confPath, (unsigned long)plistData.length);
+            if (pathOut) *pathOut = confPath;
+            return YES;
         }
-        return YES;
+        recordConfigWriteDiagnostics(@"verify_failed", verifyError, errno, NO);
+        if (errorOut) *errorOut = verifyError;
+        return NO;
     }
 
-    // 写入失败
-    NSLog2(@"[CL] ERROR: Failed to write config to %@: %@", confPath, writeError);
-    if (pathOut) {
-        *pathOut = nil;
+    // 原子写失败（roothide 的 .jbroot FUSE 文件系统上 rename/临时文件可能受限），
+    // 降级为非原子直接写。记录原始 errno 供诊断。
+    int atomicErrno = errno;
+    if (writeError != nil) {
+        NSLog2(@"[CL] ERROR: Atomic config write failed to %@: %@ (code=%ld)", confPath, writeError,
+               (long)writeError.code);
+    } else {
+        NSLog2(@"[CL] ERROR: Atomic config write failed to %@ errno=%d", confPath, atomicErrno);
     }
-    if (errorOut) {
-        *errorOut = writeError;
+
+    NSError* directError = nil;
+    if ([plistData writeToFile:confPath options:NSDataWritingFileProtectionNone error:&directError]) {
+        NSError* verifyError = nil;
+        if (verifyWrittenConfigData(confPath, &verifyError)) {
+            recordConfigWriteDiagnostics(@"direct_verified", writeError, atomicErrno, YES);
+            NSLog2(@"[CL] Config written via non-atomic fallback: %@ (%lu bytes) [atomic_errno=%d]",
+                   confPath, (unsigned long)plistData.length, atomicErrno);
+            if (pathOut) *pathOut = confPath;
+            return YES;
+        }
+        recordConfigWriteDiagnostics(@"verify_failed", verifyError, errno, NO);
+        if (errorOut) *errorOut = verifyError;
+        return NO;
     }
+
+    NSLog2(@"[CL] ERROR: Config write failed (atomic+direct) to %@: %@", confPath,
+           directError ?: (writeError ?: @"unknown"));
+    recordConfigWriteDiagnostics(@"write_failed", directError ?: writeError, errno, NO);
+    if (errorOut) *errorOut = directError ?: writeError;
     return NO;
+}
+
+extern "C" NSDictionary* getConfigPersistenceDiagnostics_C(void) {
+    NSMutableDictionary* out = [configPathMetadata(getConfPath()) mutableCopy];
+    out[@"path_resolution_source"] = g_pathResolutionSource ?: @"uninitialized";
+    @synchronized(NSFileManager.defaultManager) {
+        [out addEntriesFromDictionary:g_lastConfigWriteDiagnostics ?: @{
+            @"last_write_stage": @"never",
+            @"last_write_error_domain": @"",
+            @"last_write_error_code": @0,
+            @"last_write_errno": @0,
+            @"last_write_verified": @NO,
+        }];
+    }
+    return out;
 }
 
 /**
@@ -2753,7 +2875,28 @@ static void NSFileLogWithArguments(NSString* fmt, va_list va) {
     content = [NSString stringWithFormat:@"%@ %@\n", dateStr, content];
     NSString* logPath = getLogPath();
     if (logPath.length == 0) {
-        return;
+        // 路径解析失败时必须能落日志（否则 NSFileErrorLog 全程静默，诊断无据）。
+        // 用硬编码候选路径兜底；至少一处可写。
+        NSArray<NSString*>* fallbackCandidates = @[
+            @"/var/mobile/ChargeLimiter/aldente.log",
+            @"/private/var/mobile/ChargeLimiter/aldente.log",
+            @"/tmp/aldente.log",
+        ];
+        for (NSString* candidate in fallbackCandidates) {
+            NSString* parent = [candidate stringByDeletingLastPathComponent];
+            NSFileManager* fm0 = [NSFileManager defaultManager];
+            if ([fm0 createDirectoryAtPath:parent withIntermediateDirectories:YES attributes:nil error:nil]) {
+                if ([fm0 createFileAtPath:candidate contents:nil attributes:nil]) {
+                    logPath = candidate;
+                    NSLog2(@"[CL] log fallback: resolved path nil -> %@", candidate);
+                    break;
+                }
+            }
+        }
+        if (logPath.length == 0) {
+            NSLog2(@"[CL] FATAL: no writable log path, drop line: %@", content);
+            return;
+        }
     }
     static const unsigned long long kMaxFileLogBytes = 256 * 1024;
     NSFileManager* fm = [NSFileManager defaultManager];
