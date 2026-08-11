@@ -2626,7 +2626,9 @@ extern "C" int restartDaemonForApp_C(NSString* appDocs) {
     int jbType = getJBType();
     int spawnFlags = SPAWN_FLAG_NOWAIT;
     BOOL triedRoot = NO;
-    if (jbType != JBTYPE_TROLLSTORE) {
+    // relaxin/roothide: root persona spawn 子进程 exec 失败 exit 126；
+    // daemon 有 setuid +s 位 + platformize_me() 提权，无需 root persona。
+    if (jbType != JBTYPE_TROLLSTORE && jbType != JBTYPE_ROOTHIDE) {
         spawnFlags |= SPAWN_FLAG_ROOT;
         triedRoot = YES;
     }
@@ -2896,7 +2898,7 @@ extern "C" NSDictionary* clRepairDaemonForApp_C(void) {
     }
 
     int jbType = getJBType();
-    int rootFlags = (jbType != JBTYPE_TROLLSTORE) ? SPAWN_FLAG_ROOT : 0;
+    int rootFlags = (jbType != JBTYPE_TROLLSTORE && jbType != JBTYPE_ROOTHIDE) ? SPAWN_FLAG_ROOT : 0;
 
     NSString* jbRoot = CLDaemonJbRootPath();
     NSMutableArray* launchctlCandidates = [NSMutableArray arrayWithObjects:
