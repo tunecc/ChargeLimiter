@@ -4450,8 +4450,6 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     [presenter presentViewController:alert animated:YES completion:nil];
 }
 
-static const NSInteger kLogLevelPickerTag = 316;
-
 @interface CLSoftwareSettingsViewController : UIViewController
 @end
 
@@ -4472,6 +4470,9 @@ static const NSInteger kLogLevelPickerTag = 316;
 - (void)syncDaemonLanguageWithAppLanguage:(CLAppLanguage)language;
 - (void)promptLegacyResidualCleanupWithPaths:(NSArray<NSString *> *)paths completion:(dispatch_block_t)completion;
 - (void)showLegacyResidualCleanupResult:(NSDictionary *)result;
+- (NSString *)softwareLogLevelText;
+- (void)softwareLogLevelTapped:(UITapGestureRecognizer *)tap;
+- (void)softwarePolicyDiagnosticsTapped;
 @end
 
 @implementation CLSoftwareSettingsViewController
@@ -4482,6 +4483,11 @@ static const NSInteger kLogLevelPickerTag = 316;
     self.title = CLL(@"软件设置");
     self.view.backgroundColor = [UIColor systemGroupedBackgroundColor];
     [self setupUI];
+    // 日志级别：旧版本未设置时默认 normal
+    NSString *logLevel = getlocalKV_C(@"log_level");
+    if (!logLevel || logLevel.length == 0) {
+        [[CLAPIClient shared] setConfigWithKey:@"log_level" value:@"normal" completion:nil];
+    }
     [self syncDaemonLanguageWithAppLanguage:CLGetAppLanguage()];
     
     [[NSNotificationCenter defaultCenter] addObserver:self
@@ -4557,10 +4563,10 @@ static const NSInteger kLogLevelPickerTag = 316;
     [self.settingsCard addSeparator];
     [self.settingsCard addNavigationRowWithIcon:@"tag.fill" title:CLL(@"停充预设") value:[self chargeAbovePresetValueLabel] color:CLStopChargePresetAccentColor() target:self action:@selector(stopChargePresetTapped)];
     [self.settingsCard addSeparator];
-    [self.settingsCard addSeparator];
     [self.settingsCard addNavigationRowWithIcon:@"waveform.path.ecg" title:CLL(@"策略诊断") value:CLL(@"查看") color:[UIColor systemTealColor] target:self action:@selector(softwarePolicyDiagnosticsTapped)];
     [self.settingsCard addSeparator];
     [self.settingsCard addNavigationRowWithIcon:@"doc.text" title:CLL(@"日志级别") value:self.softwareLogLevelText color:[UIColor systemPurpleColor] target:self action:@selector(softwareLogLevelTapped:)];
+    [self.settingsCard addSeparator];
     [self.settingsCard.contentStack addArrangedSubview:[self buildHapticRow]];
     [self.settingsCard addSeparator];
     [self.settingsCard.contentStack addArrangedSubview:[self buildHapticDetailRow]];
