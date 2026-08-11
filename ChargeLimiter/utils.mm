@@ -2891,28 +2891,8 @@ static void NSFileLogWithArguments(CLFileLogSeverity sev, NSString* fmt, va_list
     content = [NSString stringWithFormat:@"%@ %@\n", dateStr, content];
     NSString* logPath = getLogPath();
     if (logPath.length == 0) {
-        // 路径解析失败时必须能落日志（否则 NSFileErrorLog 全程静默，诊断无据）。
-        // 用硬编码候选路径兜底；至少一处可写。
-        NSArray<NSString*>* fallbackCandidates = @[
-            @"/var/mobile/ChargeLimiter/aldente.log",
-            @"/private/var/mobile/ChargeLimiter/aldente.log",
-            @"/tmp/aldente.log",
-        ];
-        for (NSString* candidate in fallbackCandidates) {
-            NSString* parent = [candidate stringByDeletingLastPathComponent];
-            NSFileManager* fm0 = [NSFileManager defaultManager];
-            if ([fm0 createDirectoryAtPath:parent withIntermediateDirectories:YES attributes:nil error:nil]) {
-                if ([fm0 createFileAtPath:candidate contents:nil attributes:nil]) {
-                    logPath = candidate;
-                    NSLog2(@"[CL] log fallback: resolved path nil -> %@", candidate);
-                    break;
-                }
-            }
-        }
-        if (logPath.length == 0) {
-            NSLog2(@"[CL] FATAL: no writable log path, drop line: %@", content);
-            return;
-        }
+        NSLog2(@"[CL] FATAL: no writable log path, drop line: %@", content);
+        return;
     }
     static const unsigned long long kMaxFileLogBytes = 256 * 1024;
     NSFileManager* fm = [NSFileManager defaultManager];

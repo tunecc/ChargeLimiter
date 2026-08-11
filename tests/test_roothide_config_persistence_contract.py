@@ -41,6 +41,16 @@ class ConfigPersistenceContractTests(unittest.TestCase):
         self.assertLess(failure_branch, finalization)
         self.assertLess(finalization, assignment)
 
+    def test_file_log_does_not_guess_path_when_resolution_fails(self):
+        body = function_body(self.utils_mm, "static void NSFileLogWithArguments(")
+        unresolved_branch = body[body.index("if (logPath.length == 0)"):body.index("static const unsigned long long")]
+        self.assertNotIn("fallbackCandidates", unresolved_branch)
+        self.assertNotIn('@"/var/mobile/', unresolved_branch)
+        self.assertNotIn('@"/private/var/mobile/', unresolved_branch)
+        self.assertNotIn('@"/tmp/', unresolved_branch)
+        self.assertIn("FATAL: no writable log path", unresolved_branch)
+        self.assertIn("return;", unresolved_branch)
+
     def test_direct_write_is_verified_before_success(self):
         signature = "static BOOL writeConfigDataToDiskWithLibroot(NSData* plistData, NSString** pathOut, NSError** errorOut) {"
         body = function_body(self.utils_mm, signature)
