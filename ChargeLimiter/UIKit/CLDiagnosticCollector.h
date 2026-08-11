@@ -70,11 +70,41 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy) NSString *startupError;
 @end
 
+@interface CLDiagConfigPersistence : NSObject
+@property (nonatomic, copy) NSString *appPath;
+@property (nonatomic, copy) NSString *daemonPath;
+@property (nonatomic, assign) BOOL sameCanonicalPath;
+@property (nonatomic, assign) BOOL appExists;
+@property (nonatomic, assign) BOOL daemonExists;
+@property (nonatomic, assign) BOOL appParentWritable;
+@property (nonatomic, assign) BOOL daemonParentWritable;
+@property (nonatomic, assign) NSInteger appMode;
+@property (nonatomic, assign) NSInteger daemonMode;
+@property (nonatomic, assign) NSInteger appOwnerUID;
+@property (nonatomic, assign) NSInteger appGroupGID;
+@property (nonatomic, assign) NSInteger daemonOwnerUID;
+@property (nonatomic, assign) NSInteger daemonGroupGID;
+@property (nonatomic, assign) long long appSize;
+@property (nonatomic, assign) long long daemonSize;
+@property (nonatomic, assign) NSTimeInterval appModificationTime;
+@property (nonatomic, assign) NSTimeInterval daemonModificationTime;
+@property (nonatomic, copy) NSString *pathResolutionSource;
+@property (nonatomic, copy) NSString *lastWriteStage;
+@property (nonatomic, copy) NSString *lastWriteErrorDomain;
+@property (nonatomic, assign) NSInteger lastWriteErrorCode;
+@property (nonatomic, assign) NSInteger lastWriteErrno;
+@property (nonatomic, assign) BOOL lastWriteVerified;
+@property (nonatomic, assign) NSInteger daemonLoadedKeyCount;
+@property (nonatomic, copy) NSString *daemonReloadState;
+@property (nonatomic, assign) BOOL daemonLastReloadOK;
+@end
+
 @interface CLDiagnosticReport : NSObject
 @property (nonatomic, strong) CLDiagEnvironment *environment;
 @property (nonatomic, strong) CLDiagConnectivity *connectivity;
 @property (nonatomic, strong) CLDiagBatteryProbe *batteryProbe;
 @property (nonatomic, strong) CLDiagDaemonLink *daemonLink; // 离线时才填充
+@property (nonatomic, strong) CLDiagConfigPersistence *configPersistence;
 @property (nonatomic, copy, nullable) NSString *policySummaryText;
 @property (nonatomic, copy, nullable) NSString *probeSummaryText;
 @property (nonatomic, copy, nullable) NSString *repairSummaryText; // 最近一次「修复 daemon 启动」结果摘要
