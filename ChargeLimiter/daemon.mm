@@ -3830,8 +3830,13 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             @"config_path": reloadPath ?: @"",
         };
         g_lastConfigReloadDiagnostics = reloadResult;
-        NSFileInfoLog(@"config_reload ok=%d key_count=%lu",
-                       reloadOK, (unsigned long)loadedKeyCount);
+        if (reloadOK) {
+            NSFileInfoLog(@"config_reload ok=1 key_count=%lu",
+                          (unsigned long)loadedKeyCount);
+        } else {
+            NSFileErrorLog(@"config_reload failed key_count=%lu path=%@",
+                           (unsigned long)loadedKeyCount, reloadPath ?: @"(nil)");
+        }
         return @{
             @"status": reloadOK ? @0 : @1,
             @"data": @{ @"config_reload": reloadResult },
