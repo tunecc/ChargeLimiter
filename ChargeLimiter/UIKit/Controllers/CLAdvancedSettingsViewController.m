@@ -561,7 +561,6 @@ static const NSInteger CLAdvHoldTempDisableSmartChargeTag = 312;
 static const NSInteger CLAdvDisableSmartChargeTag = 311;
 static const NSInteger CLAdvHoldModeBandTag = 305;
 static const NSInteger CLAdvHoldModeBehaviorTag = 313;
-static const NSInteger kLogLevelPickerTag = 316;
 
 #pragma mark - 策略诊断控制器
 
@@ -1978,14 +1977,6 @@ static const NSInteger kLogLevelPickerTag = 316;
     [self addTipRowToCard:scheduleCard text:CLL(@"让设备每隔几天在指定时间暂时解除电量上限；温度控制仍会保留。")];
     [self.mainStack addArrangedSubview:scheduleCard];
 
-    CLAdvSettingsCard *diagnosticsCard = [[CLAdvSettingsCard alloc] init];
-    [diagnosticsCard addSectionHeader:CLL(@"调试与观测")];
-    [diagnosticsCard addPickerRowWithIcon:@"waveform.path.ecg" title:CLL(@"策略诊断") value:CLL(@"查看") color:[UIColor systemTealColor] tag:314 target:self action:@selector(policyDiagnosticsTapped)];
-    [diagnosticsCard addSeparator];
-    [diagnosticsCard addPickerRowWithIcon:@"doc.text" title:CLL(@"日志级别") value:self.logLevelText color:[UIColor systemTealColor] tag:kLogLevelPickerTag target:self action:@selector(logLevelTapped:)];
-    [self addTipRowToCard:diagnosticsCard text:CLL(@"集中查看策略切换原因、hold 运行时参数和 Smart Charge 接管状态。")];
-    [self.mainStack addArrangedSubview:diagnosticsCard];
-    
     // 重置按钮
     UIButton *resetButton = [UIButton buttonWithType:UIButtonTypeSystem];
     resetButton.translatesAutoresizingMaskIntoConstraints = NO;
@@ -2073,14 +2064,6 @@ static const NSInteger kLogLevelPickerTag = 316;
     return [NSString stringWithFormat:CLL(@"%ld 小时"), (long)durationHours];
 }
 
-- (NSString *)logLevelText {
-    NSString *level = getlocalKV_C(@"log_level");
-    if ([level isEqualToString:@"error"]) {
-        return CLL(@"仅错误");
-    }
-    return CLL(@"标准");
-}
-
 - (void)reloadContentRows {
     [self.mainStack.arrangedSubviews makeObjectsPerformSelector:@selector(removeFromSuperview)];
     [self setupContent];
@@ -2123,11 +2106,6 @@ static const NSInteger kLogLevelPickerTag = 316;
         UIViewController *vc = [[vcClass alloc] init];
         [self.navigationController pushViewController:vc animated:YES];
     }
-}
-
-- (void)policyDiagnosticsTapped {
-    CLPolicyDiagnosticsViewController *vc = [[CLPolicyDiagnosticsViewController alloc] init];
-    [self.navigationController pushViewController:vc animated:YES];
 }
 
 - (void)smartChargeChanged:(UISwitch *)sender {
@@ -2322,28 +2300,6 @@ static const NSInteger kLogLevelPickerTag = 316;
         [alert addAction:action];
     }
     
-    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"取消") style:UIAlertActionStyleCancel handler:nil]];
-    [self presentViewController:alert animated:YES completion:nil];
-}
-
-- (void)logLevelTapped:(UITapGestureRecognizer *)tap {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"日志级别") message:nil preferredStyle:UIAlertControllerStyleAlert];
-
-    __weak typeof(self) weakSelf = self;
-    UIAlertAction *normalAction = [UIAlertAction actionWithTitle:CLL(@"标准") style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        [[CLAPIClient shared] setConfigWithKey:@"log_level" value:@"normal" completion:^(NSDictionary * _Nullable res, NSError * _Nullable err) {
-            [weakSelf reloadContentRows];
-        }];
-    }];
-    [alert addAction:normalAction];
-
-    UIAlertAction *errorAction = [UIAlertAction actionWithTitle:CLL(@"仅错误") style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        [[CLAPIClient shared] setConfigWithKey:@"log_level" value:@"error" completion:^(NSDictionary * _Nullable res, NSError * _Nullable err) {
-            [weakSelf reloadContentRows];
-        }];
-    }];
-    [alert addAction:errorAction];
-
     [alert addAction:[UIAlertAction actionWithTitle:CLL(@"取消") style:UIAlertActionStyleCancel handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];
 }
