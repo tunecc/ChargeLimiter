@@ -6,6 +6,29 @@
 
 写法参考了 Keep a Changelog 和一些成熟项目常见的结构：每个版本先说明主线，再按少量分类列出用户真正会感知到的变化，尽量详细，但不写成长文。
 
+## v1.15.0 - 2026-08-11
+
+本版两个主线：① **正式适配 relaxin 越狱（原生 roothide）**——此前部分 relaxin 设备「装好即 daemon 离线」（启动 126）、设置保存后重启丢失；本版修复 daemon 启动链路、配置持久化与 jbroot 路径兜底，并加固安装/卸载生命周期，relaxin 用户安装后即可开箱即用。② **可配置日志级别与设置入口重组**——新增「日志级别」（标准 / 仅错误），只过滤 `aldente.log` 文件输出，保留系统日志与完整诊断报告；「调试与观测」从充电高级设置移入软件设置，拆成「策略诊断 / 日志级别」两个入口。
+
+### Added
+
+- **新增「日志级别」设置**（软件设置 → 日志级别）：标准（默认）/ 仅错误两档，只过滤 `aldente.log` 文件输出，`NSLog2`/`os_log` 系统日志与完整诊断报告不受影响。
+- **「策略诊断 / 日志级别」入口移入软件设置**：「调试与观测」卡片从充电高级设置移除，改为软件设置下的「策略诊断」「日志级别」两个入口。
+
+### Fixed
+
+- **修复首页「停充预设 / 设为当前」改语言后消失**：改语言重建界面后按钮未在新行上重建，现重建时先清空旧按钮引用。
+- **修复 relaxin roothide 下 daemon 装好即离线（启动 126）**：launchd system 域在 rootfs 命名空间看不到 `/Applications` 逻辑路径，bootstrap 返回成功但 daemon 永不 exec；现 postinst 用 `jbroot` 命令把 plist `Program`/`ProgramArguments` 换成 `.jbroot-XXX` 真实路径并清理 system / user / foreground 域残留，App spawn 不再带 root persona（daemon 自身 setuid +s 提权）。
+- **修复 roothide 下 `jbroot()` 路径解析失败时日志静默空转**：不再静默早退，退用自身可执行路径推导 `.jbroot-XXX` fallback，`aldente.log` 与离线诊断在异常环境下也能正常落盘。
+- **修复 roothide 配置保存后丢失**：恢复配置路径初始化，并新增配置持久化链路诊断上报，relaxin 下设置不再静默丢失。
+- **修复 `config_reload` 失败在「仅错误」模式下被静默丢弃**：失败改以 error 级别落盘，成功保持 info。
+- **加固 Relaxin 安装与生命周期**：安装时严格解析并校验 daemon 真实路径，plist 或 launchctl 失败即中止；daemon 启动后自愈 LaunchDaemon 持久化路径；URL Scheme 避开 root persona；卸载时在 daemon 清理失败后安全删除已验证的 jbroot 数据目录。
+
+### Notes
+
+- **本版正式适配 relaxin（原生 roothide）**：relaxin 设备安装后 daemon 即可正常启动、设置修改重启不丢失；建议回归 安装 → 重启 → 卸载。
+- 「仅错误」模式下 `aldente.log` 只写 error 级；系统日志与诊断报告不受影响。
+
 ## v1.14.2 - 2026-08-09
 
 本版两个主线：① 修复 daemon 在运行约半小时后崩溃（EXC_BAD_ACCESS / Segmentation fault），根因是全局 sqlite 句柄被多个线程无锁共用：http 并发队列读统计 + battery 事件写 + `reload_conf`/`app_docs` 切换关重开同一连接互相踩踏，一个线程释放连接后，另一线程在 SQL 解析/执行时读到被字符串覆写的悬垂指针，现所有 sqlite 访问统一走同一把可重入锁，HTTP 请求处理改为串行队列，并新增可复现崩溃的最小回归测试与 CI 门禁防止回潮；② 修复「永久停用系统优化充电」后无法恢复（见下方 Fixed），补齐重新打开系统的路径与 daemon 启动自愈。
