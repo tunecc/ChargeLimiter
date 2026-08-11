@@ -4,15 +4,19 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 U = REPO / "ChargeLimiter" / "utils.mm"
+U_H = REPO / "ChargeLimiter" / "utils.h"
 SERVER = REPO / "ChargeLimiter" / "CLSimpleHTTPServer.m"
 DAEMON = REPO / "ChargeLimiter" / "daemon.mm"
+UI = REPO / "ChargeLimiter" / "ui.mm"
 
 
 class DaemonLinkBridgeTests(unittest.TestCase):
     def setUp(self):
         self.u = U.read_text(encoding="utf-8") if U.exists() else ""
+        self.u_h = U_H.read_text(encoding="utf-8") if U_H.exists() else ""
         self.server = SERVER.read_text(encoding="utf-8") if SERVER.exists() else ""
         self.daemon = DAEMON.read_text(encoding="utf-8") if DAEMON.exists() else ""
+        self.ui = UI.read_text(encoding="utf-8") if UI.exists() else ""
 
     def test_log_path_export(self):
         self.assertIn("getLogPath_C", self.u)
@@ -128,6 +132,50 @@ class DaemonLinkBridgeTests(unittest.TestCase):
         self.assertIn("memlimit_rc", self.daemon)
         self.assertIn("csops_rc", self.daemon)
         self.assertIn("csflags", self.daemon)
+
+    def test_roothide_launchdaemon_plist_self_heal_contract(self):
+        self.assertIn("CLRepairRoothideLaunchDaemonPlist", self.u_h)
+        start = self.u.find("int CLRepairRoothideLaunchDaemonPlist(void)")
+        end = self.u.find("static NSString* resolveRoothidePathByAPI", start)
+        body = self.u[start:end] if start >= 0 and end > start else ""
+        self.assertTrue(body)
+        for token in (
+            "JBTYPE_ROOTHIDE",
+            "geteuid()",
+            "resolveJbRootFromSelfExe()",
+            '@"/Applications/ChargeLimiter.app/ChargeLimiterDaemon"',
+            '@"Library/LaunchDaemons/com.chargelimiter.mod.plist"',
+            "NSPropertyListSerialization",
+            '@"Program"',
+            '@"ProgramArguments"',
+            "isKindOfClass:[NSString class]",
+            "isKindOfClass:[NSArray class]",
+            "chown(",
+            "chmod(",
+        ):
+            self.assertIn(token, body)
+
+    def test_daemon_repairs_roothide_plist_after_platformize_before_serve(self):
+        main_start = self.daemon.find("int main(int argc, char** argv) { // daemon_main")
+        main = self.daemon[main_start:] if main_start >= 0 else ""
+        platformize = main.find("platformize_me()")
+        repair = main.find("CLRepairRoothideLaunchDaemonPlist()")
+        serve = main.find("[Service.inst serve]")
+        self.assertGreaterEqual(platformize, 0)
+        self.assertGreater(repair, platformize)
+        self.assertGreater(serve, repair)
+
+    def test_url_scheme_charge_commands_use_daemon_run(self):
+        self.assertIn('daemonRun(@[@"set_charge", @"1"]);', self.ui)
+        self.assertIn('daemonRun(@[@"set_charge", @"0"]);', self.ui)
+
+    def test_daemon_run_avoids_root_persona_on_roothide(self):
+        start = self.ui.find("void daemonRun(NSArray* argv)")
+        end = self.ui.find("static void start_daemon()", start)
+        body = self.ui[start:end] if start >= 0 and end > start else ""
+        self.assertIn("g_jbtype != JBTYPE_TROLLSTORE", body)
+        self.assertIn("g_jbtype != JBTYPE_ROOTHIDE", body)
+        self.assertIn("spawnFlags |= SPAWN_FLAG_ROOT", body)
 
     def test_daemon_file_log_avoids_raw_executable_path(self):
         self.assertNotIn(" exe=%@", self.daemon)
