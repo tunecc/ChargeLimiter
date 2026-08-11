@@ -10,6 +10,11 @@ CACHE="/var/mobile/Library/Preferences/com.chargelimiter.mod.containerpath"
 # /var/mobile/ChargeLimiter 按 jbroot 逻辑路径书写即可（不要写成 /rootfs/...）。
 DATA_DIR="/var/mobile/ChargeLimiter"
 
+fail_install() {
+    echo "ChargeLimiter postinst: $*" >&2
+    exit 1
+}
+
 repair_shared_data_permissions() {
     if [ -d "$DATA_DIR" ]; then
         chown mobile:mobile "$DATA_DIR"
@@ -38,18 +43,28 @@ chown root:wheel "$DAEMON_PLIST"
 # 否则 bootstrap 成功但 daemon 永不 exec。
 DAEMON_BIN="$APP_DIR/ChargeLimiterDaemon"
 REAL_DAEMON=""
-if command -v jbroot >/dev/null 2>&1; then
-    REAL_DAEMON="$(jbroot "$DAEMON_BIN" 2>/dev/null)"
-fi
-if [ -n "$REAL_DAEMON" ] && [ -x "$REAL_DAEMON" ]; then
-    plutil -replace Program -string "$REAL_DAEMON" "$DAEMON_PLIST" 2>/dev/null
-    plutil -replace ProgramArguments -json "[ \"$REAL_DAEMON\" ]" "$DAEMON_PLIST" 2>/dev/null
-fi
+command -v jbroot >/dev/null 2>&1 || fail_install "jbroot command is unavailable"
+REAL_DAEMON="$(jbroot "$DAEMON_BIN" 2>/dev/null)" || \
+    fail_install "jbroot failed to resolve $DAEMON_BIN"
+
+case "$REAL_DAEMON" in
+    */.jbroot-*/Applications/ChargeLimiter.app/ChargeLimiterDaemon) ;;
+    *) fail_install "invalid daemon path resolved by jbroot: ${REAL_DAEMON:-<empty>}" ;;
+esac
+[ -x "$REAL_DAEMON" ] || fail_install "resolved daemon is not executable: $REAL_DAEMON"
+
+plutil -replace Program -string "$REAL_DAEMON" "$DAEMON_PLIST" 2>/dev/null || \
+    fail_install "failed to update Program in daemon plist"
+plutil -replace ProgramArguments.0 -string "$REAL_DAEMON" "$DAEMON_PLIST" 2>/dev/null || \
+    fail_install "failed to update ProgramArguments in daemon plist"
 
 # 清理新旧域的可能残留
 launchctl bootout system "$DAEMON_PLIST" 2>/dev/null
 launchctl bootout user/foreground "$DAEMON_PLIST" 2>/dev/null
-launchctl bootstrap system "$DAEMON_PLIST" 2>/dev/null || launchctl load "$DAEMON_PLIST" 2>/dev/null
+if ! launchctl bootstrap system "$DAEMON_PLIST" 2>/dev/null; then
+    launchctl load "$DAEMON_PLIST" 2>/dev/null || \
+        fail_install "launchctl failed to load daemon plist"
+fi
 
 uicache -p "$APP_DIR" 2>/dev/null
 

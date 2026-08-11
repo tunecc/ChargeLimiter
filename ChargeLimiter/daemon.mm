@@ -4383,14 +4383,13 @@ int main(int argc, char** argv) { // daemon_main
                            getpid(), getppid(), getuid(), geteuid(), getgid(), getegid(),
                            entryCSOpsRc, entryCSOpsErrno, entryCSFlags,
                            g_jbtype, argIndex > 1 ? 1 : 0);
-            // 路径解析诊断：daemon 实际把日志/配置/数据库写到哪（App 侧可能不同，用于对比定位）
+            // 路径解析诊断：记录数据文件落点，不暴露包含 jbroot UUID 的可执行路径。
             @try {
                 NSString* dLogPath = getLogPath();
                 NSString* dConfPath = getConfPath();
                 NSString* dDbPath = getDbPath();
                 NSString* dDataRoot = getRuntimeDataRootPath();
-                NSLog2(@"daemon_paths exe=%@ log=%@ conf=%@ db=%@ dataRoot=%@",
-                               getSelfExePath() ?: @"(nil)",
+                NSLog2(@"daemon_paths log=%@ conf=%@ db=%@ dataRoot=%@",
                                dLogPath ?: @"(nil)",
                                dConfPath ?: @"(nil)",
                                dDbPath ?: @"(nil)",
@@ -4400,6 +4399,7 @@ int main(int argc, char** argv) { // daemon_main
             }
             int platformizeRc = -999;
             int memlimitRc = -999;
+            int launchPlistRepairRc = 0;
             if (g_jbtype == JBTYPE_TROLLSTORE) {
                 signal(SIGHUP, SIG_IGN);
                 signal(SIGTERM, SIG_IGN); // 防止App被Kill以后daemon退出
@@ -4407,12 +4407,13 @@ int main(int argc, char** argv) { // daemon_main
                 platformizeRc = platformize_me(); // for jailbreak
                 memlimitRc = set_mem_limit(getpid(), 80);
             }
+            launchPlistRepairRc = CLRepairRoothideLaunchDaemonPlist();
             uint32_t privilegeCSFlags = 0;
             errno = 0;
             int privilegeCSOpsRc = csops(getpid(), kCLCSOpsStatus, &privilegeCSFlags, sizeof(privilegeCSFlags));
             int privilegeCSOpsErrno = privilegeCSOpsRc == 0 ? 0 : errno;
-            NSLog2(@"daemon_privilege platformize_rc=%d memlimit_rc=%d pid=%d uid=%d euid=%d gid=%d egid=%d csops_rc=%d csops_errno=%d csflags=0x%08x",
-                           platformizeRc, memlimitRc, getpid(), getuid(), geteuid(), getgid(), getegid(),
+            NSLog2(@"daemon_privilege platformize_rc=%d memlimit_rc=%d launch_plist_repair_rc=%d pid=%d uid=%d euid=%d gid=%d egid=%d csops_rc=%d csops_errno=%d csflags=0x%08x",
+                           platformizeRc, memlimitRc, launchPlistRepairRc, getpid(), getuid(), geteuid(), getgid(), getegid(),
                            privilegeCSOpsRc, privilegeCSOpsErrno, privilegeCSFlags);
             [Service.inst serve];
             atexit_b(^{

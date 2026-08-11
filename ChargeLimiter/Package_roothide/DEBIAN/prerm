@@ -20,7 +20,44 @@ should_cleanup_data() {
 }
 
 warn_manual_cleanup() {
-    printf '\033[31m[ChargeLimiter] Failed to remove app data container automatically. Please remove it manually from your file manager.\033[0m\n' >&2
+    printf '[ChargeLimiter] Failed to remove shared data automatically (%s). Please remove it manually from your file manager.\n' "$1" >&2
+}
+
+resolve_roothide_data_dir() {
+    logical_path="/var/mobile/ChargeLimiter"
+    for jbroot_cmd in /usr/bin/jbroot /bin/jbroot jbroot; do
+        command -v "$jbroot_cmd" >/dev/null 2>&1 || continue
+        rooted_path="$("$jbroot_cmd" "$logical_path" 2>/dev/null)" || continue
+        rooted_path="${rooted_path%/}"
+        jbroot_prefix="${rooted_path%/var/mobile/ChargeLimiter}"
+        [ "$jbroot_prefix" != "$rooted_path" ] || continue
+        case "${jbroot_prefix##*/}" in
+            .jbroot-?*)
+                printf '%s\n' "$rooted_path"
+                return 0
+                ;;
+        esac
+    done
+    return 1
+}
+
+cleanup_shared_data() {
+    "$APP_DIR/ChargeLimiterDaemon" cleanup_data_container 2>/dev/null && return 0
+    daemon_rc=$?
+
+    if ! rooted_data_dir="$(resolve_roothide_data_dir)"; then
+        warn_manual_cleanup "stage=resolve_roothide_data daemon_rc=$daemon_rc"
+        return 1
+    fi
+
+    rm -rf "$rooted_data_dir"
+    rm_rc=$?
+    if [ "$rm_rc" -eq 0 ] && [ ! -e "$rooted_data_dir" ]; then
+        return 0
+    fi
+
+    warn_manual_cleanup "stage=remove_roothide_data daemon_rc=$daemon_rc rm_rc=$rm_rc"
+    return 1
 }
 
 "$APP_DIR/ChargeLimiterDaemon" reset_and_exit 2>/dev/null
@@ -28,7 +65,7 @@ launchctl bootout system "$DAEMON_PLIST" 2>/dev/null
 launchctl bootout user/foreground "$DAEMON_PLIST" 2>/dev/null || launchctl unload "$DAEMON_PLIST" 2>/dev/null
 killall -9 ChargeLimiter ChargeLimiterDaemon 2>/dev/null
 if should_cleanup_data "$1" "${2:-}"; then
-    "$APP_DIR/ChargeLimiterDaemon" cleanup_data_container 2>/dev/null || warn_manual_cleanup
+    cleanup_shared_data
 fi
 rm -f "$CACHE"
 uicache -p "$APP_DIR" 2>/dev/null

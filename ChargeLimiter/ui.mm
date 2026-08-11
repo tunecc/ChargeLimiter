@@ -518,7 +518,7 @@ void daemonRun(NSArray* argv) {
         [mArgv addObjectsFromArray:argv];
     }
     int spawnFlags = SPAWN_FLAG_NOWAIT;
-    if (g_jbtype != JBTYPE_TROLLSTORE) {
+    if (g_jbtype != JBTYPE_TROLLSTORE && g_jbtype != JBTYPE_ROOTHIDE) {
         spawnFlags |= SPAWN_FLAG_ROOT;
     }
     spawn(mArgv, nil, nil, 0, spawnFlags);

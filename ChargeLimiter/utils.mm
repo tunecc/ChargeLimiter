@@ -827,6 +827,83 @@ static NSString* resolveJbRootFromSelfExe() {
     return [exe substringToIndex:tail.location];
 }
 
+int CLRepairRoothideLaunchDaemonPlist(void) {
+    if (getJBType() != JBTYPE_ROOTHIDE) {
+        return 0;
+    }
+    if (geteuid() != 0) {
+        NSLog2(@"[CL] roothide_launchd_plist_repair result=failed stage=privilege euid=%d", geteuid());
+        return -1;
+    }
+
+    NSString* daemonSuffix = @"/Applications/ChargeLimiter.app/ChargeLimiterDaemon";
+    NSString* daemonPath = normalizedAbsolutePath(getSelfExePath());
+    NSString* jbRoot = resolveJbRootFromSelfExe();
+    NSString* expectedDaemonPath = jbRoot.length > 0
+        ? [jbRoot stringByAppendingString:daemonSuffix]
+        : nil;
+    if (daemonPath.length == 0 || ![daemonPath hasSuffix:daemonSuffix] ||
+        jbRoot.length == 0 || ![daemonPath isEqualToString:expectedDaemonPath]) {
+        NSLog2(@"[CL] roothide_launchd_plist_repair result=failed stage=validate_daemon_path");
+        return -1;
+    }
+
+    NSString* plistPath = [jbRoot stringByAppendingPathComponent:
+        @"Library/LaunchDaemons/com.chargelimiter.mod.plist"];
+    NSError* error = nil;
+    NSData* plistData = [NSData dataWithContentsOfFile:plistPath options:0 error:&error];
+    if (plistData.length == 0) {
+        NSLog2(@"[CL] roothide_launchd_plist_repair result=failed stage=read_plist error_domain=%@ error_code=%ld",
+               error.domain ?: @"unknown", (long)error.code);
+        return -1;
+    }
+
+    NSPropertyListFormat format = NSPropertyListXMLFormat_v1_0;
+    id propertyList = [NSPropertyListSerialization propertyListWithData:plistData
+                                                                options:NSPropertyListMutableContainersAndLeaves
+                                                                 format:&format
+                                                                  error:&error];
+    if (![propertyList isKindOfClass:[NSDictionary class]]) {
+        NSLog2(@"[CL] roothide_launchd_plist_repair result=failed stage=parse_plist error_domain=%@ error_code=%ld",
+               error.domain ?: @"unknown", (long)error.code);
+        return -1;
+    }
+
+    NSMutableDictionary* plist = [(NSDictionary*)propertyList mutableCopy];
+    NSArray* expectedArguments = @[daemonPath];
+    id currentProgram = plist[@"Program"];
+    id currentArguments = plist[@"ProgramArguments"];
+    BOOL needsUpdate = ![currentProgram isKindOfClass:[NSString class]] ||
+                       ![(NSString*)currentProgram isEqualToString:daemonPath] ||
+                       ![currentArguments isKindOfClass:[NSArray class]] ||
+                       ![(NSArray*)currentArguments isEqualToArray:expectedArguments];
+    if (needsUpdate) {
+        plist[@"Program"] = daemonPath;
+        plist[@"ProgramArguments"] = expectedArguments;
+        NSData* updatedData = [NSPropertyListSerialization dataWithPropertyList:plist
+                                                                         format:format
+                                                                        options:0
+                                                                          error:&error];
+        if (updatedData.length == 0 ||
+            ![updatedData writeToFile:plistPath options:NSDataWritingAtomic error:&error]) {
+            NSLog2(@"[CL] roothide_launchd_plist_repair result=failed stage=write_plist error_domain=%@ error_code=%ld",
+                   error.domain ?: @"unknown", (long)error.code);
+            return -1;
+        }
+    }
+
+    const char* plistFile = plistPath.fileSystemRepresentation;
+    if (chown(plistFile, 0, 0) != 0 || chmod(plistFile, 0644) != 0) {
+        int savedErrno = errno;
+        NSLog2(@"[CL] roothide_launchd_plist_repair result=failed stage=restore_metadata errno=%d", savedErrno);
+        return -1;
+    }
+
+    NSLog2(@"[CL] roothide_launchd_plist_repair result=%@",
+           needsUpdate ? @"updated" : @"unchanged");
+    return needsUpdate ? 1 : 0;
+}
+
 static NSString* resolveRoothidePathByAPI(NSString* logicalPath) {
     NSString* normalized = normalizedAbsolutePath(logicalPath);
     if (normalized.length == 0) {
