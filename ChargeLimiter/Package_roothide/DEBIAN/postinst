@@ -32,7 +32,23 @@ rm -f "$CACHE"
 repair_shared_data_permissions
 
 chown root:wheel "$DAEMON_PLIST"
+
+# relaxin: system 域 launchd 在 rootfs 命名空间，看不到 jbroot 内的逻辑路径。
+# 用 jbroot 命令把 Program 解析成 /rootfs/.jbroot-XXX/... 真实路径，
+# 否则 bootstrap 成功但 daemon 永不 exec。
+DAEMON_BIN="$APP_DIR/ChargeLimiterDaemon"
+REAL_DAEMON=""
+if command -v jbroot >/dev/null 2>&1; then
+    REAL_DAEMON="$(jbroot "$DAEMON_BIN" 2>/dev/null)"
+fi
+if [ -n "$REAL_DAEMON" ] && [ -x "$REAL_DAEMON" ]; then
+    plutil -replace Program -string "$REAL_DAEMON" "$DAEMON_PLIST" 2>/dev/null
+    plutil -replace ProgramArguments -json "[ \"$REAL_DAEMON\" ]" "$DAEMON_PLIST" 2>/dev/null
+fi
+
+# 清理新旧域的可能残留
 launchctl bootout system "$DAEMON_PLIST" 2>/dev/null
+launchctl bootout user/foreground "$DAEMON_PLIST" 2>/dev/null
 launchctl bootstrap system "$DAEMON_PLIST" 2>/dev/null || launchctl load "$DAEMON_PLIST" 2>/dev/null
 
 uicache -p "$APP_DIR" 2>/dev/null
