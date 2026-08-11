@@ -4450,6 +4450,8 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     [presenter presentViewController:alert animated:YES completion:nil];
 }
 
+static const NSInteger kLogLevelPickerTag = 316;
+
 @interface CLSoftwareSettingsViewController : UIViewController
 @end
 
@@ -4555,6 +4557,10 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     [self.settingsCard addSeparator];
     [self.settingsCard addNavigationRowWithIcon:@"tag.fill" title:CLL(@"停充预设") value:[self chargeAbovePresetValueLabel] color:CLStopChargePresetAccentColor() target:self action:@selector(stopChargePresetTapped)];
     [self.settingsCard addSeparator];
+    [self.settingsCard addSeparator];
+    [self.settingsCard addNavigationRowWithIcon:@"waveform.path.ecg" title:CLL(@"策略诊断") value:CLL(@"查看") color:[UIColor systemTealColor] target:self action:@selector(softwarePolicyDiagnosticsTapped)];
+    [self.settingsCard addSeparator];
+    [self.settingsCard addNavigationRowWithIcon:@"doc.text" title:CLL(@"日志级别") value:self.softwareLogLevelText color:[UIColor systemPurpleColor] target:self action:@selector(softwareLogLevelTapped:)];
     [self.settingsCard.contentStack addArrangedSubview:[self buildHapticRow]];
     [self.settingsCard addSeparator];
     [self.settingsCard.contentStack addArrangedSubview:[self buildHapticDetailRow]];
@@ -5188,6 +5194,45 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
                                      : [[UIColor secondaryLabelColor] colorWithAlphaComponent:0.7];
     }
     [self updateCardValue:self.settingsCard title:CLL(@"停充预设") value:[self chargeAbovePresetValueLabel]];
+    [self updateCardValue:self.settingsCard title:CLL(@"日志级别") value:self.softwareLogLevelText];
+}
+
+- (NSString *)softwareLogLevelText {
+    NSString *level = getlocalKV_C(@"log_level");
+    if ([level isEqualToString:@"error"]) {
+        return CLL(@"仅错误");
+    }
+    return CLL(@"标准");
+}
+
+- (void)softwareLogLevelTapped:(UITapGestureRecognizer *)tap {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"日志级别") message:nil preferredStyle:UIAlertControllerStyleAlert];
+
+    __weak typeof(self) weakSelf = self;
+    UIAlertAction *normalAction = [UIAlertAction actionWithTitle:CLL(@"标准") style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        [[CLAPIClient shared] setConfigWithKey:@"log_level" value:@"normal" completion:^(NSDictionary * _Nullable res, NSError * _Nullable err) {
+            [weakSelf updateCardValue:weakSelf.settingsCard title:CLL(@"日志级别") value:weakSelf.softwareLogLevelText];
+        }];
+    }];
+    [alert addAction:normalAction];
+
+    UIAlertAction *errorAction = [UIAlertAction actionWithTitle:CLL(@"仅错误") style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        [[CLAPIClient shared] setConfigWithKey:@"log_level" value:@"error" completion:^(NSDictionary * _Nullable res, NSError * _Nullable err) {
+            [weakSelf updateCardValue:weakSelf.settingsCard title:CLL(@"日志级别") value:weakSelf.softwareLogLevelText];
+        }];
+    }];
+    [alert addAction:errorAction];
+
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"取消") style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)softwarePolicyDiagnosticsTapped {
+    Class cls = NSClassFromString(@"CLPolicyDiagnosticsViewController");
+    UIViewController *vc = [[cls alloc] init];
+    if (vc) {
+        [self.navigationController pushViewController:vc animated:YES];
+    }
 }
 
 - (UISwitch *)switchInCard:(CLGlassCard *)card tag:(NSInteger)tag {
