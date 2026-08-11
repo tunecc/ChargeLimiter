@@ -24,7 +24,8 @@ warn_manual_cleanup() {
 }
 
 "$APP_DIR/ChargeLimiterDaemon" reset_and_exit 2>/dev/null
-launchctl bootout system "$DAEMON_PLIST" 2>/dev/null || launchctl unload "$DAEMON_PLIST" 2>/dev/null
+launchctl bootout system "$DAEMON_PLIST" 2>/dev/null
+launchctl bootout user/foreground "$DAEMON_PLIST" 2>/dev/null || launchctl unload "$DAEMON_PLIST" 2>/dev/null
 killall -9 ChargeLimiter ChargeLimiterDaemon 2>/dev/null
 if should_cleanup_data "$1" "${2:-}"; then
     "$APP_DIR/ChargeLimiterDaemon" cleanup_data_container 2>/dev/null || warn_manual_cleanup
