@@ -3830,8 +3830,8 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             @"config_path": reloadPath ?: @"",
         };
         g_lastConfigReloadDiagnostics = reloadResult;
-        NSFileErrorLog(@"config_reload ok=%d key_count=%lu path=%@",
-                       reloadOK, (unsigned long)loadedKeyCount, reloadPath ?: @"(nil)");
+        NSFileInfoLog(@"config_reload ok=%d key_count=%lu",
+                       reloadOK, (unsigned long)loadedKeyCount);
         return @{
             @"status": reloadOK ? @0 : @1,
             @"data": @{ @"config_reload": reloadResult },
@@ -4272,8 +4272,8 @@ void detectUPSBattery() {
             NSLog(@"%@ serve failed, exit", log_prefix);
             exit(0);
         }
-        NSFileErrorLog(@"%@ listen_ready backend=gcd port=%d pid=%d ppid=%d uid=%d euid=%d jbtype=%d",
-                       log_prefix, GSERV_PORT, getpid(), getppid(), getuid(), geteuid(), getJBType());
+        NSFileInfoLog(@"%@ listen_ready backend=gcd port=%d",
+                       log_prefix, GSERV_PORT);
 #else
     // 使用自己的简易 HTTP 服务器，替代 GCDWebServers
     static CLSimpleHTTPServer* _webServer = nil;
@@ -4310,8 +4310,8 @@ void detectUPSBattery() {
             NSLog(@"%@ serve failed, exit", log_prefix);
             exit(0);
         }
-        NSFileErrorLog(@"%@ listen_ready backend=bsd_socket port=%d pid=%d ppid=%d uid=%d euid=%d jbtype=%d",
-                       log_prefix, GSERV_PORT, getpid(), getppid(), getuid(), geteuid(), getJBType());
+        NSFileInfoLog(@"%@ listen_ready backend=bsd_socket port=%d",
+                       log_prefix, GSERV_PORT);
 #endif
         
         getBatInfo(&bat_info);
@@ -4342,6 +4342,14 @@ void detectUPSBattery() {
         selfHealSmartChargeOnBootstrap();
         refreshFullChargeScheduleTimer(0);
         evaluateFullChargeSchedule(YES);
+        NSFileInfoLog(@"%@ daemon_started backend=%@ port=%d",
+                      log_prefix,
+#if CL_USE_GCDWEBSERVER
+                      @"gcd",
+#else
+                      @"bsd_socket",
+#endif
+                      GSERV_PORT);
     }
 }
 @end
@@ -4366,7 +4374,7 @@ int main(int argc, char** argv) { // daemon_main
             errno = 0;
             int entryCSOpsRc = csops(getpid(), kCLCSOpsStatus, &entryCSFlags, sizeof(entryCSFlags));
             int entryCSOpsErrno = entryCSOpsRc == 0 ? 0 : errno;
-            NSFileErrorLog(@"daemon_entry pid=%d ppid=%d uid=%d euid=%d gid=%d egid=%d csops_rc=%d csops_errno=%d csflags=0x%08x jbtype=%d app_docs_override=%d",
+            NSLog2(@"daemon_entry pid=%d ppid=%d uid=%d euid=%d gid=%d egid=%d csops_rc=%d csops_errno=%d csflags=0x%08x jbtype=%d app_docs_override=%d",
                            getpid(), getppid(), getuid(), geteuid(), getgid(), getegid(),
                            entryCSOpsRc, entryCSOpsErrno, entryCSFlags,
                            g_jbtype, argIndex > 1 ? 1 : 0);
@@ -4376,7 +4384,7 @@ int main(int argc, char** argv) { // daemon_main
                 NSString* dConfPath = getConfPath();
                 NSString* dDbPath = getDbPath();
                 NSString* dDataRoot = getRuntimeDataRootPath();
-                NSFileErrorLog(@"daemon_paths exe=%@ log=%@ conf=%@ db=%@ dataRoot=%@",
+                NSLog2(@"daemon_paths exe=%@ log=%@ conf=%@ db=%@ dataRoot=%@",
                                getSelfExePath() ?: @"(nil)",
                                dLogPath ?: @"(nil)",
                                dConfPath ?: @"(nil)",
@@ -4398,7 +4406,7 @@ int main(int argc, char** argv) { // daemon_main
             errno = 0;
             int privilegeCSOpsRc = csops(getpid(), kCLCSOpsStatus, &privilegeCSFlags, sizeof(privilegeCSFlags));
             int privilegeCSOpsErrno = privilegeCSOpsRc == 0 ? 0 : errno;
-            NSFileErrorLog(@"daemon_privilege platformize_rc=%d memlimit_rc=%d pid=%d uid=%d euid=%d gid=%d egid=%d csops_rc=%d csops_errno=%d csflags=0x%08x",
+            NSLog2(@"daemon_privilege platformize_rc=%d memlimit_rc=%d pid=%d uid=%d euid=%d gid=%d egid=%d csops_rc=%d csops_errno=%d csflags=0x%08x",
                            platformizeRc, memlimitRc, getpid(), getuid(), geteuid(), getgid(), getegid(),
                            privilegeCSOpsRc, privilegeCSOpsErrno, privilegeCSFlags);
             [Service.inst serve];

@@ -1075,7 +1075,7 @@ static void ensureAppPathsWithLibroot() {
         } else {
             g_pathResolutionSource = @"libroot";
         }
-        NSFileErrorLog(@"path_init source=%@ pid=%d uid=%d euid=%d gid=%d egid=%d conf=%@ log=%@ db=%@",
+        NSLog2(@"[CL] path_init source=%@ pid=%d uid=%d euid=%d gid=%d egid=%d conf=%@ log=%@ db=%@",
                        g_pathResolutionSource, getpid(), getuid(), geteuid(), getgid(), getegid(),
                        g_confPath, g_logPath, g_dbPath);
         cleanupLegacyContainerCacheFilesIfNeeded();
