@@ -8,6 +8,7 @@
 #include <sys/utsname.h>
 #include <sys/sysctl.h>
 #include <notify.h>
+#include "CLFileLogPolicy.h"
 #import <objc/message.h>
 
 // REFACTOR: 使用标准 libroot API 而不是手动实现
@@ -27,6 +28,7 @@ static NSString* const kLegacyContainerCacheFileName = @"com.chargelimiter.mod.c
 static NSString* const kRoothideDataRoot = @"/var/mobile/ChargeLimiter";
 static NSString* const kRoothideLegacySharedDataRoot = @"/var/mobile/Library/Application Support/ChargeLimiter";
 typedef const char* (*jbroot_fn_t)(const char* path);
+static CLFileLogMode g_fileLogMode = CLFileLogModeNormal;
 @class CLSettingsStore;
 static NSString* resolveAppBundleIdentifier(void);
 static NSString* resolveExistingDataContainerRoot(NSString* bid);
@@ -2867,7 +2869,21 @@ static void CLRecordChildLifecycle(NSMutableDictionary* out, NSString* prefix, p
     }
 }
 
-static void NSFileLogWithArguments(NSString* fmt, va_list va) {
+static void CLFileLogUpdateModeFromObject(id obj) {
+    CLFileLogMode mode = CLFileLogModeNormal;
+    if ([obj isKindOfClass:[NSDictionary class]]) {
+        NSString* levelStr = [(NSDictionary *)obj objectForKey:@"log_level"];
+        if ([levelStr isKindOfClass:[NSString class]]) {
+            mode = CLFileLogModeFromCString([levelStr UTF8String]);
+        }
+    }
+    __atomic_store_n(&g_fileLogMode, mode, __ATOMIC_SEQ_CST);
+}
+
+static void NSFileLogWithArguments(CLFileLogSeverity sev, NSString* fmt, va_list va) {
+    if (!CLFileLogShouldWrite(__atomic_load_n(&g_fileLogMode, __ATOMIC_SEQ_CST), sev)) {
+        return;
+    }
     NSDateFormatter* formatter = [NSDateFormatter new];
     [formatter setDateFormat:@"yyyy-MM-dd HH:mm:ss"];
     NSString* dateStr = [formatter stringFromDate:NSDate.date];
@@ -2917,7 +2933,14 @@ static void NSFileLogWithArguments(NSString* fmt, va_list va) {
 void NSFileErrorLog(NSString* fmt, ...) {
     va_list va;
     va_start(va, fmt);
-    NSFileLogWithArguments(fmt, va);
+    NSFileLogWithArguments(CLFileLogSeverityError, fmt, va);
+    va_end(va);
+}
+
+void NSFileInfoLog(NSString* fmt, ...) {
+    va_list va;
+    va_start(va, fmt);
+    NSFileLogWithArguments(CLFileLogSeverityInfo, fmt, va);
     va_end(va);
 }
 
@@ -3823,6 +3846,7 @@ static BOOL ensureStoreConfigFileExists(CLSettingsStore* store, NSString** pathO
             _isDirty = YES;
             [self apply];
         }
+        CLFileLogUpdateModeFromObject(_preferences);
     }
     return self;
 }
@@ -3980,6 +4004,7 @@ static BOOL ensureStoreConfigFileExists(CLSettingsStore* store, NSString** pathO
             [self.cachedChanges removeAllObjects];
             [self.removedKeys removeAllObjects];
             self.isDirty = NO;
+            CLFileLogUpdateModeFromObject(self.preferences);
             return NO;
         }
         [self.preferences removeAllObjects];
@@ -3988,6 +4013,7 @@ static BOOL ensureStoreConfigFileExists(CLSettingsStore* store, NSString** pathO
         [self.cachedChanges removeAllObjects];
         [self.removedKeys removeAllObjects];
         self.isDirty = NO;
+        CLFileLogUpdateModeFromObject(self.preferences);
         return YES;
     }
 }
@@ -4011,6 +4037,7 @@ static BOOL ensureStoreConfigFileExists(CLSettingsStore* store, NSString** pathO
         [self.cachedChanges removeAllObjects];
         [self.removedKeys removeAllObjects];
         self.isDirty = NO;
+        CLFileLogUpdateModeFromObject(self.preferences);
     }
 }
 @end

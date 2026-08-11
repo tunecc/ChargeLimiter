@@ -49,6 +49,7 @@ enum {
 };
 int getJBType();
 void NSFileErrorLog(NSString* fmt, ...);
+void NSFileInfoLog(NSString* fmt, ...);
 NSString* getAppVer();
 NSString* getSysVer();
 NSOperatingSystemVersion getSysVerInt();
