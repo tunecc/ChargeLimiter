@@ -2807,7 +2807,8 @@ static void initConfKeySets() {
             @"adv_hold_behavior",
             @"adv_limit_inflow_mode",
             @"adv_def_thermal_mode",
-            @"full_charge_sched_anchor_date"
+            @"full_charge_sched_anchor_date",
+            @"log_level"
         ]];
     });
 }
@@ -3496,6 +3497,7 @@ static void initConf(BOOL reset) {
         @"full_charge_sched_anchor_date": @"",
         @"full_charge_sched_next_ts": @0,
         @"action": @"",
+        @"log_level": @"normal",
     };
     if (reset) {
         BOOL resetBattery = NO;
@@ -3530,6 +3532,7 @@ static void initConf(BOOL reset) {
             @"update_freq": @1,
             @"lang": @"en",
             @"floatwnd_auto": @NO,
+            @"log_level": @"normal",
         }];
         for (NSString* key in def_mdic) {
             id val = getAllKV()[key];
