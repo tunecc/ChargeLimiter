@@ -62,6 +62,20 @@ class ConfigPersistenceContractTests(unittest.TestCase):
         for token in forbidden:
             self.assertNotIn(token, combined)
 
+    def test_daemon_exposes_config_persistence_and_reload_result(self):
+        self.assertIn('out[@"config_persistence"]', self.daemon_mm)
+        self.assertIn('out[@"config_reload"]', self.daemon_mm)
+        reload_body = function_body(self.daemon_mm, "NSDictionary* handleReq(NSDictionary* nsreq) {")
+        self.assertIn('@"config_reload"', reload_body)
+        self.assertIn('@"loaded_key_count"', reload_body)
+        self.assertIn('@"reload_ok"', reload_body)
+
+    def test_report_has_config_persistence_section(self):
+        self.assertIn("@interface CLDiagConfigPersistence", self.collector_h)
+        self.assertIn("configPersistence", self.collector_h)
+        self.assertIn('@"# 配置持久化链路"', self.collector_m)
+        self.assertIn("CLConfigIdentityForDiag", self.collector_m)
+
 
 if __name__ == "__main__":
     unittest.main()
