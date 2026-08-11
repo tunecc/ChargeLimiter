@@ -15,6 +15,9 @@
 
 extern NSDictionary *clRepairDaemonForApp_C(void);
 
+id getlocalKV_C(NSString* key);
+void setlocalKV_C(NSString* key, id val);
+
 static char kCLDaemonRepairRunningKey;
 static BOOL CLDaemonRepairRunning(id self) {
     return [objc_getAssociatedObject(self, &kCLDaemonRepairRunningKey) boolValue];
@@ -558,6 +561,7 @@ static const NSInteger CLAdvHoldTempDisableSmartChargeTag = 312;
 static const NSInteger CLAdvDisableSmartChargeTag = 311;
 static const NSInteger CLAdvHoldModeBandTag = 305;
 static const NSInteger CLAdvHoldModeBehaviorTag = 313;
+static const NSInteger kLogLevelPickerTag = 316;
 
 #pragma mark - 策略诊断控制器
 
@@ -1697,6 +1701,12 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
     if ([self normalizeAdvancedOptionInterlocksIfNeeded]) {
         [self reloadContentRows];
     }
+
+    // 日志级别：旧版本未设置时默认 normal
+    NSString *logLevel = getlocalKV_C(@"log_level");
+    if (!logLevel || logLevel.length == 0) {
+        [[CLAPIClient shared] setConfigWithKey:@"log_level" value:@"normal" completion:nil];
+    }
 }
 
 - (void)setupScrollView {
@@ -1971,6 +1981,8 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
     CLAdvSettingsCard *diagnosticsCard = [[CLAdvSettingsCard alloc] init];
     [diagnosticsCard addSectionHeader:CLL(@"调试与观测")];
     [diagnosticsCard addPickerRowWithIcon:@"waveform.path.ecg" title:CLL(@"策略诊断") value:CLL(@"查看") color:[UIColor systemTealColor] tag:314 target:self action:@selector(policyDiagnosticsTapped)];
+    [diagnosticsCard addSeparator];
+    [diagnosticsCard addPickerRowWithIcon:@"doc.text" title:CLL(@"日志级别") value:self.logLevelText color:[UIColor systemTealColor] tag:kLogLevelPickerTag target:self action:@selector(logLevelTapped:)];
     [self addTipRowToCard:diagnosticsCard text:CLL(@"集中查看策略切换原因、hold 运行时参数和 Smart Charge 接管状态。")];
     [self.mainStack addArrangedSubview:diagnosticsCard];
     
@@ -2059,6 +2071,14 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
 - (NSString *)fullChargeScheduleDurationText {
     NSInteger durationHours = MAX([CLBatteryManager shared].fullChargeScheduleDurationHours, 1);
     return [NSString stringWithFormat:CLL(@"%ld 小时"), (long)durationHours];
+}
+
+- (NSString *)logLevelText {
+    NSString *level = getlocalKV_C(@"log_level");
+    if ([level isEqualToString:@"error"]) {
+        return CLL(@"仅错误");
+    }
+    return CLL(@"标准");
 }
 
 - (void)reloadContentRows {
@@ -2302,6 +2322,28 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
         [alert addAction:action];
     }
     
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"取消") style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)logLevelTapped:(UITapGestureRecognizer *)tap {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"日志级别") message:nil preferredStyle:UIAlertControllerStyleAlert];
+
+    __weak typeof(self) weakSelf = self;
+    UIAlertAction *normalAction = [UIAlertAction actionWithTitle:CLL(@"标准") style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        [[CLAPIClient shared] setConfigWithKey:@"log_level" value:@"normal" completion:^(NSDictionary * _Nullable res, NSError * _Nullable err) {
+            [weakSelf reloadContentRows];
+        }];
+    }];
+    [alert addAction:normalAction];
+
+    UIAlertAction *errorAction = [UIAlertAction actionWithTitle:CLL(@"仅错误") style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        [[CLAPIClient shared] setConfigWithKey:@"log_level" value:@"error" completion:^(NSDictionary * _Nullable res, NSError * _Nullable err) {
+            [weakSelf reloadContentRows];
+        }];
+    }];
+    [alert addAction:errorAction];
+
     [alert addAction:[UIAlertAction actionWithTitle:CLL(@"取消") style:UIAlertActionStyleCancel handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];
 }
