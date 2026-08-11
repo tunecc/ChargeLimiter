@@ -48,6 +48,8 @@ enum {
     JBTYPE_TROLLSTORE   = 8, // TrollStore/AppStore
 };
 int getJBType();
+// 1=updated, 0=unchanged/not applicable, -1=failed.
+int CLRepairRoothideLaunchDaemonPlist(void);
 void NSFileErrorLog(NSString* fmt, ...);
 void NSFileInfoLog(NSString* fmt, ...);
 NSString* getAppVer();
