@@ -18,6 +18,7 @@
 // 也不依赖 dlsym——stripped Mach-O executable 不导出本地符号，dlsym 会失败）。
 // 仅 jbroot / libroot_dyn_jbrootpath 这类外部库符号仍走 dlsym 运行时查找。
 extern NSDictionary *clDaemonLaunchProbe_C(void);
+extern NSDictionary *getConfigPersistenceDiagnostics_C(void);
 extern int getJBType_C(void);
 extern NSString *getSelfExePath_C(void);
 extern NSString *getRuntimeDataRootPath_C(void);
@@ -209,6 +210,25 @@ static NSString *CLRedactJBRootTokensForDiag(NSString *text) {
                                       withTemplate:@".jbroot-…"];
 }
 
+static NSString *CLConfigIdentityForDiag(NSString *path) {
+    if (![path isKindOfClass:[NSString class]] || path.length == 0) return @"";
+    NSString *normalized = path.stringByStandardizingPath;
+    NSRange marker = [normalized rangeOfString:@"/.jbroot-"];
+    if (marker.location != NSNotFound) {
+        NSUInteger tokenStart = marker.location + 1;
+        NSRange slash = [normalized rangeOfString:@"/"
+                                          options:0
+                                            range:NSMakeRange(tokenStart, normalized.length - tokenStart)];
+        if (slash.location != NSNotFound) {
+            normalized = [@"$JBROOT" stringByAppendingString:[normalized substringFromIndex:slash.location]];
+        }
+    }
+    if ([normalized hasPrefix:@"/private/var/"]) {
+        normalized = [normalized substringFromIndex:[@"/private" length]];
+    }
+    return normalized;
+}
+
 static NSString *CLDiagValueBetween(NSString *text, NSString *startToken, NSString *endToken) {
     if (![text isKindOfClass:[NSString class]] || text.length == 0
         || startToken.length == 0) {
@@ -257,6 +277,9 @@ NSString *CLJBTypeLabelFromCode(int code) {
 @end
 
 @implementation CLDiagDaemonLink
+@end
+
+@implementation CLDiagConfigPersistence
 @end
 
 @implementation CLDiagnosticReport
@@ -338,6 +361,34 @@ NSString *CLJBTypeLabelFromCode(int code) {
         [lines addObject:self.repairSummaryText];
         [lines addObject:@""];
     }
+
+    // # 配置持久化链路
+    [lines addObject:@"# 配置持久化链路"];
+    CLDiagConfigPersistence *p = self.configPersistence;
+    [lines addObject:[NSString stringWithFormat:@"App 配置路径:     %@", p.appPath.length ? p.appPath : @"(无法获取)"]];
+    [lines addObject:[NSString stringWithFormat:@"daemon 配置路径:  %@", p.daemonPath.length ? p.daemonPath : @"(无法获取)"]];
+    [lines addObject:[NSString stringWithFormat:@"规范化路径一致:   %@", p.sameCanonicalPath ? @"YES" : @"NO"]];
+    NSString *appMode = p.appMode >= 0 ? [NSString stringWithFormat:@"0%lo", (unsigned long)p.appMode] : @"unknown";
+    [lines addObject:[NSString stringWithFormat:@"App 文件状态:     exists=%@ parent_writable=%@ size=%lld mtime=%.0f mode=%@ uid=%ld gid=%ld",
+                      p.appExists ? @"YES" : @"NO", p.appParentWritable ? @"YES" : @"NO",
+                      p.appSize, p.appModificationTime, appMode,
+                      (long)p.appOwnerUID, (long)p.appGroupGID]];
+    NSString *daemonMode = p.daemonMode >= 0 ? [NSString stringWithFormat:@"0%lo", (unsigned long)p.daemonMode] : @"unknown";
+    [lines addObject:[NSString stringWithFormat:@"daemon 文件状态:  exists=%@ parent_writable=%@ size=%lld mtime=%.0f mode=%@ uid=%ld gid=%ld",
+                      p.daemonExists ? @"YES" : @"NO", p.daemonParentWritable ? @"YES" : @"NO",
+                      p.daemonSize, p.daemonModificationTime, daemonMode,
+                      (long)p.daemonOwnerUID, (long)p.daemonGroupGID]];
+    [lines addObject:[NSString stringWithFormat:@"路径解析来源:     %@", p.pathResolutionSource.length ? p.pathResolutionSource : @"unknown"]];
+    [lines addObject:[NSString stringWithFormat:@"最近写入:         stage=%@ verified=%@ error=%@/%ld errno=%ld",
+                      p.lastWriteStage.length ? p.lastWriteStage : @"never",
+                      p.lastWriteVerified ? @"YES" : @"NO",
+                      p.lastWriteErrorDomain.length ? p.lastWriteErrorDomain : @"none",
+                      (long)p.lastWriteErrorCode, (long)p.lastWriteErrno]];
+    [lines addObject:[NSString stringWithFormat:@"daemon 已加载键数: %ld", (long)p.daemonLoadedKeyCount]];
+    [lines addObject:[NSString stringWithFormat:@"最近 daemon 重载: state=%@ ok=%@",
+                      p.daemonReloadState.length ? p.daemonReloadState : @"never",
+                      p.daemonLastReloadOK ? @"YES" : @"NO"]];
+    [lines addObject:@""];
 
     // # 读电量链路
     [lines addObject:@"# 读电量链路"];
@@ -472,6 +523,35 @@ NSString *CLJBTypeLabelFromCode(int code) {
     }
     report.batteryProbe = probe;
 
+    NSDictionary *appConfig = getConfigPersistenceDiagnostics_C() ?: @{};
+    CLDiagConfigPersistence *config = [CLDiagConfigPersistence new];
+    NSString *rawAppPath = [appConfig[@"config_path"] isKindOfClass:[NSString class]]
+        ? appConfig[@"config_path"] : @"";
+    config.appPath = CLSanitizePathForDiag(rawAppPath);
+    config.appExists = [appConfig[@"config_exists"] boolValue];
+    config.appParentWritable = [appConfig[@"config_parent_writable"] boolValue];
+    config.appMode = appConfig[@"config_mode"] != nil ? [appConfig[@"config_mode"] integerValue] : -1;
+    config.appOwnerUID = appConfig[@"config_owner_uid"] != nil ? [appConfig[@"config_owner_uid"] integerValue] : -1;
+    config.appGroupGID = appConfig[@"config_group_gid"] != nil ? [appConfig[@"config_group_gid"] integerValue] : -1;
+    config.appSize = [appConfig[@"config_size"] longLongValue];
+    config.appModificationTime = [appConfig[@"config_mtime"] doubleValue];
+    config.pathResolutionSource = [appConfig[@"path_resolution_source"] isKindOfClass:[NSString class]]
+        ? appConfig[@"path_resolution_source"] : @"uninitialized";
+    config.lastWriteStage = [appConfig[@"last_write_stage"] isKindOfClass:[NSString class]]
+        ? appConfig[@"last_write_stage"] : @"never";
+    config.lastWriteErrorDomain = [appConfig[@"last_write_error_domain"] isKindOfClass:[NSString class]]
+        ? appConfig[@"last_write_error_domain"] : @"";
+    config.lastWriteErrorCode = [appConfig[@"last_write_error_code"] integerValue];
+    config.lastWriteErrno = [appConfig[@"last_write_errno"] integerValue];
+    config.lastWriteVerified = [appConfig[@"last_write_verified"] boolValue];
+    config.daemonPath = @"(daemon 离线)";
+    config.daemonMode = -1;
+    config.daemonOwnerUID = -1;
+    config.daemonGroupGID = -1;
+    config.daemonReloadState = @"never";
+    config.daemonLastReloadOK = NO;
+    report.configPersistence = config;
+
     // 2) 拉 get_diag（失败不重启 daemon；离线仍产出报告）
     [[CLAPIClient shared] getDiagWithCompletion:^(NSDictionary *response, NSError *error) {
         if (error || response == nil || [response[@"status"] intValue] != 0) {
@@ -519,6 +599,28 @@ NSString *CLJBTypeLabelFromCode(int code) {
             conn.lastApiError = @"0";
             NSDictionary *data = response[@"data"];
             if ([data isKindOfClass:[NSDictionary class]]) {
+                NSDictionary *daemonConfig = [data[@"config_persistence"] isKindOfClass:[NSDictionary class]]
+                    ? data[@"config_persistence"] : @{};
+                NSString *rawDaemonPath = [daemonConfig[@"config_path"] isKindOfClass:[NSString class]]
+                    ? daemonConfig[@"config_path"] : @"";
+                config.daemonPath = CLSanitizePathForDiag(rawDaemonPath);
+                config.daemonExists = [daemonConfig[@"config_exists"] boolValue];
+                config.daemonParentWritable = [daemonConfig[@"config_parent_writable"] boolValue];
+                config.daemonMode = daemonConfig[@"config_mode"] != nil ? [daemonConfig[@"config_mode"] integerValue] : -1;
+                config.daemonOwnerUID = daemonConfig[@"config_owner_uid"] != nil ? [daemonConfig[@"config_owner_uid"] integerValue] : -1;
+                config.daemonGroupGID = daemonConfig[@"config_group_gid"] != nil ? [daemonConfig[@"config_group_gid"] integerValue] : -1;
+                config.daemonSize = [daemonConfig[@"config_size"] longLongValue];
+                config.daemonModificationTime = [daemonConfig[@"config_mtime"] doubleValue];
+                config.daemonLoadedKeyCount = [data[@"loaded_key_count"] integerValue];
+                NSDictionary *reload = [data[@"config_reload"] isKindOfClass:[NSDictionary class]]
+                    ? data[@"config_reload"] : @{};
+                config.daemonReloadState = [reload[@"state"] isKindOfClass:[NSString class]]
+                    ? reload[@"state"] : @"never";
+                config.daemonLastReloadOK = [reload[@"reload_ok"] boolValue];
+                NSString *appIdentity = CLConfigIdentityForDiag(rawAppPath);
+                NSString *daemonIdentity = CLConfigIdentityForDiag(rawDaemonPath);
+                config.sameCanonicalPath = appIdentity.length > 0 && [appIdentity isEqualToString:daemonIdentity];
+
                 NSString *dev = [NSString stringWithFormat:@"%@", data[@"devmodel"] ?: @""];
                 NSString *sys = [NSString stringWithFormat:@"%@", data[@"sysver"] ?: @""];
                 NSString *ver = [NSString stringWithFormat:@"%@", data[@"ver"] ?: @""];
