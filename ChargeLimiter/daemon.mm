@@ -153,6 +153,7 @@ static NSMutableArray<NSNumber*>* g_holdCurrentSamples = nil;
 static BOOL g_predictiveInhibitFallbackActive = NO;
 static BOOL g_chargeControlProbeRunning = NO;
 static NSObject *g_probeLock = nil;
+static NSDictionary* g_lastConfigReloadDiagnostics = nil;
 
 static NSObject *CLProbeGetLock(void) {
     static dispatch_once_t onceToken;
@@ -1373,6 +1374,16 @@ static NSDictionary* getIOPMPSServDiagnostics(void) {
     if (dataRoot.length > 0) {
         out[@"data_root"] = dataRoot;
     }
+
+    NSDictionary* configPersistence = getConfigPersistenceDiagnostics_C();
+    out[@"config_persistence"] = configPersistence ?: @{};
+    out[@"loaded_key_count"] = @(getAllKV().count);
+    out[@"config_reload"] = g_lastConfigReloadDiagnostics ?: @{
+        @"state": @"never",
+        @"reload_ok": @NO,
+        @"loaded_key_count": @0,
+        @"config_path": @"",
+    };
 
     io_service_t serv = getIOPMPSServ();
     NSString* serviceName = @"(未匹配)";
@@ -3794,6 +3805,13 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             @"status": @0,
         };
     } else if ([api isEqualToString:@"reload_conf"]) {
+        NSString* reloadPath = getConfPath();
+        NSDictionary* diskConfig = reloadPath.length > 0
+            ? [NSDictionary dictionaryWithContentsOfFile:reloadPath]
+            : nil;
+        BOOL reloadOK = [diskConfig isKindOfClass:[NSDictionary class]];
+        NSUInteger loadedKeyCount = reloadOK ? diskConfig.count : 0;
+
         reloadLocalKVFromDisk();
         // Migration may replace db file in-place. Reopen sqlite handle to pick up new file.
         uninitDB();
@@ -3802,8 +3820,18 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
         recoverSmartChargeCoordinationOnBootstrap();
         refreshFullChargeScheduleTimer(0);
         evaluateFullChargeSchedule(YES);
+        NSDictionary* reloadResult = @{
+            @"state": @"reload_conf",
+            @"reload_ok": @(reloadOK),
+            @"loaded_key_count": @(loadedKeyCount),
+            @"config_path": reloadPath ?: @"",
+        };
+        g_lastConfigReloadDiagnostics = reloadResult;
+        NSFileErrorLog(@"config_reload ok=%d key_count=%lu path=%@",
+                       reloadOK, (unsigned long)loadedKeyCount, reloadPath ?: @"(nil)");
         return @{
-            @"status": @0,
+            @"status": reloadOK ? @0 : @1,
+            @"data": @{ @"config_reload": reloadResult },
         };
     } else if ([api isEqualToString:@"get_statistics"]) {
         NSDictionary* conf = nsreq[@"conf"];
@@ -4339,6 +4367,21 @@ int main(int argc, char** argv) { // daemon_main
                            getpid(), getppid(), getuid(), geteuid(), getgid(), getegid(),
                            entryCSOpsRc, entryCSOpsErrno, entryCSFlags,
                            g_jbtype, argIndex > 1 ? 1 : 0);
+            // 路径解析诊断：daemon 实际把日志/配置/数据库写到哪（App 侧可能不同，用于对比定位）
+            @try {
+                NSString* dLogPath = getLogPath();
+                NSString* dConfPath = getConfPath();
+                NSString* dDbPath = getDbPath();
+                NSString* dDataRoot = getRuntimeDataRootPath();
+                NSFileErrorLog(@"daemon_paths exe=%@ log=%@ conf=%@ db=%@ dataRoot=%@",
+                               getSelfExePath() ?: @"(nil)",
+                               dLogPath ?: @"(nil)",
+                               dConfPath ?: @"(nil)",
+                               dDbPath ?: @"(nil)",
+                               dDataRoot ?: @"(nil)");
+            } @catch (NSException* e) {
+                NSFileErrorLog(@"daemon_paths EXCEPTION %@", e);
+            }
             int platformizeRc = -999;
             int memlimitRc = -999;
             if (g_jbtype == JBTYPE_TROLLSTORE) {
