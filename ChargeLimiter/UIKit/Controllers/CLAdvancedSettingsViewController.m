@@ -1700,12 +1700,6 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
     if ([self normalizeAdvancedOptionInterlocksIfNeeded]) {
         [self reloadContentRows];
     }
-
-    // 日志级别：旧版本未设置时默认 normal
-    NSString *logLevel = getlocalKV_C(@"log_level");
-    if (!logLevel || logLevel.length == 0) {
-        [[CLAPIClient shared] setConfigWithKey:@"log_level" value:@"normal" completion:nil];
-    }
 }
 
 - (void)setupScrollView {
