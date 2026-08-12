@@ -1,38 +1,14 @@
 import re
 import unittest
-from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[2]
+from _helpers import REPO_ROOT as REPO, function_body, source_for
 DAEMON = REPO / "ChargeLimiter" / "daemon.mm"
-
-
-def _helper_body(src: str) -> str:
-    """Slice getIOPMPSServDiagnostics body up to the next top-level static function."""
-    start = src.find("static NSDictionary* getIOPMPSServDiagnostics")
-    if start < 0:
-        start = src.find("getIOPMPSServDiagnostics")
-    assert start >= 0
-    # Find opening brace of this function
-    brace = src.find("{", start)
-    assert brace > start
-    depth = 0
-    i = brace
-    while i < len(src):
-        ch = src[i]
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                return src[start : i + 1]
-        i += 1
-    return src[start : start + 8000]
 
 
 class GetDiagApiContractTests(unittest.TestCase):
     def setUp(self):
-        self.src = DAEMON.read_text(encoding="utf-8")
-        self.body = _helper_body(self.src)
+        self.src = source_for(DAEMON)
+        self.body = function_body(self.src, "getIOPMPSServDiagnostics")
 
     def test_helper_exists(self):
         self.assertRegex(

@@ -1,23 +1,22 @@
 # scripts/tests/test_shared_store_apply_contract.py
 import unittest
-from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[2]
+from _helpers import REPO_ROOT as REPO, source_for
 UTILS = REPO / "ChargeLimiter" / "utils.mm"
 UTILS_H = REPO / "ChargeLimiter" / "utils.h"
 
 
 class SharedStoreApplyContractTests(unittest.TestCase):
     def test_apply_returns_bool(self):
-        s = UTILS.read_text(encoding="utf-8")
+        s = source_for(UTILS)
         self.assertRegex(s, r"- \(BOOL\)apply\b")
 
     def test_setlocalkv_checked_declared(self):
-        h = UTILS_H.read_text(encoding="utf-8")
+        h = source_for(UTILS_H)
         self.assertIn("setlocalKVChecked", h)
 
     def test_write_success_repairs_ownership_hooks(self):
-        s = UTILS.read_text(encoding="utf-8")
+        s = source_for(UTILS)
         # 写成功路径必须尝试把配置文件交回 mobile
         self.assertTrue(
             "repairSharedConfigFileOwnership" in s
@@ -33,7 +32,7 @@ class SharedStoreApplyContractTests(unittest.TestCase):
         apply 失败路径必须 reloadFromDisk（或等价从磁盘重建 preferences）
         并清 dirty。
         """
-        s = UTILS.read_text(encoding="utf-8")
+        s = source_for(UTILS)
         # 定位实现体（跳过 @interface 声明）
         impl_idx = s.find("@implementation CLSettingsStore")
         self.assertGreater(impl_idx, -1, "CLSettingsStore implementation must exist")

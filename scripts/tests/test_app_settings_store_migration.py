@@ -1,21 +1,20 @@
 import re
 import unittest
-from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+from _helpers import REPO_ROOT, source_for
 UTILS_MM = REPO_ROOT / "ChargeLimiter" / "utils.mm"
 UTILS_H = REPO_ROOT / "ChargeLimiter" / "utils.h"
 
 
 class SharedStoreMigrationContractTests(unittest.TestCase):
     def test_migrate_function_exists_in_utils(self):
-        h = UTILS_H.read_text(encoding="utf-8")
-        mm = UTILS_MM.read_text(encoding="utf-8")
+        h = source_for(UTILS_H)
+        mm = source_for(UTILS_MM)
         self.assertIn("CLMigrateAppSettingsToSharedStoreIfNeeded", h)
         self.assertRegex(mm, r"BOOL\s+CLMigrateAppSettingsToSharedStoreIfNeeded\s*\(\s*void\s*\)")
 
     def test_four_keys_migrated_via_shared_kv(self):
-        mm = UTILS_MM.read_text(encoding="utf-8")
+        mm = source_for(UTILS_MM)
         # Locate the migration function body approximately.
         idx = mm.find("CLMigrateAppSettingsToSharedStoreIfNeeded")
         self.assertGreater(idx, -1)
@@ -27,7 +26,7 @@ class SharedStoreMigrationContractTests(unittest.TestCase):
         self.assertIn("getlocalKV", body, "must check shared store before writing")
 
     def test_cascade_priority_appdata_then_standard_then_default(self):
-        mm = UTILS_MM.read_text(encoding="utf-8")
+        mm = source_for(UTILS_MM)
         idx = mm.find("CLMigrateAppSettingsToSharedStoreIfNeeded")
         self.assertGreater(idx, -1)
         body = mm[idx:idx + 4000]
@@ -39,7 +38,7 @@ class SharedStoreMigrationContractTests(unittest.TestCase):
         self.assertIn("standardUserDefaults", body, "must fall back to standardUserDefaults")
 
     def test_migration_marker_and_old_suite_cleanup(self):
-        mm = UTILS_MM.read_text(encoding="utf-8")
+        mm = source_for(UTILS_MM)
         idx = mm.find("CLMigrateAppSettingsToSharedStoreIfNeeded")
         self.assertGreater(idx, -1)
         body = mm[idx:idx + 4000]
@@ -47,7 +46,7 @@ class SharedStoreMigrationContractTests(unittest.TestCase):
         self.assertIn("removeObjectForKey", body, "must best-effort clear old suite keys")
 
     def test_returns_no_only_on_needed_write_failure(self):
-        mm = UTILS_MM.read_text(encoding="utf-8")
+        mm = source_for(UTILS_MM)
         idx = mm.find("CLMigrateAppSettingsToSharedStoreIfNeeded")
         self.assertGreater(idx, -1)
         body = mm[idx:idx + 4000]

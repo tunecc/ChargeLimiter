@@ -1,16 +1,15 @@
 import re
 import unittest
-from pathlib import Path
 
 
-REPO = Path(__file__).resolve().parents[2]
+from _helpers import REPO_ROOT as REPO, source_for
 BUILD_SCRIPT = REPO / "scripts" / "build_packages.sh"
 
 
 class BuildPackagesRoothideNativeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.source = BUILD_SCRIPT.read_text(encoding="utf-8")
+        cls.source = source_for(BUILD_SCRIPT)
 
     def test_default_not_legacy_convert(self):
         s = self.source

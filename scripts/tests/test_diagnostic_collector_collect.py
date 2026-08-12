@@ -1,8 +1,7 @@
 # scripts/tests/test_diagnostic_collector_collect.py
 import unittest
-from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[2]
+from _helpers import REPO_ROOT as REPO, source_for
 API_H = REPO / "ChargeLimiter" / "UIKit" / "CLAPIClient.h"
 API_M = REPO / "ChargeLimiter" / "UIKit" / "CLAPIClient.m"
 COL_H = REPO / "ChargeLimiter" / "UIKit" / "CLDiagnosticCollector.h"
@@ -11,10 +10,10 @@ COL_M = REPO / "ChargeLimiter" / "UIKit" / "CLDiagnosticCollector.m"
 
 class CollectContractTests(unittest.TestCase):
     def setUp(self):
-        self.api_h = API_H.read_text(encoding="utf-8")
-        self.api_m = API_M.read_text(encoding="utf-8")
-        self.col_h = COL_H.read_text(encoding="utf-8") if COL_H.exists() else ""
-        self.col_m = COL_M.read_text(encoding="utf-8")
+        self.api_h = source_for(API_H)
+        self.api_m = source_for(API_M)
+        self.col_h = source_for(COL_H) if COL_H.exists() else ""
+        self.col_m = source_for(COL_M)
 
     def test_get_diag_declared(self):
         self.assertIn("getDiagWithCompletion", self.api_h)

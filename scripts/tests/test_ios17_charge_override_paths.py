@@ -1,13 +1,12 @@
 import unittest
-from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+from _helpers import REPO_ROOT, source_for
 DAEMON_PATH = REPO_ROOT / "ChargeLimiter" / "daemon.mm"
 
 
 class Ios17OverridePathsTests(unittest.TestCase):
     def setUp(self):
-        self.source = DAEMON_PATH.read_text(encoding="utf-8")
+        self.source = source_for(DAEMON_PATH)
 
     def test_smart_battery_manager_service_name(self):
         self.assertIn("AppleSmartBatteryManager", self.source)

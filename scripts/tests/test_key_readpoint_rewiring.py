@@ -1,7 +1,6 @@
 import unittest
-from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+from _helpers import REPO_ROOT, source_for
 UI_MM = REPO_ROOT / "ChargeLimiter/ui.mm"
 SVC_M = REPO_ROOT / "ChargeLimiter/UIKit/Controllers/CLSettingsViewController.m"
 LOC_M = REPO_ROOT / "ChargeLimiter/CLLocalization.m"
@@ -9,7 +8,7 @@ LOC_M = REPO_ROOT / "ChargeLimiter/CLLocalization.m"
 
 class KeyReadPointRewiringTests(unittest.TestCase):
     def test_clsettings_uses_shared_kv(self):
-        s = SVC_M.read_text(encoding="utf-8")
+        s = source_for(SVC_M)
         self.assertIn("getlocalKV", s,
                       "CLLocalIntegerForKey must read via shared getlocalKV / getlocalKV_C")
         self.assertTrue(
@@ -22,7 +21,7 @@ class KeyReadPointRewiringTests(unittest.TestCase):
                          "CLSetLocalIntegerForKey must not write via CLAppSettingsStore")
 
     def test_languagetapped_checks_return_value(self):
-        s = SVC_M.read_text(encoding="utf-8")
+        s = source_for(SVC_M)
         # Accept either if (CLSetAppLanguage ...) or if (!CLSetAppLanguage ...)
         self.assertTrue(
             "if (CLSetAppLanguage" in s or "if (!CLSetAppLanguage" in s,
@@ -32,7 +31,7 @@ class KeyReadPointRewiringTests(unittest.TestCase):
         self.assertIn("CLConfigWriteFailedNotification", s)
 
     def test_appearance_uses_shared_kv(self):
-        s = UI_MM.read_text(encoding="utf-8")
+        s = source_for(UI_MM)
         self.assertNotIn('[[CLAppSettingsStore shared] integerForKey:@"AppAppearance"', s,
                          "AppAppearance must not be read from CLAppSettingsStore")
         self.assertTrue(
@@ -41,7 +40,7 @@ class KeyReadPointRewiringTests(unittest.TestCase):
         )
 
     def test_localization_uses_shared_kv(self):
-        s = LOC_M.read_text(encoding="utf-8")
+        s = source_for(LOC_M)
         self.assertNotIn("[[CLAppSettingsStore shared] integerForKey", s,
                          "CLGetAppLanguage must not read from CLAppSettingsStore")
         self.assertNotIn("[[CLAppSettingsStore shared] setIntegerForKey", s,

@@ -1,9 +1,8 @@
 # scripts/tests/test_diagnostic_collector_markdown.py
 import re
 import unittest
-from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[2]
+from _helpers import REPO_ROOT as REPO, source_for
 H = REPO / "ChargeLimiter" / "UIKit" / "CLDiagnosticCollector.h"
 M = REPO / "ChargeLimiter" / "UIKit" / "CLDiagnosticCollector.m"
 UI = REPO / "ChargeLimiter" / "UIKit" / "Controllers" / "CLAdvancedSettingsViewController.m"
@@ -11,9 +10,9 @@ UI = REPO / "ChargeLimiter" / "UIKit" / "Controllers" / "CLAdvancedSettingsViewC
 
 class DiagnosticCollectorContractTests(unittest.TestCase):
     def setUp(self):
-        self.h = H.read_text(encoding="utf-8") if H.exists() else ""
-        self.m = M.read_text(encoding="utf-8") if M.exists() else ""
-        self.ui = UI.read_text(encoding="utf-8") if UI.exists() else ""
+        self.h = source_for(H) if H.exists() else ""
+        self.m = source_for(M) if M.exists() else ""
+        self.ui = source_for(UI) if UI.exists() else ""
 
     def test_files_exist(self):
         self.assertTrue(H.exists(), "CLDiagnosticCollector.h missing")

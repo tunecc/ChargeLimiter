@@ -1,8 +1,7 @@
 # scripts/tests/test_daemon_link_bridge.py
 import unittest
-from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[2]
+from _helpers import REPO_ROOT as REPO, source_for
 U = REPO / "ChargeLimiter" / "utils.mm"
 U_H = REPO / "ChargeLimiter" / "utils.h"
 SERVER = REPO / "ChargeLimiter" / "CLSimpleHTTPServer.m"
@@ -12,11 +11,11 @@ UI = REPO / "ChargeLimiter" / "ui.mm"
 
 class DaemonLinkBridgeTests(unittest.TestCase):
     def setUp(self):
-        self.u = U.read_text(encoding="utf-8") if U.exists() else ""
-        self.u_h = U_H.read_text(encoding="utf-8") if U_H.exists() else ""
-        self.server = SERVER.read_text(encoding="utf-8") if SERVER.exists() else ""
-        self.daemon = DAEMON.read_text(encoding="utf-8") if DAEMON.exists() else ""
-        self.ui = UI.read_text(encoding="utf-8") if UI.exists() else ""
+        self.u = source_for(U) if U.exists() else ""
+        self.u_h = source_for(U_H) if U_H.exists() else ""
+        self.server = source_for(SERVER) if SERVER.exists() else ""
+        self.daemon = source_for(DAEMON) if DAEMON.exists() else ""
+        self.ui = source_for(UI) if UI.exists() else ""
 
     def test_log_path_export(self):
         # getLogPath_C（dlsym 时代的 C 链接导出）已在 8a22707 改直接调用后无调用者，
