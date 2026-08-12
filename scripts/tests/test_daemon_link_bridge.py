@@ -19,7 +19,10 @@ class DaemonLinkBridgeTests(unittest.TestCase):
         self.ui = UI.read_text(encoding="utf-8") if UI.exists() else ""
 
     def test_log_path_export(self):
-        self.assertIn("getLogPath_C", self.u)
+        # getLogPath_C（dlsym 时代的 C 链接导出）已在 8a22707 改直接调用后无调用者，
+        # 实际 app 侧日志路径走 clDaemonLaunchProbe_C 的 log_path 键（test_probe_returns_keys 覆盖）。
+        # 这里断言存活的日志路径函数仍导出。
+        self.assertIn("getLogPath()", self.u)
 
     def test_daemon_path_helper(self):
         self.assertIn("CLDaemonPathForApp", self.u)

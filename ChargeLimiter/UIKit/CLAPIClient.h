@@ -42,9 +42,6 @@ typedef void (^CLAPICallback)(NSDictionary *_Nullable response, NSError *_Nullab
 // 便捷方法 - 获取历史统计数据
 - (void)getStatisticsWithConf:(NSDictionary *)conf completion:(CLAPICallback)completion;
 
-// 便捷方法 - 获取历史数据
-- (void)getHistoryWithType:(NSString *)type completion:(CLAPICallback)completion;
-
 // 便捷方法 - 获取策略事件
 - (void)getPolicyEventsWithLimit:(NSInteger)limit lastID:(NSInteger)lastID completion:(CLAPICallback)completion;
 
@@ -65,9 +62,6 @@ typedef void (^CLAPICallback)(NSDictionary *_Nullable response, NSError *_Nullab
 
 // 便捷方法 - 拉取只读诊断(环境/读电量链路);失败不重启 daemon
 - (void)getDiagWithCompletion:(CLAPICallback)completion;
-
-// 检查 daemon 是否存活
-- (void)checkDaemonAliveWithCompletion:(void (^)(BOOL alive))completion;
 
 @end
 

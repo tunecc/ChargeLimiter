@@ -16,17 +16,11 @@ class BuildPackagesRoothideNativeTests(unittest.TestCase):
         s = self.source
         self.assertIn("ChargeLimiter roothide", s)
         self.assertIn("Package_roothide", s)
-        # 默认不应再警告「will be built by converting」为唯一路径
-        self.assertIn("--legacy-roothide-convert", s)
         self.assertIn("BUILD_NATIVE_ROOTHIDE", s)
-        # Default must prefer native over conversion.
+        # Native is the default and only roothide path.
         self.assertRegex(
             s,
             r'BUILD_NATIVE_ROOTHIDE="\$\{CHARGELIMITER_BUILD_NATIVE_ROOTHIDE:-1\}"',
-        )
-        self.assertRegex(
-            s,
-            r'BUILD_LEGACY_ROOTHIDE="\$\{CHARGELIMITER_BUILD_LEGACY_ROOTHIDE:-0\}"',
         )
 
     def test_stages_native_roothide_scheme(self):
@@ -43,11 +37,8 @@ class BuildPackagesRoothideNativeTests(unittest.TestCase):
 
     def test_default_path_does_not_call_convert(self):
         s = self.source
-        # convert remains available for --legacy-roothide-convert only.
-        self.assertIn("convert_rootless_stage_to_roothide", s)
         self.assertIn("--skip-roothide", s)
         # The conversion warning must not be the unconditional default path text.
-        # It should only appear under the legacy branch / flag, not as sole default.
         self.assertNotRegex(
             s,
             r'(?m)^[^#\n]*echo "\[WARN\] roothide package will be built by converting the rootless staging tree because this project still has no native roothide',
@@ -58,7 +49,6 @@ class BuildPackagesRoothideNativeTests(unittest.TestCase):
         usage_match = re.search(r"usage\(\)\s*\{(.*?)^\}", s, re.S | re.M)
         self.assertIsNotNone(usage_match)
         usage = usage_match.group(1)
-        self.assertIn("--legacy-roothide-convert", usage)
         self.assertIn("--skip-roothide", usage)
         self.assertRegex(usage, r"native|Package_roothide|ChargeLimiter roothide", re.I)
 

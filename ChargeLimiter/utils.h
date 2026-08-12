@@ -21,10 +21,8 @@ enum {
     SPAWN_FLAG_SUSPEND  = 4,
 };
 int spawn(NSArray* args, NSString** stdOut, NSString** stdErr, pid_t* pidPtr, int flag, NSDictionary* param=nil);
-void addPathEnv(NSString* path, BOOL tail);
 int get_pid_of(const char* name);
 int get_sys_boottime();
-NSString* findAppPath(NSString* name);
 int platformize_me();
 int32_t get_mem_limit(int pid);
 int set_mem_limit(int pid, int mb);
@@ -54,7 +52,6 @@ void NSFileErrorLog(NSString* fmt, ...);
 void NSFileInfoLog(NSString* fmt, ...);
 NSString* getAppVer();
 NSString* getSysVer();
-NSOperatingSystemVersion getSysVerInt();
 NSString* getDevMdoel();
 CGFloat getOrientAngle(UIDeviceOrientation orientation);
 
@@ -74,8 +71,6 @@ BOOL isAutoBrightEnable();
 void setAutoBrightEnable(BOOL flag);
 
 NSDictionary* getThermalData();
-NSString* getPerfManState();
-void DisablePerfMan();
 NSString* getThermalSimulationMode();
 void setThermalSimulationMode(NSString* mode);
 NSString* getPPMSimulationMode();
@@ -96,19 +91,16 @@ NSDictionary* getAllKV();
 BOOL getLocalBool(NSString* key, BOOL defaultValue);
 int getLocalInt(NSString* key, int defaultValue);
 float getLocalFloat(NSString* key, float defaultValue);
-double getLocalDouble(NSString* key, double defaultValue);
 NSString* getLocalString(NSString* key, NSString* defaultValue);
 NSArray* getLocalArray(NSString* key, NSArray* defaultValue);
 NSDictionary* getLocalDict(NSString* key, NSDictionary* defaultValue);
 void setLocalBool(NSString* key, BOOL value);
 void setLocalInt(NSString* key, int value);
 void setLocalFloat(NSString* key, float value);
-void setLocalDouble(NSString* key, double value);
 void setLocalString(NSString* key, NSString* value);
 void setLocalArray(NSString* key, NSArray* value);
 void setLocalDict(NSString* key, NSDictionary* value);
 void reloadLocalKVFromDisk(void);
-BOOL hasUnsavedConfigChanges(void);  // 检查是否有未保存的配置
 
 // 配置写入失败通知
 extern NSString* const CLConfigWriteFailedNotification;
@@ -125,7 +117,6 @@ void setAppDocumentsPathOverride(NSString* docsPath);
 extern "C" NSUserDefaults* getAppUserDefaults(void);  // 获取使用 app 数据容器的 NSUserDefaults
 extern "C" int cleanupAppDataContainer_C(void);
 extern "C" NSString* getConfPath_C(void);
-extern "C" NSString* getConfDirPath_C(void);
 extern "C" NSString* getRuntimeDataRootPath_C(void);
 extern "C" NSDictionary* getConfigPersistenceDiagnostics_C(void);
 // Thin C-linkage wrappers for App-side dlsym (utils.mm symbols are C++ mangled).

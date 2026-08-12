@@ -17,7 +17,6 @@ extern NSString* const CLConfigWriteFailedNotification;
 NSUserDefaults* getAppUserDefaults(void);
 NSString* getAppDocumentsPath_C(void);
 NSString* getConfPath_C(void);
-NSString* getConfDirPath_C(void);
 NSString* getRuntimeDataRootPath_C(void);
 void reloadLocalKVFromDisk_C(void);
 void setlocalKV_C(NSString* key, id val);
@@ -37,7 +36,6 @@ static void CLSetLocalIntegerForKey(NSString *key, NSInteger value);
 
 @interface CLBatteryStatusView : UIView
 @property (nonatomic, assign) CGFloat percentage;
-@property (nonatomic, assign) BOOL isCharging;
 @property (nonatomic, assign) NSInteger chargeBelow;
 @property (nonatomic, assign) NSInteger chargeAbove;
 @property (nonatomic, assign) BOOL showLowMarker;
@@ -80,7 +78,6 @@ typedef NS_ENUM(NSInteger, CLBatteryVisualState) {
 @end
 
 @interface CLGlassCard : UIView
-@property (nonatomic, strong) UIVisualEffectView *blurView;
 @property (nonatomic, strong) UIStackView *contentStack;
 @property (nonatomic, weak) UIViewController *viewController;
 @end
@@ -2802,88 +2799,6 @@ static NSString *CLHistoryEventTimestampLabel(NSTimeInterval timestamp) {
     return out;
 }
 
-- (NSArray<NSString *> *)shortColumns {
-    NSMutableArray *cols = [@[CLL(@"时间"), CLL(@"电量"), CLL(@"温度")] mutableCopy];
-    if (self.showAmperage) {
-        [cols addObject:CLL(@"电流")];
-    }
-    if (self.showVoltage) {
-        [cols addObject:CLL(@"电压")];
-    }
-    return cols;
-}
-
-- (NSArray<NSArray<NSString *> *> *)shortRows:(NSArray<NSDictionary *> *)data {
-    if (data.count == 0) {
-        return @[@[CLL(@"暂无数据")]];
-    }
-    NSMutableArray *rows = [NSMutableArray arrayWithCapacity:data.count];
-    NSArray *src = [[data reverseObjectEnumerator] allObjects];
-    for (NSDictionary *item in src) {
-        NSString *time = [self formatHistoryTime:item[@"UpdateTime"] style:@"time"];
-        NSString *cap = [self formatPercent:item[@"CurrentCapacity"]];
-        NSString *temp = [self formatTemperature:item[@"Temperature"]];
-        NSMutableArray *vals = [@[time, cap, temp] mutableCopy];
-        if (self.showAmperage) {
-            [vals addObject:[self formatAmperage:item[@"Amperage"]]];
-        }
-        if (self.showVoltage) {
-            [vals addObject:[self formatVoltage:item[@"Voltage"]]];
-        }
-        [rows addObject:vals];
-    }
-    return rows;
-}
-
-- (NSArray<NSArray<NSString *> *> *)longRows:(NSArray<NSDictionary *> *)data {
-    if (data.count == 0) {
-        return @[@[CLL(@"暂无数据")]];
-    }
-    NSMutableArray *rows = [NSMutableArray arrayWithCapacity:data.count];
-    NSArray *src = [[data reverseObjectEnumerator] allObjects];
-    for (NSDictionary *item in src) {
-        NSString *time = [self formatHistoryTime:item[@"UpdateTime"] style:@"day"];
-        NSString *cap = [self formatCapacity:item[@"NominalChargeCapacity"]];
-        NSString *cycle = [self formatCycle:item[@"CycleCount"]];
-        [rows addObject:@[time, cap, cycle]];
-    }
-    return rows;
-}
-
-- (void)rebuildTableWithTitle:(NSString *)title columns:(NSArray<NSString *> *)columns rows:(NSArray<NSArray<NSString *> *> *)rows {
-    for (UIView *view in self.tableCard.contentStack.arrangedSubviews) {
-        [self.tableCard.contentStack removeArrangedSubview:view];
-        [view removeFromSuperview];
-    }
-    
-    BOOL isEmpty = (rows.count == 1 && rows.firstObject.count == 1);
-    NSUInteger count = isEmpty ? 0 : rows.count;
-    UIView *header = [self historyCardHeaderWithTitle:title count:count];
-    [self.tableCard.contentStack addArrangedSubview:header];
-    [self.tableCard addSeparator];
-    
-    UIView *colRow = [self historyRowWithValues:columns header:YES];
-    [self.tableCard.contentStack addArrangedSubview:colRow];
-    [self.tableCard addSeparator];
-    
-    if (isEmpty) {
-        UIView *emptyRow = [self historyRowWithValues:@[CLL(@"暂无数据")] header:NO];
-        [self.tableCard.contentStack addArrangedSubview:emptyRow];
-        return;
-    }
-    
-    for (NSUInteger i = 0; i < rows.count; i++) {
-        UIView *row = [self historyRowWithValues:rows[i] header:NO];
-        if (i % 2 == 1) {
-            row.backgroundColor = [[UIColor secondarySystemGroupedBackgroundColor] colorWithAlphaComponent:0.5];
-        }
-        [self.tableCard.contentStack addArrangedSubview:row];
-        if (i < rows.count - 1) {
-            [self.tableCard addSeparator];
-        }
-    }
-}
-
 - (UIView *)historyCardHeaderWithTitle:(NSString *)title count:(NSUInteger)count {
     UIView *row = [[UIView alloc] init];
     row.translatesAutoresizingMaskIntoConstraints = NO;
@@ -2977,56 +2892,6 @@ static NSString *CLHistoryEventTimestampLabel(NSTimeInterval timestamp) {
         return [fmtMonth stringFromDate:date] ?: @"--";
     }
     return [fmtShort stringFromDate:date] ?: @"--";
-}
-
-- (NSString *)formatPercent:(id)val {
-    if (![val respondsToSelector:@selector(integerValue)]) {
-        return @"--";
-    }
-    return [NSString stringWithFormat:@"%ld%%", (long)[val integerValue]];
-}
-
-- (NSString *)formatTemperature:(id)val {
-    if (![val respondsToSelector:@selector(doubleValue)]) {
-        return @"--";
-    }
-    double temp = [val doubleValue];
-    if (temp > 200) {
-        temp = temp / 100.0;
-    }
-    return [NSString stringWithFormat:@"%.1f°C", temp];
-}
-
-- (NSString *)formatAmperage:(id)val {
-    if (![val respondsToSelector:@selector(integerValue)]) {
-        return @"--";
-    }
-    return [NSString stringWithFormat:@"%ld mA", (long)[val integerValue]];
-}
-
-- (NSString *)formatVoltage:(id)val {
-    if (![val respondsToSelector:@selector(doubleValue)]) {
-        return @"--";
-    }
-    double v = [val doubleValue];
-    if (v > 1000) {
-        v = v / 1000.0;
-    }
-    return [NSString stringWithFormat:@"%.2f V", v];
-}
-
-- (NSString *)formatCapacity:(id)val {
-    if (![val respondsToSelector:@selector(integerValue)]) {
-        return @"--";
-    }
-    return [NSString stringWithFormat:@"%ld mAh", (long)[val integerValue]];
-}
-
-- (NSString *)formatCycle:(id)val {
-    if (![val respondsToSelector:@selector(integerValue)]) {
-        return @"--";
-    }
-    return [NSString stringWithFormat:CLL(@"%ld 次"), (long)[val integerValue]];
 }
 
 @end
@@ -3915,10 +3780,6 @@ static UIViewController *CLTopVisibleViewController(void) {
     [self updateFillWidth];
 }
 
-- (void)setIsCharging:(BOOL)isCharging {
-    _isCharging = isCharging;
-}
-
 - (void)setChargeBelow:(NSInteger)chargeBelow {
     _chargeBelow = chargeBelow;
     [self updateMarkersAnimated:YES];
@@ -4032,8 +3893,6 @@ static UIViewController *CLTopVisibleViewController(void) {
 
     self.statusLabel.text = statusText ?: @"";
     self.percentage = manager.currentCapacity;
-    // 与 CLManagerLooksChargingForDisplay 对齐：iOS17 sticky IsCharging 不能驱动 UI 充电态
-    self.isCharging = CLManagerLooksChargingForDisplay(manager);
 
     CLBatteryVisualState nextState = [self visualStateForManager:manager];
     BOOL stateChanged = (nextState != (CLBatteryVisualState)self.visualState);
@@ -5306,7 +5165,6 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
 - (void)showLegacyResidualCleanupResult:(NSDictionary *)result;
 - (void)setupSystemControlHintFloating;
 - (void)updateSystemControlHintForChargeAbove:(NSInteger)newValue;
-- (void)showSystemControlHint;
 - (void)showSystemControlHintWithText:(NSString *)text;
 - (BOOL)usesSystemCapacityControlForManager:(CLBatteryManager *)manager chargeAbove:(NSInteger)chargeAbove;
 - (BOOL)isHoldSuppressedBySystemCapacityControlForManager:(CLBatteryManager *)manager;
@@ -6551,10 +6409,6 @@ static BOOL CLDisplayedPowerStateUsesExternalPower(CLBatteryManager *manager) {
     }
 }
 
-- (void)showSystemControlHint {
-    [self showSystemControlHintWithText:CLL(@"已切换为系统电量控制，温度控制仍生效")];
-}
-
 - (void)showSystemControlHintWithText:(NSString *)text {
     if (!self.isViewLoaded) {
         return;
@@ -6899,10 +6753,6 @@ static BOOL CLDisplayedPowerStateUsesExternalPower(CLBatteryManager *manager) {
             return;
         }
     }
-}
-
-- (UIStatusBarStyle)preferredStatusBarStyle {
-    return UIStatusBarStyleDefault;
 }
 
 - (void)languageDidChange {

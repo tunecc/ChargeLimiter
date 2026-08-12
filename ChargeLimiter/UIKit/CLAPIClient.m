@@ -582,10 +582,6 @@ static int CLStartDaemonBestEffort(void) {
     [self sendRequest:params completion:completion];
 }
 
-- (void)getHistoryWithType:(NSString *)type completion:(CLAPICallback)completion {
-    [self sendRequest:@{@"api": @"get_history", @"type": type} completion:completion];
-}
-
 - (void)getPolicyEventsWithLimit:(NSInteger)limit lastID:(NSInteger)lastID completion:(CLAPICallback)completion {
     NSDictionary *params = @{
         @"api": @"get_policy_events",
@@ -648,15 +644,6 @@ static int CLStartDaemonBestEffort(void) {
             allowDaemonRestart:NO
                       session:diagSession
                    completion:completion];
-}
-
-- (void)checkDaemonAliveWithCompletion:(void (^)(BOOL))completion {
-    [self getConfigWithKey:@"enable" completion:^(NSDictionary * _Nullable response, NSError * _Nullable error) {
-        BOOL alive = (response != nil && [response[@"status"] intValue] == 0);
-        if (completion) {
-            completion(alive);
-        }
-    }];
 }
 
 @end

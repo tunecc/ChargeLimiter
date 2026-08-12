@@ -14,16 +14,14 @@ PAYLOAD_DIR="$ROOT_DIR/Payload"
 ROOTHIDE_MERGE_ENT="$ROOT_DIR/scripts/roothide.entitlements"
 STAGE_DIR=""
 BUILD_LOG_ROOT=""
-# Default: native roothide scheme + Package_roothide. Legacy convert is opt-in.
+# Default: native roothide scheme + Package_roothide.
 BUILD_NATIVE_ROOTHIDE="${CHARGELIMITER_BUILD_NATIVE_ROOTHIDE:-1}"
-BUILD_LEGACY_ROOTHIDE="${CHARGELIMITER_BUILD_LEGACY_ROOTHIDE:-0}"
 DPKG_DEB_SUPPORTS_ROOT_OWNER_GROUP=0
 
 # CHARGELIMITER_BUILD_ROOTHIDE=0 disables all roothide packaging paths.
 case "${CHARGELIMITER_BUILD_ROOTHIDE:-1}" in
   0)
     BUILD_NATIVE_ROOTHIDE=0
-    BUILD_LEGACY_ROOTHIDE=0
     ;;
   1)
     ;;
@@ -35,7 +33,7 @@ esac
 
 usage() {
   cat >&2 <<EOF
-Usage: $0 [VERSION] [--skip-roothide] [--legacy-roothide-convert]
+Usage: $0 [VERSION] [--skip-roothide]
 
 Build TrollStore, rootful, rootless, and roothide packages into out/.
 
@@ -44,8 +42,6 @@ scheme and Package_roothide template (THEOS_PACKAGE_SCHEME=roothide).
 
 Options:
   --skip-roothide            Do not build the roothide package.
-  --legacy-roothide-convert  Build roothide by converting the rootless staging
-                             tree (RootHidePatcher-style fallback; not default).
 EOF
 }
 
@@ -227,13 +223,6 @@ copy_tree_contents() {
   cp -a "$src_dir"/. "$dst_dir"/
 }
 
-require_legacy_roothide_enabled() {
-  if [ "$BUILD_LEGACY_ROOTHIDE" != "1" ]; then
-    echo "[ERR] Legacy roothide conversion called without CHARGELIMITER_BUILD_LEGACY_ROOTHIDE=1." >&2
-    exit 1
-  fi
-}
-
 set_control_version() {
   control_file="$1"
   tmp_file="${control_file}.tmp.$$"
@@ -286,46 +275,6 @@ strip_app() {
   xcrun strip -S -x "$APP_PATH/ChargeLimiterDaemon"
 }
 
-copy_rootless_stage_to_roothide_layout() {
-  require_legacy_roothide_enabled
-
-  src_stage="$1"
-  dst_stage="$2"
-
-  rm -rf "$dst_stage"
-  mkdir -p "$dst_stage"
-
-  cp -a "$src_stage/DEBIAN" "$dst_stage/DEBIAN"
-
-  if [ -d "$src_stage/var/jb" ]; then
-    copy_tree_contents "$src_stage/var/jb" "$dst_stage"
-  fi
-
-  find "$src_stage" -mindepth 1 -maxdepth 1 | while IFS= read -r entry; do
-    base_name="$(basename "$entry")"
-    case "$base_name" in
-      DEBIAN)
-        ;;
-      var)
-        if [ -d "$entry" ]; then
-          find "$entry" -mindepth 1 -maxdepth 1 | while IFS= read -r var_entry; do
-            [ "$(basename "$var_entry")" = "jb" ] && continue
-            mkdir -p "$dst_stage/rootfs/var"
-            cp -a "$var_entry" "$dst_stage/rootfs/var/"
-          done
-        else
-          mkdir -p "$dst_stage/rootfs"
-          cp -a "$entry" "$dst_stage/rootfs/"
-        fi
-        ;;
-      *)
-        mkdir -p "$dst_stage/rootfs"
-        cp -a "$entry" "$dst_stage/rootfs/"
-        ;;
-    esac
-  done
-}
-
 list_rpaths() {
   xcrun otool -l "$1" |
   awk '
@@ -333,132 +282,6 @@ list_rpaths() {
     $1 == "cmd" && $2 == "LC_RPATH" { in_rpath = 1; next }
     in_rpath && $1 == "path" { print $2; in_rpath = 0 }
   '
-}
-
-change_macho_rpath() {
-  target_file="$1"
-  old_path="$2"
-  new_path="$3"
-  if ! xcrun install_name_tool -rpath "$old_path" "$new_path" "$target_file"; then
-    ldid -s "$target_file"
-    xcrun install_name_tool -rpath "$old_path" "$new_path" "$target_file"
-  fi
-}
-
-change_macho_load_path() {
-  target_file="$1"
-  old_path="$2"
-  new_path="$3"
-  if ! xcrun install_name_tool -change "$old_path" "$new_path" "$target_file"; then
-    ldid -s "$target_file"
-    xcrun install_name_tool -change "$old_path" "$new_path" "$target_file"
-  fi
-}
-
-rewrite_macho_for_roothide() {
-  require_legacy_roothide_enabled
-
-  target_file="$1"
-
-  list_rpaths "$target_file" | while IFS= read -r rpath; do
-    case "$rpath" in
-      /var/jb/*)
-        new_rpath="$(printf '%s\n' "$rpath" | sed 's|^/var/jb/|@loader_path/.jbroot/|')"
-        change_macho_rpath "$target_file" "$rpath" "$new_rpath"
-        ;;
-    esac
-  done
-
-  xcrun otool -L "$target_file" | awk 'NR > 1 { print $1 }' | while IFS= read -r dep; do
-    case "$dep" in
-      /var/jb/*)
-        new_dep="$(printf '%s\n' "$dep" | sed 's|^/var/jb/|@loader_path/.jbroot/|')"
-        change_macho_load_path "$target_file" "$dep" "$new_dep"
-        ;;
-    esac
-  done
-
-  file_type="$(file -b "$target_file")"
-  if printf '%s\n' "$file_type" | grep -q "executable"; then
-    # Match RootHidePatcher behavior: merge roothide-specific runtime entitlements
-    # into the executable's existing entitlement set instead of replacing it.
-    ldid -M "-S$ROOTHIDE_MERGE_ENT" "$target_file"
-  else
-    ldid -S "$target_file"
-  fi
-}
-
-rewrite_roothide_maintainer_script() {
-  require_legacy_roothide_enabled
-
-  target_file="$1"
-  tmp_file="${target_file}.tmp.$$"
-  sed \
-    -e 's|iphoneos-arm64|iphoneos-arm64e|g' \
-    -e 's|/var/jb/|/-var/jb/-|g' \
-    -e 's|/var/jb|/-var/jb-|g' \
-    -e 's| /Applications/| /rootfs/Applications/|g' \
-    -e 's| /Library/| /rootfs/Library/|g' \
-    -e 's| /private/| /rootfs/private/|g' \
-    -e 's| /System/| /rootfs/System/|g' \
-    -e 's| /sbin/| /rootfs/sbin/|g' \
-    -e 's| /bin/| /rootfs/bin/|g' \
-    -e 's| /etc/| /rootfs/etc/|g' \
-    -e 's| /lib/| /rootfs/lib/|g' \
-    -e 's| /usr/| /rootfs/usr/|g' \
-    -e 's| /var/| /rootfs/var/|g' \
-    -e 's|DIR="/Library/|DIR="/rootfs/Library/|g' \
-    -e 's|/rootfs/usr/bin/jbroot|/usr/bin/jbroot|g' \
-    -e 's|/rootfs/var/mobile/Library/Preferences|/var/mobile/Library/Preferences|g' \
-    -e '1s|^#![[:space:]]*/rootfs/|#! /|' \
-    -e 's|/-var/jb/-|/|g' \
-    -e 's|/-var/jb-|/var/jb|g' \
-    -e 's|/usr/bin/jbroot /usr/bin/jbroot|/usr/bin/jbroot|g' \
-    "$target_file" > "$tmp_file"
-  mv "$tmp_file" "$target_file"
-  chmod 755 "$target_file"
-}
-
-rewrite_roothide_launchdaemon_plist() {
-  require_legacy_roothide_enabled
-
-  target_file="$1"
-  tmp_file="${target_file}.tmp.$$"
-  plutil -convert xml1 "$target_file" >/dev/null 2>&1 || true
-  sed 's|/var/jb/|/|g' "$target_file" > "$tmp_file"
-  mv "$tmp_file" "$target_file"
-}
-
-convert_rootless_stage_to_roothide() {
-  require_legacy_roothide_enabled
-
-  src_stage="$1"
-  dst_stage="$2"
-
-  copy_rootless_stage_to_roothide_layout "$src_stage" "$dst_stage"
-
-  find "$dst_stage" -type f | while IFS= read -r file_path; do
-    case "$(basename "$file_path")" in
-      preinst|prerm|postinst|postrm|extrainst_*)
-        rewrite_roothide_maintainer_script "$file_path"
-        ;;
-    esac
-
-    case "$file_path" in
-      */Library/LaunchDaemons/*.plist)
-        rewrite_roothide_launchdaemon_plist "$file_path"
-        ;;
-    esac
-
-    if file -b "$file_path" | grep -q "Mach-O"; then
-      rewrite_macho_for_roothide "$file_path"
-    fi
-  done
-
-  clean_host_metadata "$dst_stage"
-  chmod 755 "$dst_stage/DEBIAN"
-  chmod 755 "$dst_stage/DEBIAN"/*
-  set_roothide_control_arch "$dst_stage/DEBIAN/control"
 }
 
 cleanup() {
@@ -489,12 +312,6 @@ while [ "$#" -gt 0 ]; do
       exit 0
       ;;
     --skip-roothide)
-      BUILD_NATIVE_ROOTHIDE=0
-      BUILD_LEGACY_ROOTHIDE=0
-      ;;
-    --legacy-roothide-convert)
-      # Opt-in RootHidePatcher-style conversion; disables native path.
-      BUILD_LEGACY_ROOTHIDE=1
       BUILD_NATIVE_ROOTHIDE=0
       ;;
     --)
@@ -527,23 +344,8 @@ case "$BUILD_NATIVE_ROOTHIDE" in
     ;;
 esac
 
-case "$BUILD_LEGACY_ROOTHIDE" in
-  0|1)
-    ;;
-  *)
-    echo "[ERR] CHARGELIMITER_BUILD_LEGACY_ROOTHIDE must be 0 or 1." >&2
-    exit 1
-    ;;
-esac
-
-# Prefer a single roothide path: native wins if both somehow enabled.
-if [ "$BUILD_NATIVE_ROOTHIDE" = "1" ] && [ "$BUILD_LEGACY_ROOTHIDE" = "1" ]; then
-  echo "[WARN] Both native and legacy roothide requested; using native path only."
-  BUILD_LEGACY_ROOTHIDE=0
-fi
-
 BUILD_ANY_ROOTHIDE=0
-if [ "$BUILD_NATIVE_ROOTHIDE" = "1" ] || [ "$BUILD_LEGACY_ROOTHIDE" = "1" ]; then
+if [ "$BUILD_NATIVE_ROOTHIDE" = "1" ]; then
   BUILD_ANY_ROOTHIDE=1
 fi
 
@@ -552,10 +354,6 @@ if [ "$BUILD_ANY_ROOTHIDE" = "1" ]; then
     echo "[ERR] Missing roothide compatibility entitlements: $ROOTHIDE_MERGE_ENT" >&2
     exit 1
   }
-fi
-
-if [ "$BUILD_LEGACY_ROOTHIDE" = "1" ]; then
-  require_cmd file
 fi
 
 if [ -z "$VERSION" ]; then
@@ -591,10 +389,6 @@ STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/chargelimiter-pack.XXXXXX")"
 STAGE_ROOTFUL_DIR="$STAGE_DIR/rootful"
 STAGE_ROOTLESS_DIR="$STAGE_DIR/rootless"
 STAGE_ROOTHIDE_DIR="$STAGE_DIR/roothide"
-
-if [ "$BUILD_LEGACY_ROOTHIDE" = "1" ]; then
-  echo "[WARN] roothide package will be built by converting the rootless staging tree (--legacy-roothide-convert)."
-fi
 
 echo "[1/10] Build rootful app (arm64)..."
 run_logged_command build-rootful xcodebuild \
@@ -707,9 +501,6 @@ if [ "$BUILD_NATIVE_ROOTHIDE" = "1" ]; then
   chmod 755 "$STAGE_ROOTHIDE_DIR/DEBIAN"/*
   set_control_version "$STAGE_ROOTHIDE_DIR/DEBIAN/control"
   set_roothide_control_arch "$STAGE_ROOTHIDE_DIR/DEBIAN/control"
-elif [ "$BUILD_LEGACY_ROOTHIDE" = "1" ]; then
-  echo "[7/10] Convert rootless package tree to roothide layout (legacy)..."
-  convert_rootless_stage_to_roothide "$STAGE_ROOTLESS_DIR" "$STAGE_ROOTHIDE_DIR"
 else
   echo "[7/10] Skip roothide package by request."
 fi
@@ -920,31 +711,8 @@ check_roothide_stage() {
     exit 1
   }
 
-  for script_path in "$POSTINST_PATH" "$PRERM_PATH" "$POSTRM_PATH"; do
-    rg -F -q '/-var/jb' "$script_path" && {
-      echo "[ERR] roothide maintainer script still contains conversion placeholder: $script_path" >&2
-      exit 1
-    }
-    rg -F -q '/var/jb/Applications/ChargeLimiter.app' "$script_path" && {
-      echo "[ERR] roothide maintainer script still contains rootless app path: $script_path" >&2
-      exit 1
-    }
-    rg -F -q '/var/jb/Library/LaunchDaemons/com.chargelimiter.mod.plist' "$script_path" && {
-      echo "[ERR] roothide maintainer script still contains rootless launch daemon path: $script_path" >&2
-      exit 1
-    }
-    rg -F -q '/rootfs/usr/bin/jbroot' "$script_path" && {
-      echo "[ERR] roothide maintainer script rewrote jbroot tool path through rootfs: $script_path" >&2
-      exit 1
-    }
-    rg -F -q '/rootfs/var/mobile/Library/Preferences' "$script_path" && {
-      echo "[ERR] roothide maintainer script passed a rootfs path to jbroot: $script_path" >&2
-      exit 1
-    }
-  done
-
-  # Legacy conversion keeps rootless arm64 slices; native scheme also builds arm64
-  # (iphoneos-arm64e is the roothide dpkg architecture label, not CPU slice).
+  # Native scheme also builds arm64 (iphoneos-arm64e is the roothide dpkg
+  # architecture label, not CPU slice).
   check_app "$APP_PATH" "arm64"
 
   # Link-path guard: residual /var/jb load commands are never valid in roothide stage.
@@ -986,9 +754,6 @@ echo "[OUT] $ROOTLESS_DEB_OUT"
 if [ "$BUILD_NATIVE_ROOTHIDE" = "1" ]; then
   echo "[OUT] $ROOTHIDE_DEB_OUT"
   echo "[INFO] roothide package was built natively via scheme \"ChargeLimiter roothide\" and Package_roothide."
-elif [ "$BUILD_LEGACY_ROOTHIDE" = "1" ]; then
-  echo "[OUT] $ROOTHIDE_DEB_OUT"
-  echo "[INFO] roothide package was built by legacy conversion from the rootless staging tree (--legacy-roothide-convert)."
 else
   echo "[INFO] roothide package was skipped."
 fi

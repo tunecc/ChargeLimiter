@@ -15,8 +15,6 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy) NSString *appVersion;
 @property (nonatomic, copy) NSString *packageScheme;
 @property (nonatomic, copy) NSString *jbType;
-@property (nonatomic, assign) int jbRawCode;              // getJBType 原始 code；-1=未取到
-@property (nonatomic, copy) NSString *jbProbeDetail;       // symbol/jbroot/libroot 探测串
 @property (nonatomic, copy) NSString *exePath;
 @property (nonatomic, copy) NSString *dataRootPath;
 @property (nonatomic, assign) NSTimeInterval systemBootTime;
