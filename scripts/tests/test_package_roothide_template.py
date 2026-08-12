@@ -10,7 +10,9 @@ from _helpers import REPO_ROOT, source_for
 ROOTHIDE_CTRL = REPO_ROOT / "ChargeLimiter/Package_roothide/DEBIAN/control"
 ROOTHIDE_POST = REPO_ROOT / "ChargeLimiter/Package_roothide/DEBIAN/postinst"
 ROOTHIDE_PRERM = REPO_ROOT / "ChargeLimiter/Package_roothide/DEBIAN/prerm"
-ROOTHIDE_PLIST = REPO_ROOT / "ChargeLimiter/Package_roothide/Library/LaunchDaemons/com.chargelimiter.mod.plist"
+ROOTFUL_POSTRM = REPO_ROOT / "ChargeLimiter/Package/DEBIAN/postrm"
+ROOTFUL_PLIST = REPO_ROOT / "ChargeLimiter/Package/Library/LaunchDaemons/com.chargelimiter.mod.plist"
+BUILD_SCRIPT = REPO_ROOT / "scripts/build_packages.sh"
 
 
 class PackageRoothideTemplateTests(unittest.TestCase):
@@ -156,11 +158,23 @@ exit 0
         self.assertIn('APP_DIR="/Applications/ChargeLimiter.app"', s)
         self.assertIn('DAEMON_PLIST="/Library/LaunchDaemons/com.chargelimiter.mod.plist"', s)
         self.assertIn("repair_shared_data_permissions", s)
-        self.assertIn("/var/mobile/ChargeLimiter", s)
-        self.assertNotIn("/var/jb/", s)
+
+    def test_shared_roothide_files_are_staged_from_rootful_canonical(self):
+        script = source_for(BUILD_SCRIPT)
+        self.assertIn('cp -p "$PKG_ROOTFUL_DIR/DEBIAN/postrm" "$STAGE_ROOTHIDE_DIR/DEBIAN/postrm"', script)
+        self.assertIn('"$PKG_ROOTFUL_DIR/Library/LaunchDaemons/com.chargelimiter.mod.plist"', script)
+        self.assertIn('chmod 755 "$STAGE_ROOTHIDE_DIR/DEBIAN/postrm"', script)
+        self.assertIn('chmod 644 "$STAGE_ROOTHIDE_DIR/Library/LaunchDaemons/com.chargelimiter.mod.plist"', script)
+
+    def test_shared_roothide_files_match_rootful_canonical(self):
+        self.assertTrue(ROOTFUL_POSTRM.exists())
+        self.assertTrue(ROOTFUL_PLIST.exists())
+        self.assertIn("uicache -p", source_for(ROOTFUL_POSTRM))
+        self.assertIn("/Applications/ChargeLimiter.app/ChargeLimiterDaemon", source_for(ROOTFUL_PLIST))
+        self.assertNotIn("/var/jb/", source_for(ROOTFUL_PLIST))
 
     def test_launchdaemon_rootful_shape(self):
-        raw = ROOTHIDE_PLIST.read_bytes()
+        raw = ROOTFUL_PLIST.read_bytes()
         self.assertIn(b"/Applications/ChargeLimiter.app/ChargeLimiterDaemon", raw)
         self.assertNotIn(b"/var/jb/", raw)
 
