@@ -503,6 +503,13 @@ static NSString *CLNumberedPathsText(NSArray<NSString *> *paths) {
     return [lines componentsJoinedByString:@"\n"];
 }
 
+static NSString *CLFrequencyString(NSInteger frequency) {
+    if (frequency <= 1) return CLL(@"1 秒");
+    if (frequency <= 20) return CLL(@"20 秒");
+    if (frequency <= 60) return CLL(@"1 分钟");
+    return CLL(@"10 分钟");
+}
+
 @implementation CLGlassCard
 
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -4434,10 +4441,7 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
 }
 
 - (NSString *)frequencyString:(NSInteger)freq {
-    if (freq <= 1) return CLL(@"1 秒");
-    if (freq <= 20) return CLL(@"20 秒");
-    if (freq <= 60) return CLL(@"1 分钟");
-    return CLL(@"10 分钟");
+    return CLFrequencyString(freq);
 }
 
 - (NSString *)chargeAbovePresetValueLabel {
@@ -6172,10 +6176,7 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
 }
 
 - (NSString *)frequencyString:(NSInteger)freq {
-    if (freq <= 1) return CLL(@"1 秒");
-    if (freq <= 20) return CLL(@"20 秒");
-    if (freq <= 60) return CLL(@"1 分钟");
-    return CLL(@"10 分钟");
+    return CLFrequencyString(freq);
 }
 
 - (void)setupMoreCard {
