@@ -94,7 +94,6 @@ static NSData *CLJSONResponseData(id object, NSInteger *statusCode) {
 
 @interface CLSimpleHTTPServer ()
 @property (nonatomic, assign) int serverSocket;
-@property (nonatomic, strong) NSString *documentRoot;
 @property (nonatomic, copy) CLHTTPRequestHandler postHandler;
 @property (nonatomic, assign) BOOL running;
 @property (nonatomic, strong) dispatch_queue_t serverQueue;
@@ -126,18 +125,6 @@ static NSData *CLJSONResponseData(id object, NSInteger *statusCode) {
 
 - (void)dealloc {
     [self stop];
-}
-
-- (BOOL)isRunning {
-    return _running;
-}
-
-- (NSUInteger)port {
-    return _serverPort;
-}
-
-- (void)setDocumentRoot:(NSString *)path {
-    _documentRoot = path;
 }
 
 - (void)setPostHandler:(CLHTTPRequestHandler)handler {
@@ -278,8 +265,7 @@ static NSData *CLJSONResponseData(id object, NSInteger *statusCode) {
         }
         
         NSString *method = parts[0];
-        NSString *path = parts[1];
-        
+
         // 解析 Content-Length
         NSInteger contentLength = 0;
         NSInteger headerEndIndex = 0;
@@ -344,50 +330,6 @@ static NSData *CLJSONResponseData(id object, NSInteger *statusCode) {
                 statusCode = 404;
                 responseData = [@"Not Found" dataUsingEncoding:NSUTF8StringEncoding];
             }
-        } else if ([method isEqualToString:@"GET"]) {
-            // 处理 GET 请求（静态文件）
-            if (_documentRoot) {
-                // 去除查询参数
-                NSString *filePath = path;
-                NSRange queryRange = [filePath rangeOfString:@"?"];
-                if (queryRange.location != NSNotFound) {
-                    filePath = [filePath substringToIndex:queryRange.location];
-                }
-                
-                // 默认 index.html
-                if ([filePath isEqualToString:@"/"] || [filePath hasSuffix:@"/"]) {
-                    filePath = [filePath stringByAppendingString:@"index.html"];
-                }
-                
-                // URL 解码
-                filePath = [filePath stringByRemovingPercentEncoding];
-                
-                // 安全检查，防止路径遍历
-                if ([filePath containsString:@".."]) {
-                    statusCode = 403;
-                    responseData = [@"Forbidden" dataUsingEncoding:NSUTF8StringEncoding];
-                } else {
-                    NSString *fullPath = [_documentRoot stringByAppendingPathComponent:filePath];
-                    
-                    if ([[NSFileManager defaultManager] fileExistsAtPath:fullPath]) {
-                        responseData = [NSData dataWithContentsOfFile:fullPath];
-                        contentType = [self mimeTypeForPath:fullPath];
-                    } else {
-                        // 尝试 404.htm
-                        NSString *notFoundPath = [_documentRoot stringByAppendingPathComponent:@"404.htm"];
-                        if ([[NSFileManager defaultManager] fileExistsAtPath:notFoundPath]) {
-                            statusCode = 404;
-                            responseData = [NSData dataWithContentsOfFile:notFoundPath];
-                        } else {
-                            statusCode = 404;
-                            responseData = [@"Not Found" dataUsingEncoding:NSUTF8StringEncoding];
-                        }
-                    }
-                }
-            } else {
-                statusCode = 404;
-                responseData = [@"Not Found" dataUsingEncoding:NSUTF8StringEncoding];
-            }
         } else {
             statusCode = 405;
             responseData = [@"Method Not Allowed" dataUsingEncoding:NSUTF8StringEncoding];
@@ -398,36 +340,6 @@ static NSData *CLJSONResponseData(id object, NSInteger *statusCode) {
         
         close(clientSocket);
     }
-}
-
-- (NSString *)mimeTypeForPath:(NSString *)path {
-    NSString *ext = [path.pathExtension lowercaseString];
-    
-    static NSDictionary *mimeTypes = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        mimeTypes = @{
-            @"html": @"text/html; charset=utf-8",
-            @"htm": @"text/html; charset=utf-8",
-            @"css": @"text/css; charset=utf-8",
-            @"js": @"application/javascript; charset=utf-8",
-            @"json": @"application/json; charset=utf-8",
-            @"png": @"image/png",
-            @"jpg": @"image/jpeg",
-            @"jpeg": @"image/jpeg",
-            @"gif": @"image/gif",
-            @"svg": @"image/svg+xml",
-            @"ico": @"image/x-icon",
-            @"woff": @"font/woff",
-            @"woff2": @"font/woff2",
-            @"ttf": @"font/ttf",
-            @"eot": @"application/vnd.ms-fontobject",
-            @"md": @"text/markdown; charset=utf-8",
-            @"txt": @"text/plain; charset=utf-8",
-        };
-    });
-    
-    return mimeTypes[ext] ?: @"application/octet-stream";
 }
 
 - (void)sendResponse:(int)socket statusCode:(NSInteger)statusCode contentType:(NSString *)contentType data:(NSData *)data {

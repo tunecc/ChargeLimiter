@@ -26,7 +26,6 @@ typedef const struct __IOHIDEvent* IOHIDEventRef;
 
 #define PRODUCT         "ChargeLimiter"
 #define GSERV_PORT      1230
-#define TRACE           false
 #define FLOAT_ORIGINX   100
 #define FLOAT_ORIGINY   100
 #define FLOAT_WIDTH     80

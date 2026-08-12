@@ -104,9 +104,10 @@ class DiagnosticCollectorContractTests(unittest.TestCase):
         body = self.m[start:start + 1000] if start >= 0 else ""
         self.assertIn("CLRedactJBRootTokensForDiag(line)", body)
 
-    def test_jb_dual_source(self):
-        self.assertIn("jbRawCode", self.h)
-        self.assertIn("jbProbeDetail", self.h)
+    def test_jb_single_source(self):
+        # jbType（标签）是越狱类型的唯一对外面；jbRawCode/jbProbeDetail 只写不读，
+        # 已随诊断模型清理删除。markdownText 渲染 jbType（见本文件 test_markdown_* 断言）。
+        self.assertIn("jbType", self.h)
 
 
 if __name__ == "__main__":
