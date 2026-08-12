@@ -73,10 +73,6 @@ typedef NS_ENUM(NSInteger, CLBatteryVisualState) {
 
 #pragma mark - 毛玻璃卡片
 
-@protocol CLChargeSliderEnforcing <NSObject>
-- (NSInteger)normalizedChargeValueForSlider:(UISlider *)slider value:(NSInteger)value;
-@end
-
 @interface CLGlassCard : UIView
 @property (nonatomic, strong) UIStackView *contentStack;
 @property (nonatomic, weak) UIViewController *viewController;
@@ -835,11 +831,6 @@ static NSString *CLFrequencyString(NSInteger frequency) {
 - (void)adjustSlider:(UISlider *)slider byAmount:(NSInteger)amount {
     NSInteger newValue = (NSInteger)roundf(slider.value) + amount;
     newValue = MAX(slider.minimumValue, MIN(slider.maximumValue, newValue));
-    id<CLChargeSliderEnforcing> vc = (id)self.viewController;
-    if ([vc respondsToSelector:@selector(normalizedChargeValueForSlider:value:)]) {
-        newValue = [vc normalizedChargeValueForSlider:slider value:newValue];
-    }
-    
     [UIView animateWithDuration:0.1 animations:^{
         slider.value = newValue;
     }];
@@ -900,11 +891,6 @@ static NSString *CLFrequencyString(NSInteger frequency) {
         NSString *inputText = alert.textFields.firstObject.text;
         NSInteger inputValue = [inputText integerValue];
         inputValue = MAX(minValue, MIN(maxValue, inputValue));
-        id<CLChargeSliderEnforcing> vc = (id)self.viewController;
-        if ([vc respondsToSelector:@selector(normalizedChargeValueForSlider:value:)]) {
-            inputValue = [vc normalizedChargeValueForSlider:slider value:inputValue];
-        }
-        
         slider.value = inputValue;
         valueLabel.text = [NSString stringWithFormat:@"%ld%@", (long)inputValue, suffix];
         
@@ -919,14 +905,6 @@ static NSString *CLFrequencyString(NSInteger frequency) {
 
 - (void)sliderChanged:(UISlider *)sender {
     NSInteger value = (NSInteger)roundf(sender.value);
-    id<CLChargeSliderEnforcing> vc = (id)self.viewController;
-    if ([vc respondsToSelector:@selector(normalizedChargeValueForSlider:value:)]) {
-        NSInteger normalized = [vc normalizedChargeValueForSlider:sender value:value];
-        if (normalized != value) {
-            value = normalized;
-            sender.value = value;
-        }
-    }
     UILabel *valueLabel = objc_getAssociatedObject(sender, "valueLabel");
     NSString *suffix = objc_getAssociatedObject(sender, "suffix") ?: @"%";
     valueLabel.text = [NSString stringWithFormat:@"%ld%@", (long)value, suffix];
@@ -959,10 +937,6 @@ static NSString *CLFrequencyString(NSInteger frequency) {
 
 - (void)sliderEnded:(UISlider *)sender {
     NSInteger value = (NSInteger)roundf(sender.value);
-    id<CLChargeSliderEnforcing> vc = (id)self.viewController;
-    if ([vc respondsToSelector:@selector(normalizedChargeValueForSlider:value:)]) {
-        value = [vc normalizedChargeValueForSlider:sender value:value];
-    }
     sender.value = value;
     UILabel *valueLabel = objc_getAssociatedObject(sender, "valueLabel");
     NSString *suffix = objc_getAssociatedObject(sender, "suffix") ?: @"%";
@@ -5807,8 +5781,7 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     if (!slider) {
         return;
     }
-    NSInteger adjustedValue = [self normalizedChargeValueForSlider:slider value:presetValue];
-    [self applyChargeAboveValue:adjustedValue emitFeedback:YES];
+    [self applyChargeAboveValue:presetValue emitFeedback:YES];
 }
 
 - (void)chargeAbovePresetLongPressed:(UILongPressGestureRecognizer *)gesture {
@@ -5828,8 +5801,7 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     NSInteger minValue = (NSInteger)roundf(slider.minimumValue);
     NSInteger maxValue = (NSInteger)roundf(slider.maximumValue);
     NSInteger clampedValue = MIN(MAX(manager.currentCapacity, minValue), maxValue);
-    NSInteger adjustedValue = [self normalizedChargeValueForSlider:slider value:clampedValue];
-    [self applyChargeAboveValue:adjustedValue emitFeedback:YES];
+    [self applyChargeAboveValue:clampedValue emitFeedback:YES];
 }
 
 - (void)setupTempCard {
@@ -6365,10 +6337,6 @@ static NSString *CLDisplayedPowerStateForManager(CLBatteryManager *manager) {
 
 static BOOL CLDisplayedPowerStateUsesExternalPower(CLBatteryManager *manager) {
     return ![[CLDisplayedPowerStateForManager(manager) lowercaseString] isEqualToString:@"battery"];
-}
-
-- (NSInteger)normalizedChargeValueForSlider:(UISlider *)slider value:(NSInteger)value {
-    return value;
 }
 
 #pragma mark - Navigation Actions
