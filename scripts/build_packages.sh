@@ -493,6 +493,13 @@ if [ "$BUILD_NATIVE_ROOTHIDE" = "1" ]; then
     exit 1
   }
   cp -a "$PKG_ROOTHIDE_DIR" "$STAGE_ROOTHIDE_DIR"
+  # Rootful and roothide share these byte-identical files; keep one canonical source.
+  cp -p "$PKG_ROOTFUL_DIR/DEBIAN/postrm" "$STAGE_ROOTHIDE_DIR/DEBIAN/postrm"
+  chmod 755 "$STAGE_ROOTHIDE_DIR/DEBIAN/postrm"
+  mkdir -p "$STAGE_ROOTHIDE_DIR/Library/LaunchDaemons"
+  cp -p "$PKG_ROOTFUL_DIR/Library/LaunchDaemons/com.chargelimiter.mod.plist" \
+    "$STAGE_ROOTHIDE_DIR/Library/LaunchDaemons/com.chargelimiter.mod.plist"
+  chmod 644 "$STAGE_ROOTHIDE_DIR/Library/LaunchDaemons/com.chargelimiter.mod.plist"
   rm -rf "$STAGE_ROOTHIDE_DIR/Applications/ChargeLimiter.app"
   mkdir -p "$STAGE_ROOTHIDE_DIR/Applications"
   cp -a "$ROOTHIDE_APP" "$STAGE_ROOTHIDE_DIR/Applications/ChargeLimiter.app"
