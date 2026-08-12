@@ -489,20 +489,6 @@ static void CLOpenPathInFilza(UIViewController *vc, NSString *path) {
     tryOpen();
 }
 
-static NSString *CLNumberedLegacyDirsText(NSArray<NSString *> *dirs) {
-    if (![dirs isKindOfClass:[NSArray class]] || dirs.count == 0) {
-        return @"";
-    }
-    NSMutableArray<NSString *> *lines = [NSMutableArray arrayWithCapacity:dirs.count];
-    [dirs enumerateObjectsUsingBlock:^(NSString * _Nonnull obj, NSUInteger idx, BOOL * _Nonnull stop) {
-        if (![obj isKindOfClass:[NSString class]] || obj.length == 0) {
-            return;
-        }
-        [lines addObject:[NSString stringWithFormat:@"%lu. %@", (unsigned long)(idx + 1), obj]];
-    }];
-    return [lines componentsJoinedByString:@"\n"];
-}
-
 static NSString *CLNumberedPathsText(NSArray<NSString *> *paths) {
     if (![paths isKindOfClass:[NSArray class]] || paths.count == 0) {
         return @"";
@@ -4893,7 +4879,7 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
         return;
     }
 
-    NSString *displayLegacyDir = CLNumberedLegacyDirsText(legacyDirs);
+    NSString *displayLegacyDir = CLNumberedPathsText(legacyDirs);
     NSMutableString *message = [NSMutableString stringWithFormat:
                                 CLL(@"检测到旧版本配置文件可能在：\n%@\n\n是否迁移到当前版本的 Documents 目录？\n\n提示：迁移会覆盖当前同名文件，并删除旧目录中的原文件。"),
                                 displayLegacyDir];
@@ -5281,7 +5267,7 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
         return;
     }
 
-    NSString *displayLegacyDir = CLNumberedLegacyDirsText(legacyDirs);
+    NSString *displayLegacyDir = CLNumberedPathsText(legacyDirs);
     NSMutableString *message = [NSMutableString stringWithFormat:
                                 CLL(@"检测到旧版本配置文件可能在：\n%@\n\n是否迁移到当前版本的 Documents 目录？\n\n提示：新版卸载时会删除当前应用数据目录，历史记录会丢失。"),
                                 displayLegacyDir];
