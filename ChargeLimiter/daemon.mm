@@ -130,16 +130,10 @@ static BOOL g_tempSmartChargeDisabledByCL = NO;
 static int g_smartChargeCoordinationOriginalStatus = -1;
 static NSString* g_smartChargeCoordinationSessionID = nil;
 static time_t g_smartChargeCoordinationStartedTs = 0;
-static int g_holdDischargeStreak = 0;
 static BOOL g_holdHasReachedTargetSincePlug = NO;
 static BOOL g_holdMonitorCheckRequested = NO;
 static NSArray* g_recentPolicyTransitions = nil;
 static NSArray* g_policyEventHistory = nil;
-static NSString* g_holdRuntimeBehavior = @"balanced";
-static NSString* g_holdAdaptiveLoadLevel = @"fixed";
-static int g_holdAdaptiveAverageCurrentmA = 0;
-static time_t g_lastHoldRuntimeBehaviorChangeTs = 0;
-static NSMutableArray<NSNumber*>* g_holdCurrentSamples = nil;
 static BOOL g_predictiveInhibitFallbackActive = NO;
 static BOOL g_chargeControlProbeRunning = NO;
 static NSObject *g_probeLock = nil;
@@ -161,10 +155,6 @@ static const int kHoldCurrentDischargeThresholdmA = -120;
 static const NSUInteger kPolicyTransitionHistoryLimit = 8;
 static const NSUInteger kPolicyEventHistoryLimit = 48;
 static const NSUInteger kPolicyEventDBLimit = 5000;
-static const NSUInteger kHoldAdaptiveSampleWindow = 5;
-static const int kHoldAdaptiveBehaviorMinStaySeconds = 60;
-static const int kHoldAdaptiveHighLoadEnterCurrentmA = -450;
-static const int kHoldAdaptiveHighLoadExitCurrentmA = -260;
 static const int kDisableInflowRetryMaxAttempts = 3;
 static const NSTimeInterval kDisableInflowRetryDelaySeconds = 0.6;
 static const NSTimeInterval kPredictiveInhibitFallbackVerifyDelaySeconds = 8.0;
@@ -197,10 +187,6 @@ static BOOL shouldIssueEnableInflowCommand(BOOL advDisableInflow, BOOL inflowEna
     }
     return [previousPolicyState isEqualToString:@"no_inflow"];
 }
-static const int kHoldAdaptiveMediumLoadEnterCurrentmA = -180;
-static const int kHoldAdaptiveMediumLoadExitCurrentmA = -100;
-static const int kHoldAdaptiveMinPowerFirstWatts = 12;
-static const float kHoldAdaptiveTempMarginC = 1.5f;
 static NSString* const kSmartChargeCoordinationStateKey = @"_runtime_smart_charge_coordination_state";
 static NSString* const kPolicyEventHistoryKey = @"_runtime_policy_event_history";
 static NSString* const kPolicyEventDBTableName = @"policy_events";
@@ -325,240 +311,16 @@ static int getHoldCheckIntervalSeconds() {
     return getHoldCheckIntervalMinutes() * 60;
 }
 
-static NSString* normalizeHoldModeBehavior(NSString* behavior) {
-    if ([@[@"balanced", @"power_first", @"battery_first", @"adaptive"] containsObject:behavior]) {
-        return behavior;
-    }
-    return @"balanced";
-}
-
-static NSString* getHoldModeBehavior() {
-    return @"balanced";
-}
-
-static BOOL isHoldAdaptiveBehavior(NSString* behavior) {
-    return [normalizeHoldModeBehavior(behavior) isEqualToString:@"adaptive"];
-}
-
-static NSString* currentHoldRuntimeBehavior(void) {
-    return @"balanced";
-}
-
-static int getHoldStrategyMonitorIntervalSecondsForBehavior(NSString* behavior) {
-    return getHoldCheckIntervalSeconds();
-}
-
 static BOOL isHoldSmartChargeCoordinationEnabled() {
     return getLocalBool(@"adv_hold_temp_disable_smart_charge", YES);
 }
 
 static int getHoldStrategyMonitorIntervalSeconds() {
-    return getHoldStrategyMonitorIntervalSecondsForBehavior(currentHoldRuntimeBehavior());
-}
-
-static BOOL shouldUseHoldEarlyRechargeAssistForBehavior(NSString* behavior) {
-    return NO;
-}
-
-static int getHoldEarlyRechargeDischargeStreakRequiredForBehavior(NSString* behavior) {
-    return 0;
-}
-
-static BOOL shouldUseHoldEarlyRechargeAssist() {
-    return shouldUseHoldEarlyRechargeAssistForBehavior(currentHoldRuntimeBehavior());
-}
-
-static int getHoldEarlyRechargeDischargeStreakRequired() {
-    return 0;
-}
-
-static void resetHoldAdaptiveRuntimeState() {
-    g_holdRuntimeBehavior = @"balanced";
-    g_holdAdaptiveLoadLevel = @"fixed";
-    g_holdAdaptiveAverageCurrentmA = 0;
-    g_lastHoldRuntimeBehaviorChangeTs = 0;
-    g_holdCurrentSamples = nil;
-}
-
-static void resetHoldRuntimeState() {
-    g_holdDischargeStreak = 0;
+    return getHoldCheckIntervalSeconds();
 }
 
 static void resetHoldSessionState() {
     g_holdHasReachedTargetSincePlug = NO;
-    resetHoldRuntimeState();
-}
-
-static void appendHoldCurrentSample(int current) {
-    if (g_holdCurrentSamples == nil) {
-        g_holdCurrentSamples = [NSMutableArray array];
-    }
-    [g_holdCurrentSamples addObject:@(current)];
-    if (g_holdCurrentSamples.count > kHoldAdaptiveSampleWindow) {
-        [g_holdCurrentSamples removeObjectsInRange:NSMakeRange(0, g_holdCurrentSamples.count - kHoldAdaptiveSampleWindow)];
-    }
-}
-
-static int averageHoldCurrentSamples(void) {
-    if (g_holdCurrentSamples.count == 0) {
-        return 0;
-    }
-    long total = 0;
-    for (NSNumber* sample in g_holdCurrentSamples) {
-        total += sample.intValue;
-    }
-    return (int)llround((double)total / (double)g_holdCurrentSamples.count);
-}
-
-static NSString* desiredAdaptiveHoldBehavior(NSString* currentBehavior,
-                                             int averageCurrent,
-                                             NSInteger adapterWatts,
-                                             BOOL isWireless,
-                                             BOOL tempNearUpperLimit,
-                                             NSString** loadLevelOut) {
-    NSString* safeCurrentBehavior = normalizeHoldModeBehavior(currentBehavior);
-    if (tempNearUpperLimit) {
-        if (loadLevelOut) {
-            *loadLevelOut = @"thermal_guard";
-        }
-        return @"battery_first";
-    }
-
-    if (isWireless) {
-        if (loadLevelOut) {
-            *loadLevelOut = @"wireless_guard";
-        }
-        return averageCurrent <= kHoldAdaptiveMediumLoadEnterCurrentmA ? @"balanced" : @"battery_first";
-    }
-
-    BOOL canUsePowerFirst = (adapterWatts <= 0 || adapterWatts >= kHoldAdaptiveMinPowerFirstWatts);
-    if ([safeCurrentBehavior isEqualToString:@"power_first"]) {
-        if (canUsePowerFirst && averageCurrent <= kHoldAdaptiveHighLoadExitCurrentmA) {
-            if (loadLevelOut) {
-                *loadLevelOut = @"high";
-            }
-            return @"power_first";
-        }
-        if (averageCurrent <= kHoldAdaptiveMediumLoadEnterCurrentmA) {
-            if (loadLevelOut) {
-                *loadLevelOut = @"medium";
-            }
-            return @"balanced";
-        }
-        if (loadLevelOut) {
-            *loadLevelOut = @"low";
-        }
-        return @"battery_first";
-    }
-
-    if ([safeCurrentBehavior isEqualToString:@"balanced"]) {
-        if (canUsePowerFirst && averageCurrent <= kHoldAdaptiveHighLoadEnterCurrentmA) {
-            if (loadLevelOut) {
-                *loadLevelOut = @"high";
-            }
-            return @"power_first";
-        }
-        if (averageCurrent > kHoldAdaptiveMediumLoadExitCurrentmA) {
-            if (loadLevelOut) {
-                *loadLevelOut = @"low";
-            }
-            return @"battery_first";
-        }
-        if (loadLevelOut) {
-            *loadLevelOut = @"medium";
-        }
-        return @"balanced";
-    }
-
-    if (canUsePowerFirst && averageCurrent <= kHoldAdaptiveHighLoadEnterCurrentmA) {
-        if (loadLevelOut) {
-            *loadLevelOut = @"high";
-        }
-        return @"power_first";
-    }
-    if (averageCurrent <= kHoldAdaptiveMediumLoadEnterCurrentmA) {
-        if (loadLevelOut) {
-            *loadLevelOut = @"medium";
-        }
-        return @"balanced";
-    }
-    if (loadLevelOut) {
-        *loadLevelOut = @"low";
-    }
-    return @"battery_first";
-}
-
-static NSString* updateHoldRuntimeBehavior(NSDictionary* info,
-                                           BOOL holdEnabled,
-                                           BOOL isAdaptorConnected,
-                                           float temperature,
-                                           float chargeTempAbove,
-                                           time_t now,
-                                           BOOL* changedOut) {
-    NSString* configuredBehavior = getHoldModeBehavior();
-    NSString* previousRuntimeBehavior = currentHoldRuntimeBehavior();
-    BOOL changed = NO;
-
-    if (!holdEnabled || !isAdaptorConnected) {
-        resetHoldAdaptiveRuntimeState();
-        if (!isHoldAdaptiveBehavior(configuredBehavior)) {
-            g_holdRuntimeBehavior = configuredBehavior;
-        }
-        if (changedOut) {
-            *changedOut = NO;
-        }
-        return currentHoldRuntimeBehavior();
-    }
-
-    if (!isHoldAdaptiveBehavior(configuredBehavior)) {
-        g_holdRuntimeBehavior = configuredBehavior;
-        g_holdAdaptiveLoadLevel = @"fixed";
-        g_holdAdaptiveAverageCurrentmA = getEffectiveBatteryCurrent(info);
-        g_holdCurrentSamples = nil;
-        if (changedOut) {
-            *changedOut = ![previousRuntimeBehavior isEqualToString:g_holdRuntimeBehavior];
-        }
-        return configuredBehavior;
-    }
-
-    appendHoldCurrentSample(getEffectiveBatteryCurrent(info));
-    g_holdAdaptiveAverageCurrentmA = averageHoldCurrentSamples();
-
-    NSDictionary* adapterDetails = info[@"AdapterDetails"];
-    NSInteger adapterWatts = [adapterDetails[@"Watts"] respondsToSelector:@selector(integerValue)] ? [adapterDetails[@"Watts"] integerValue] : 0;
-    BOOL isWireless = [adapterDetails[@"IsWireless"] boolValue];
-    BOOL tempNearUpperLimit = (getLocalBool(@"enable_temp", NO) &&
-                               chargeTempAbove > 0 &&
-                               temperature >= MAX(0.0f, chargeTempAbove - kHoldAdaptiveTempMarginC));
-
-    NSString* loadLevel = @"low";
-    NSString* desiredBehavior = desiredAdaptiveHoldBehavior(previousRuntimeBehavior,
-                                                            g_holdAdaptiveAverageCurrentmA,
-                                                            adapterWatts,
-                                                            isWireless,
-                                                            tempNearUpperLimit,
-                                                            &loadLevel);
-    g_holdAdaptiveLoadLevel = loadLevel ?: @"low";
-
-    BOOL forceSwitch = tempNearUpperLimit || isWireless;
-    if (g_holdRuntimeBehavior.length == 0) {
-        g_holdRuntimeBehavior = desiredBehavior;
-        g_lastHoldRuntimeBehaviorChangeTs = now;
-        changed = YES;
-    } else if (![g_holdRuntimeBehavior isEqualToString:desiredBehavior]) {
-        if (forceSwitch || g_lastHoldRuntimeBehaviorChangeTs == 0 || now - g_lastHoldRuntimeBehaviorChangeTs >= kHoldAdaptiveBehaviorMinStaySeconds) {
-            g_holdRuntimeBehavior = desiredBehavior;
-            g_lastHoldRuntimeBehaviorChangeTs = now;
-            changed = YES;
-        }
-    } else if (g_lastHoldRuntimeBehaviorChangeTs == 0) {
-        g_lastHoldRuntimeBehaviorChangeTs = now;
-    }
-
-    if (changedOut) {
-        *changedOut = changed;
-    }
-    return currentHoldRuntimeBehavior();
 }
 
 static NSArray* recentPolicyTransitionHistory(void) {
@@ -2044,7 +1806,6 @@ static void resetBatteryStatusWithContext(BOOL restoreRuntimeSideEffects, NSStri
     g_chargeCommandEnabled = YES;
     g_lastChargeCommandTs = now;
     g_lastInflowCommandTs = now;
-    resetHoldRuntimeState();
     resetHoldSessionState();
     clearPredictiveInhibitFallbackRuntimeState();
     g_policyState = @"battery";
@@ -3214,15 +2975,6 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
                              g_holdHasReachedTargetSincePlug &&
                              capacity.intValue > hold_lower &&
                              capacity.intValue < charge_above);
-    if (within_hold_band) {
-        if (current_looks_discharging) {
-            g_holdDischargeStreak = MIN(g_holdDischargeStreak + 1, 99);
-        } else {
-            g_holdDischargeStreak = 0;
-        }
-    } else {
-        g_holdDischargeStreak = 0;
-    }
     NSString* nextPolicyState = @"battery";
     NSString* nextPolicyReason = @"battery_idle";
     if (is_adaptor_connected) {
@@ -3284,7 +3036,6 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
                     performAcccharge(NO);
                 }
                 g_holdHasReachedTargetSincePlug = YES;
-                resetHoldRuntimeState();
                 nextPolicyState = @"hold";
                 nextPolicyReason = @"hold_target_reached";
                 break;
@@ -3300,7 +3051,6 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
                         setBatteryStatus(YES);
                         performAcccharge(YES);
                     }
-                    resetHoldRuntimeState();
                     nextPolicyState = @"hold_recharge";
                     nextPolicyReason = holdRechargeReason;
                     break;
@@ -3625,7 +3375,6 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             refreshHoldMonitorTimer();
             if (!g_enable) {
                 resetBatteryStatus();
-                resetHoldAdaptiveRuntimeState();
                 tryRestoreSmartChargeAfterCoordination(@"daemon_disabled");
             } else { // 启用时检查
                 BOOL disableSmartCharge = getLocalBool(@"disable_smart_charge", NO);
