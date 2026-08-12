@@ -165,5 +165,33 @@ class Ios17OverridePathsTests(unittest.TestCase):
         body = self.source[start:start+1200]
         self.assertIn("NSInteger waitMs = 2000;", body)
 
+    def test_adaptive_hold_dead_layer_is_removed_but_config_pipeline_remains(self):
+        for symbol in [
+            "normalizeHoldModeBehavior",
+            "getHoldModeBehavior",
+            "isHoldAdaptiveBehavior",
+            "currentHoldRuntimeBehavior",
+            "getHoldStrategyMonitorIntervalSecondsForBehavior",
+            "shouldUseHoldEarlyRechargeAssist",
+            "getHoldEarlyRechargeDischargeStreakRequired",
+            "appendHoldCurrentSample",
+            "averageHoldCurrentSamples",
+            "desiredAdaptiveHoldBehavior",
+            "updateHoldRuntimeBehavior",
+            "g_holdRuntimeBehavior",
+            "g_holdAdaptiveLoadLevel",
+            "g_holdAdaptiveAverageCurrentmA",
+            "g_lastHoldRuntimeBehaviorChangeTs",
+            "g_holdCurrentSamples",
+            "g_holdDischargeStreak",
+            "resetHoldRuntimeState",
+            "resetHoldAdaptiveRuntimeState",
+        ]:
+            self.assertNotIn(symbol, self.source)
+        interval_start = self.source.index("static int getHoldStrategyMonitorIntervalSeconds()")
+        interval_body = self.source[interval_start:self.source.index("static BOOL", interval_start)]
+        self.assertIn("return getHoldCheckIntervalSeconds();", interval_body)
+        self.assertIn('"adv_hold_behavior"', self.source)
+
 if __name__ == "__main__":
     unittest.main()
