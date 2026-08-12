@@ -11,6 +11,10 @@ class Ios17UiHoldStatusDisplayTests(unittest.TestCase):
     def _looks_charging_body(self) -> str:
         return function_body(self.source, "CLManagerLooksChargingForDisplay")
 
+    def test_no_identity_slider_normalization_layer(self):
+        self.assertNotIn("CLChargeSliderEnforcing", self.source)
+        self.assertNotIn("normalizedChargeValueForSlider", self.source)
+
     def test_looks_charging_does_not_trust_is_charging_alone(self):
         """iOS17 sticky IsCharging=true must not alone force '正在充电'."""
         body = self._looks_charging_body()
