@@ -45,20 +45,8 @@ static NSDictionary *CLDiagCallDaemonLaunchProbe(void) {
     return clDaemonLaunchProbe_C();
 }
 
-static int CLDiagGetJBTypeCode(BOOL *outFound) {
-    if (outFound) {
-        *outFound = YES;
-    }
+static int CLDiagGetJBTypeCode(void) {
     return getJBType_C();
-}
-
-static NSString *CLDiagJbProbeDetail(BOOL symbolFound) {
-    BOOL jbrootSym = (dlsym(RTLD_DEFAULT, "jbroot") != NULL);
-    BOOL librootSym = (dlsym(RTLD_DEFAULT, "libroot_dyn_jbrootpath") != NULL);
-    return [NSString stringWithFormat:@"symbol=%@ jbroot=%@ libroot=%@",
-            symbolFound ? @"YES" : @"NO",
-            jbrootSym ? @"YES" : @"NO",
-            librootSym ? @"YES" : @"NO"];
 }
 
 static NSString *CLDiagLocalExecutablePath(void) {
@@ -480,11 +468,7 @@ NSString *CLJBTypeLabelFromCode(int code) {
     CLBatteryManager *mgr = [CLBatteryManager shared];
     CLDiagEnvironment *env = [CLDiagEnvironment new];
     env.packageScheme = CLPackageSchemeString();
-    BOOL jbFound = NO;
-    int jb = CLDiagGetJBTypeCode(&jbFound);
-    env.jbType = CLJBTypeLabelFromCode(jb);
-    env.jbRawCode = jb;
-    env.jbProbeDetail = CLDiagJbProbeDetail(jbFound);
+    env.jbType = CLJBTypeLabelFromCode(CLDiagGetJBTypeCode());
     env.exePath = CLSanitizePathForDiag(CLDiagCallGetSelfExePath());
     env.dataRootPath = CLSanitizePathForDiag(CLDiagCallGetRuntimeDataRootPath());
     NSTimeInterval boot = CLDiagCallGetSysBoottime();

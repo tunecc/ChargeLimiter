@@ -51,13 +51,15 @@ class Ios17UiHoldStatusDisplayTests(unittest.TestCase):
         self.assertIn('@"hold"', body)
         self.assertIn('@"stopped"', body)
 
-    def test_apply_battery_manager_uses_display_helper(self):
-        start = self.source.find("- (void)applyBatteryManager:(CLBatteryManager *)manager statusText:(NSString *)statusText")
+    def test_display_state_uses_charging_display_helper(self):
+        # iOS17：充电显示态走 CLManagerLooksChargingForDisplay，不用 raw manager.isCharging。
+        # （write-only 的 statusView.isCharging 已删；helper 现在在 CLDisplayedPowerStateForManager 里驱动显示态）
+        start = self.source.find("static NSString *CLDisplayedPowerStateForManager(CLBatteryManager *manager) {")
         self.assertGreater(start, -1)
-        end = self.source.find("- (void)applyVisualStateAnimated:", start)
+        end = self.source.find("static BOOL CLDisplayedPowerStateUsesExternalPower", start)
         body = self.source[start:end]
-        self.assertIn("self.isCharging = CLManagerLooksChargingForDisplay(manager);", body)
-        self.assertNotIn("self.isCharging = manager.isCharging;", body)
+        self.assertIn("CLManagerLooksChargingForDisplay(manager)", body)
+        self.assertNotIn("manager.isCharging", body)
 
     def test_power_state_label_still_maps_hold_and_stopped(self):
         start = self.source.find("- (NSString *)powerStateLabelForManager:(CLBatteryManager *)manager")

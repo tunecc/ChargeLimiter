@@ -21,16 +21,7 @@ int main(int argc, char** argv) {
 #import <UserNotifications/UserNotifications.h>
 #include <notify.h>
 
-// 如果定义了 CL_USE_GCDWEBSERVER 则使用 GCDWebServers，否则使用自己的简易 HTTP 服务器
-#ifndef CL_USE_GCDWEBSERVER
-#define CL_USE_GCDWEBSERVER 0
-#endif
-
-#if CL_USE_GCDWEBSERVER
-#import <GCDWebServers/GCDWebServers.h>
-#else
 #import "CLSimpleHTTPServer.h"
-#endif
 
 #include "utils.h"
 
@@ -111,7 +102,6 @@ kern_return_t IOCreatePlugInInterfaceForService(io_service_t service, CFUUIDRef 
 
 enum {
     CL_MODE_PLUG = 1,
-    CL_MODE_EDGE = 2,
 };
 
 static NSDictionary* bat_info = nil;
@@ -166,7 +156,6 @@ static NSObject *CLProbeGetLock(void) {
 static const int kHoldDefaultMonitorIntervalMinutes = 3;
 static const int kHoldMinMonitorIntervalMinutes = 1;
 static const int kHoldMaxMonitorIntervalMinutes = 10;
-static const int kHoldActionMinGapSeconds = 20;
 static const int kHoldCurrentChargeThresholdmA = 120;
 static const int kHoldCurrentDischargeThresholdmA = -120;
 static const NSUInteger kPolicyTransitionHistoryLimit = 8;
@@ -2141,11 +2130,6 @@ static NSString* getMsgForLang(NSString* msgid, NSString* lang) {
     return msg;
 }
 
-static void performAction(NSString* msgid) {
-    (void)msgid;
-    // 通知已迁移到策略状态切换层按 reason 触发，避免 start/stop 的粗粒度重复提醒。
-}
-
 static BOOL notificationsEnabled() {
     return [getLocalString(@"action", @"") isEqualToString:@"noti"];
 }
@@ -2929,10 +2913,6 @@ static int getHoldModeLowerBound(int target) {
     return MAX(5, target - getHoldModeBand());
 }
 
-static BOOL canToggleChargeCommand(time_t now) {
-    return (g_lastChargeCommandTs == 0 || now - g_lastChargeCommandTs >= kHoldActionMinGapSeconds);
-}
-
 static NSDictionary* storedSmartChargeCoordinationState(void) {
     NSDictionary* state = getLocalDict(kSmartChargeCoordinationStateKey, @{});
     if (![state isKindOfClass:[NSDictionary class]]) {
@@ -3276,7 +3256,6 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
         if (is_adaptor_connected && enable_temp && temperature >= charge_temp_above) { // 停充-温度高,优先级=3
             if (g_chargeCommandEnabled || current_looks_charging) {
                 setBatteryStatus(NO);
-                performAction(@"stop_charge");
                 performAcccharge(NO);
             }
             if (shouldIssueDisableInflowCommand(adv_disable_inflow, inflow_enabled_snapshot, previousPolicyState)) {
@@ -3292,7 +3271,6 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
                     setInflowStatus(YES);
                 }
                 setBatteryStatus(YES);
-                performAction(@"start_charge");
                 performAcccharge(YES);
             }
             nextPolicyState = @"charging";
@@ -3303,7 +3281,6 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
             if (capacity.intValue >= charge_above) {
                 if (g_chargeCommandEnabled || current_looks_charging) {
                     setBatteryStatus(NO);
-                    performAction(@"stop_charge");
                     performAcccharge(NO);
                 }
                 g_holdHasReachedTargetSincePlug = YES;
@@ -3321,7 +3298,6 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
                 if (should_recharge_for_hold) {
                     if (!g_chargeCommandEnabled || predictive_inhibit_active || !current_looks_charging) {
                         setBatteryStatus(YES);
-                        performAction(@"start_charge");
                         performAcccharge(YES);
                     }
                     resetHoldRuntimeState();
@@ -3337,7 +3313,6 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
         if (is_adaptor_connected && !disable_capacity_control && capacity.intValue >= charge_above) { // 停充-电量高,优先级=2
             if (g_chargeCommandEnabled || current_looks_charging) {
                 setBatteryStatus(NO);
-                performAction(@"stop_charge");
                 performAcccharge(NO);
             }
             if (shouldIssueDisableInflowCommand(adv_disable_inflow, inflow_enabled_snapshot, previousPolicyState)) {
@@ -3357,7 +3332,6 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
                     setInflowStatus(YES);
                 }
                 setBatteryStatus(YES);
-                performAction(@"start_charge");
                 performAcccharge(YES);
                 nextPolicyState = @"charging";
                 nextPolicyReason = @"temperature_recovered";
@@ -3371,7 +3345,6 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
                     setInflowStatus(YES);
                 }
                 setBatteryStatus(YES);
-                performAction(@"start_charge");
                 performAcccharge(YES);
             }
             nextPolicyState = @"charging";
@@ -3384,7 +3357,6 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
                     setInflowStatus(YES);
                 }
                 setBatteryStatus(YES);
-                performAction(@"start_charge");
                 performAcccharge(YES);
                 nextPolicyState = @"charging";
                 nextPolicyReason = @"plug_mode_start";
@@ -4247,40 +4219,8 @@ void detectUPSBattery() {
 - (void)serve {
     initConf(NO);
     initDB(nil);
-    
-#if CL_USE_GCDWEBSERVER
-    static GCDWebServer* _webServer = nil;
-    if (_webServer == nil) {
-        if (localPortOpen(GSERV_PORT)) {
-            NSLog(@"%@ already served, exit", log_prefix);
-            exit(0); // 服务已存在,退出
-        }
-        _webServer = [GCDWebServer new];
-        NSString* html_root = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"www"];
-        [_webServer addGETHandlerForBasePath:@"/" directoryPath:html_root indexFilename:@"index.html" cacheAge:1 allowRangeRequests:NO];
-        [_webServer addDefaultHandlerForMethod:@"POST" requestClass:GCDWebServerDataRequest.class processBlock:^GCDWebServerResponse*(GCDWebServerDataRequest* request) {
-            @autoreleasepool {
-                NSDictionary* nsres = handleReq(request.jsonObject);
-                return [GCDWebServerDataResponse responseWithJSONObject:nsres];
-            }
-        }];
-        NSDictionary* options = @{
-            @"Port": @(GSERV_PORT),
-            @"BindToLocalhost": @YES,
-        };
-        NSError *serverError = nil;
-        BOOL status = [_webServer startWithOptions:options error:&serverError];
-        if (!status) {
-            NSFileErrorLog(@"%@ serve failed, exit startup_stage=gcd_start errno=-1 error=%@ port=%d pid=%d ppid=%d uid=%d euid=%d jbtype=%d",
-                           log_prefix, serverError.localizedDescription ?: @"unknown",
-                           GSERV_PORT, getpid(), getppid(), getuid(), geteuid(), getJBType());
-            NSLog(@"%@ serve failed, exit", log_prefix);
-            exit(0);
-        }
-        NSFileInfoLog(@"%@ listen_ready backend=gcd port=%d",
-                       log_prefix, GSERV_PORT);
-#else
-    // 使用自己的简易 HTTP 服务器，替代 GCDWebServers
+
+    // 使用自己的简易 HTTP 服务器
     static CLSimpleHTTPServer* _webServer = nil;
     if (_webServer == nil) {
         if (localPortOpen(GSERV_PORT)) {
@@ -4288,8 +4228,6 @@ void detectUPSBattery() {
             exit(0); // 服务已存在,退出
         }
         _webServer = [[CLSimpleHTTPServer alloc] init];
-        NSString* html_root = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"www"];
-        [_webServer setDocumentRoot:html_root];
         [_webServer setPostHandler:^NSDictionary*(NSDictionary* jsonBody) {
             @autoreleasepool {
                 return handleReq(jsonBody);
@@ -4317,8 +4255,6 @@ void detectUPSBattery() {
         }
         NSFileInfoLog(@"%@ listen_ready backend=bsd_socket port=%d",
                        log_prefix, GSERV_PORT);
-#endif
-        
         getBatInfo(&bat_info);
         gNotifyPort = IONotificationPortCreate(kIOMasterPortDefault);
         CFRunLoopSourceRef runSrc = IONotificationPortGetRunLoopSource(gNotifyPort);
@@ -4349,11 +4285,7 @@ void detectUPSBattery() {
         evaluateFullChargeSchedule(YES);
         NSFileInfoLog(@"%@ daemon_started backend=%@ port=%d",
                       log_prefix,
-#if CL_USE_GCDWEBSERVER
-                      @"gcd",
-#else
                       @"bsd_socket",
-#endif
                       GSERV_PORT);
     }
 }

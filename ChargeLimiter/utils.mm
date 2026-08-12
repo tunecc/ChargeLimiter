@@ -1177,10 +1177,6 @@ extern "C" NSString* getRuntimeDataRootPath_C(void) {
     return getRuntimeDataRootPath();
 }
 
-extern "C" NSString* getLogPath_C(void) {
-    return getLogPath();
-}
-
 NSString* getLogPath() {
     ensureAppPathsWithLibroot();
     return g_logPath;
@@ -1206,10 +1202,6 @@ NSString* getConfDirPath() {
         return nil;
     }
     return [g_confPath stringByDeletingLastPathComponent];
-}
-
-extern "C" NSString* getConfDirPath_C(void) {
-    return getConfDirPath();
 }
 
 static void appendUniqueNormalizedPath(NSMutableArray<NSString*>* paths, NSString* path) {
@@ -2571,21 +2563,6 @@ int spawn(NSArray* args, NSString** stdOut, NSString** stdErr, pid_t* pidPtr, in
     return WEXITSTATUS(status);
 }
 
-void addPathEnv(NSString* path, BOOL tail) {
-    const char* c_path_env = getenv("PATH");
-    NSMutableArray* path_arr = [NSMutableArray new];
-    if (c_path_env != 0) {
-        path_arr = [[@(c_path_env) componentsSeparatedByString:@":"] mutableCopy];
-    }
-    if (tail) {
-        [path_arr addObject:path];
-    } else {
-        [path_arr insertObject:path atIndex:0];
-    }
-    NSString* path_env = [path_arr componentsJoinedByString:@":"];
-    setenv("PATH", path_env.UTF8String, 1);
-}
-
 int get_pid_of(const char* name) {
     int mib[] = {CTL_KERN, KERN_PROC, KERN_PROC_ALL};
     size_t length = 0;
@@ -2620,51 +2597,6 @@ int get_sys_boottime() {
 
 extern "C" int get_sys_boottime_C(void) {
     return get_sys_boottime();
-}
-
-NSString* findAppPath(NSString* name) {
-    if (name == nil) {
-        return nil;
-    }
-    NSString* appContainersPath = @"/var/containers/Bundle/Application";
-    NSError* error = nil;
-    NSArray* containers = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:appContainersPath error:&error];
-    if (!containers) {
-        return nil;
-    }
-    for (NSString* container in containers) {
-        NSString* containerPath = [appContainersPath stringByAppendingPathComponent:container];
-        BOOL isDirectory = NO;
-        BOOL exists = [[NSFileManager defaultManager] fileExistsAtPath:containerPath isDirectory:&isDirectory];
-        if (exists && isDirectory) {
-            NSString* path = [containerPath stringByAppendingFormat:@"/%@.app", name];
-            if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
-                return path;
-            }
-        }
-    }
-    return nil;
-}
-
-NSString* getLocalIP() { // 获取wifi ipv4
-    NSString* result = nil;
-    struct ifaddrs* interfaces = 0;
-    struct ifaddrs* temp_addr = 0;
-    if (0 == getifaddrs(&interfaces)) {
-        temp_addr = interfaces;
-        while(temp_addr != NULL) {
-            if(temp_addr->ifa_addr->sa_family == AF_INET) {
-                if(!strcmp(temp_addr->ifa_name, "en0")) {
-                    char* ip = inet_ntoa(((struct sockaddr_in *)temp_addr->ifa_addr)->sin_addr);
-                    result = @(ip);
-                    break;
-                }
-            }
-            temp_addr = temp_addr->ifa_next;
-        }
-        freeifaddrs(interfaces);
-    }
-    return result;
 }
 
 static NSDictionary* CLLocalPortProbe(int port) {
@@ -3009,11 +2941,6 @@ NSString* getAppVer() {
 NSString* getSysVer() {
     CFTypeRef val = MGCopyAnswer(CFSTR("ProductVersion"));
     return (__bridge_transfer NSString*)val;
-}
-
-NSOperatingSystemVersion getSysVerInt() {
-    static NSOperatingSystemVersion ver = NSProcessInfo.processInfo.operatingSystemVersion;
-    return ver;
 }
 
 NSString* getDevMdoel() {
@@ -3592,33 +3519,6 @@ NSDictionary* getThermalData() {
     return nil;
 }
 
-NSString* getPerfManState() {
-    if (@available(iOS 11.0, *)) {
-        static int token = 0;
-        if (token == 0) {
-            notify_register_check("com.apple.thermalmonitor.ageAwareMitigationState", &token);
-        }
-        if (token != 0) {
-            uint64_t state = 0;
-            notify_get_state(token, &state);
-            if (state == 1) { // PPC_PERFMGMT_ENABLED
-                return @"enable";
-            } else if (state == 2) { // PPC_PERFMGMT_DISABLED
-                return @"disable";
-            } else if (state == 3) { // PPC_PERFMGMT_USER_DISABLED
-                return @"user_disable";
-            } else {
-                return @"unknown";
-            }
-        }
-    }
-    return @"off";
-}
-
-void DisablePerfMan() {
-    notify_post("com.apple.thermalmonitor.ageAwareMitigationsDisabled");
-}
-
 NSString* getThermalSimulationMode() {
     if (@available(iOS 11.0, *)) {
         switch (NSProcessInfo.processInfo.thermalState) {
@@ -3947,17 +3847,6 @@ static BOOL ensureStoreConfigFileExists(CLSettingsStore* store, NSString** pathO
     }
     if ([val isKindOfClass:[NSString class]]) {
         return [val floatValue];
-    }
-    return defaultValue;
-}
-
-- (double)readDoubleForKey:(NSString*)key defaultValue:(double)defaultValue {
-    id val = [self readValueForKey:key defaultValue:nil];
-    if ([val isKindOfClass:[NSNumber class]]) {
-        return [val doubleValue];
-    }
-    if ([val isKindOfClass:[NSString class]]) {
-        return [val doubleValue];
     }
     return defaultValue;
 }
@@ -4389,13 +4278,6 @@ extern "C" void reloadLocalKVFromDisk_C(void) {
     reloadLocalKVFromDisk();
 }
 
-BOOL hasUnsavedConfigChanges(void) {
-    CLSettingsStore* store = [CLSettingsStore shared];
-    @synchronized (store) {
-        return store.isDirty;
-    }
-}
-
 NSDictionary* getAllKV() {
     CLSettingsStore* store = [CLSettingsStore shared];
     @synchronized (store) {
@@ -4428,10 +4310,6 @@ float getLocalFloat(NSString* key, float defaultValue) {
     return [[CLSettingsStore shared] readFloatForKey:key defaultValue:defaultValue];
 }
 
-double getLocalDouble(NSString* key, double defaultValue) {
-    return [[CLSettingsStore shared] readDoubleForKey:key defaultValue:defaultValue];
-}
-
 NSString* getLocalString(NSString* key, NSString* defaultValue) {
     return [[CLSettingsStore shared] readStringForKey:key defaultValue:defaultValue];
 }
@@ -4453,10 +4331,6 @@ void setLocalInt(NSString* key, int value) {
 }
 
 void setLocalFloat(NSString* key, float value) {
-    setlocalKV(key, @(value));
-}
-
-void setLocalDouble(NSString* key, double value) {
     setlocalKV(key, @(value));
 }
 
