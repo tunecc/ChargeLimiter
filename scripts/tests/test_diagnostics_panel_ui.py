@@ -1,8 +1,7 @@
 # scripts/tests/test_diagnostics_panel_ui.py
 import unittest
-from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[2]
+from _helpers import REPO_ROOT as REPO, source_for
 ADV = REPO / "ChargeLimiter" / "UIKit" / "Controllers" / "CLAdvancedSettingsViewController.m"
 ZH = REPO / "ChargeLimiter" / "zh-Hans.lproj" / "Localizable.strings"
 EN = REPO / "ChargeLimiter" / "en.lproj" / "Localizable.strings"
@@ -10,9 +9,9 @@ EN = REPO / "ChargeLimiter" / "en.lproj" / "Localizable.strings"
 
 class DiagnosticsPanelUITests(unittest.TestCase):
     def setUp(self):
-        self.src = ADV.read_text(encoding="utf-8")
-        self.zh = ZH.read_text(encoding="utf-8")
-        self.en = EN.read_text(encoding="utf-8")
+        self.src = source_for(ADV)
+        self.zh = source_for(ZH)
+        self.en = source_for(EN)
 
     def test_imports_collector(self):
         self.assertIn("CLDiagnosticCollector.h", self.src)

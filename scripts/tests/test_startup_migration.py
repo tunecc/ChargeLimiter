@@ -1,7 +1,6 @@
 import unittest
-from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+from _helpers import REPO_ROOT, source_for
 UI_MM = REPO_ROOT / "ChargeLimiter" / "ui.mm"
 UTILS_MM = REPO_ROOT / "ChargeLimiter" / "utils.mm"
 UTILS_H = REPO_ROOT / "ChargeLimiter" / "utils.h"
@@ -9,13 +8,13 @@ UTILS_H = REPO_ROOT / "ChargeLimiter" / "utils.h"
 
 class StartupMigrationTests(unittest.TestCase):
     def test_shared_migrate_called_at_launch(self):
-        s = UI_MM.read_text(encoding="utf-8")
+        s = source_for(UI_MM)
         self.assertIn("CLMigrateAppSettingsToSharedStoreIfNeeded", s)
         self.assertIn("CLApplyLanguageFromSettings", s)
         self.assertNotIn("[[CLAppSettingsStore shared] migrateIfNeeded", s)
 
     def test_migration_failure_only_logs_no_save_alert(self):
-        s = UI_MM.read_text(encoding="utf-8")
+        s = source_for(UI_MM)
         # Failure path must log; must not present save-failed alert from the migration branch.
         self.assertIn("shared settings migration had write failures", s)
         launch_idx = s.find("didFinishLaunchingWithOptions")
@@ -34,8 +33,8 @@ class StartupMigrationTests(unittest.TestCase):
         self.assertNotIn("CLL(@\"保存失败\")", between)
 
     def test_migrate_function_declared_and_defined(self):
-        h = UTILS_H.read_text(encoding="utf-8")
-        mm = UTILS_MM.read_text(encoding="utf-8")
+        h = source_for(UTILS_H)
+        mm = source_for(UTILS_MM)
         self.assertIn("CLMigrateAppSettingsToSharedStoreIfNeeded", h)
         self.assertIn("CLMigrateAppSettingsToSharedStoreIfNeeded", mm)
 
@@ -49,7 +48,7 @@ class StartupMigrationTests(unittest.TestCase):
         - migrate sets/clears it around writes
         - apply checks it before posting the notification
         """
-        mm = UTILS_MM.read_text(encoding="utf-8")
+        mm = source_for(UTILS_MM)
         self.assertIn(
             "CLSuppressConfigWriteFailedNotification",
             mm,
@@ -92,7 +91,7 @@ class StartupMigrationTests(unittest.TestCase):
         """
         import re
 
-        mm = UTILS_MM.read_text(encoding="utf-8")
+        mm = source_for(UTILS_MM)
         migrate_idx = mm.find("BOOL CLMigrateAppSettingsToSharedStoreIfNeeded")
         self.assertGreater(migrate_idx, -1)
         migrate_end = mm.find("\nextern \"C\"", migrate_idx + 1)

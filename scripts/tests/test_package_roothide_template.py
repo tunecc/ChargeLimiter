@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+from _helpers import REPO_ROOT, source_for
 ROOTHIDE_CTRL = REPO_ROOT / "ChargeLimiter/Package_roothide/DEBIAN/control"
 ROOTHIDE_POST = REPO_ROOT / "ChargeLimiter/Package_roothide/DEBIAN/postinst"
 ROOTHIDE_PRERM = REPO_ROOT / "ChargeLimiter/Package_roothide/DEBIAN/prerm"
@@ -114,7 +114,7 @@ exit 0
 
             plist_path = tmp_path / "Library/LaunchDaemons/com.chargelimiter.mod.plist"
             cache_path = tmp_path / "var/mobile/Library/Preferences/containerpath"
-            script = ROOTHIDE_PRERM.read_text(encoding="utf-8")
+            script = source_for(ROOTHIDE_PRERM)
             script = script.replace(
                 'APP_DIR="/Applications/ChargeLimiter.app"',
                 f'APP_DIR="{app_dir}"',
@@ -147,12 +147,12 @@ exit 0
             return result, data_dir.exists(), calls
 
     def test_control_arch(self):
-        c = ROOTHIDE_CTRL.read_text(encoding="utf-8")
+        c = source_for(ROOTHIDE_CTRL)
         self.assertIn("Architecture: iphoneos-arm64e", c)
         self.assertIn("Package: com.chargelimiter.mod", c)
 
     def test_postinst_permissions_and_paths(self):
-        s = ROOTHIDE_POST.read_text(encoding="utf-8")
+        s = source_for(ROOTHIDE_POST)
         self.assertIn('APP_DIR="/Applications/ChargeLimiter.app"', s)
         self.assertIn('DAEMON_PLIST="/Library/LaunchDaemons/com.chargelimiter.mod.plist"', s)
         self.assertIn("repair_shared_data_permissions", s)

@@ -1,8 +1,7 @@
 import unittest
-from pathlib import Path
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+from _helpers import REPO_ROOT, source_for
 ROOTFUL_POSTINST = REPO_ROOT / "ChargeLimiter" / "Package" / "DEBIAN" / "postinst"
 ROOTLESS_POSTINST = REPO_ROOT / "ChargeLimiter" / "Package_rootless" / "DEBIAN" / "postinst"
 ROOTHIDE_POSTINST = REPO_ROOT / "ChargeLimiter" / "Package_roothide" / "DEBIAN" / "postinst"
@@ -10,7 +9,7 @@ ROOTHIDE_POSTINST = REPO_ROOT / "ChargeLimiter" / "Package_roothide" / "DEBIAN" 
 
 class SharedDataPermissionsPostinstTests(unittest.TestCase):
     def test_rootful_postinst_repairs_exact_shared_data_permissions(self):
-        source = ROOTFUL_POSTINST.read_text(encoding="utf-8")
+        source = source_for(ROOTFUL_POSTINST)
 
         self.assertIn('DATA_DIR="/var/mobile/ChargeLimiter"', source)
         self.assertRegex(source, r'chown mobile:mobile "\$DATA_DIR"')
@@ -21,7 +20,7 @@ class SharedDataPermissionsPostinstTests(unittest.TestCase):
         self.assertNotIn('chown -R mobile:mobile "$DATA_DIR"', source)
 
     def test_rootless_postinst_resolves_and_repairs_shared_data(self):
-        source = ROOTLESS_POSTINST.read_text(encoding="utf-8")
+        source = source_for(ROOTLESS_POSTINST)
 
         self.assertIn('DATA_DIR_LOGICAL="/var/mobile/ChargeLimiter"', source)
         self.assertRegex(source, r'\$cmd "\$DATA_DIR_LOGICAL"')
@@ -32,7 +31,7 @@ class SharedDataPermissionsPostinstTests(unittest.TestCase):
         self.assertNotIn('chown -R mobile:mobile "$data_root"', source)
 
     def test_roothide_postinst_repairs_shared_data_permissions(self):
-        source = ROOTHIDE_POSTINST.read_text(encoding="utf-8")
+        source = source_for(ROOTHIDE_POSTINST)
 
         self.assertIn('DATA_DIR="/var/mobile/ChargeLimiter"', source)
         self.assertIn("repair_shared_data_permissions", source)
