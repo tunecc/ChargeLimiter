@@ -6,6 +6,27 @@
 
 写法参考了 Keep a Changelog 和一些成熟项目常见的结构：每个版本先说明主线，再按少量分类列出用户真正会感知到的变化，尽量详细，但不写成长文。
 
+## v1.15.1 - 2026-08-13
+
+本版主线：**修复限流回归 + 代码仓库大扫除**。v1.15.0 重构限流切换逻辑时引入了 `isAdaptorConnect` 检查，导致 iOS 17.0 下部分充电器限流不生效（用户反馈「最新版停充有效、限流不生效，换回 1.7 正常」）；同时对全仓做了多轮死代码清理与重复代码提纯，净删约 1100 行。
+
+### Fixed
+
+- **修复限流 (`adv_limit_inflow`) 在 iOS 17.0 下不生效**：v1.15.0 commit `0de0350` 重构限流切换逻辑时，在 `desiredThermalSimulationModeForCurrentState` 中新增了 `isAdaptorConnect` 检查，该函数依赖 `ExternalChargeCapable` 判断电源连接。iOS 17.0 下某些充电器 `ExternalChargeCapable` 为 false 但实际在充电，导致限流模式被意外重置为 `off`。现去掉 `isAdaptorConnect` 检查，充电状态改用 `g_chargeCommandEnabled + IsCharging + 实际电流 > 120mA` 三重校验，比纯布尔值信号更可靠。
+
+### Changed
+
+- **删除死代码与遗留 roothide 转换路径**：移除 CLTheme 主题系统、`performAction` 空壳、`CL_MODE_EDGE` 模式、`Makefile`/`MakefileRootless`（已仅走 xcodebuild）、build_packages.sh 的 legacy roothide 转换路径等，净删约 1068 行，4 个契约测试同步更新。
+- **移除休眠的 adaptive hold 层**：`adv_hold_behavior` 的 adaptive 模式及相关采样状态机从未上线，`currentHoldRuntimeBehavior` 固定返回 `balanced`，`g_holdDischargeStreak` 等变量已死，净删约 250 行。
+- **移除 UI 循环档位归一化**：`CLSettingsViewController` 中停充预设值被重复归一化（identity 映射），去掉冗余逻辑。
+- **合并路径格式化器**：`CLSettingsViewController` 中多个 `.json` 路径格式化函数合为一个。
+- **共享契约测试助手**：19 个测试文件提取通用 `_helpers.py`，减少重复。
+
+### Notes
+
+- 本版无新增功能，主要修复限流回归 + 清理仓库。v1.15.0 的 relaxin 适配、日志级别等功能不受影响。
+- 净减约 1100 行代码，编译产物大小略微减小。
+
 ## v1.15.0 - 2026-08-11
 
 本版两个主线：① **正式适配 relaxin 越狱（原生 roothide）**——此前部分 relaxin 设备「装好即 daemon 离线」（启动 126）、设置保存后重启丢失；本版修复 daemon 启动链路、配置持久化与 jbroot 路径兜底，并加固安装/卸载生命周期，relaxin 用户安装后即可开箱即用。② **可配置日志级别与设置入口重组**——新增「日志级别」（标准 / 仅错误），只过滤 `aldente.log` 文件输出，保留系统日志与完整诊断报告；「调试与观测」从充电高级设置移入软件设置，拆成「策略诊断 / 日志级别」两个入口。
