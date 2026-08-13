@@ -1726,10 +1726,11 @@ static NSString* desiredThermalSimulationModeForCurrentState(NSDictionary* info)
         safeInfo = @{};
     }
 
-    NSNumber* advDisableInflow = @(getLocalBool(@"adv_disable_inflow", NO));
-    BOOL adaptorConnected = isAdaptorConnect(safeInfo, advDisableInflow);
-    BOOL chargeSessionActive = g_chargeCommandEnabled || [safeInfo[@"IsCharging"] boolValue];
-    if (!adaptorConnected || !chargeSessionActive) {
+    // 限流只依赖"正在充电"这个状态，不依赖 ExternalChargeCapable 等电源连接信号。
+    // 某些充电器 ExternalChargeCapable 为 false 但实际在充电（代码注释已确认），
+    // 用 IsCharging 判断会误判。改用 g_chargeCommandEnabled ＋ 电流方向判断更可靠。
+    BOOL chargeSessionActive = g_chargeCommandEnabled || [safeInfo[@"IsCharging"] boolValue] || currentLooksCharging(getEffectiveBatteryCurrent(safeInfo));
+    if (!chargeSessionActive) {
         return defaultMode;
     }
 
