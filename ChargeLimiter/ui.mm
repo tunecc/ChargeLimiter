@@ -9,6 +9,7 @@
 #include "ui.h"
 #include "utils.h"
 #import "CLLocalization.h"
+#import <objc/message.h>
 
 // UIKit 原生界面
 #define USE_NATIVE_UIKIT 1
@@ -524,18 +525,139 @@ void daemonRun(NSArray* argv) {
     spawn(mArgv, nil, nil, 0, spawnFlags);
 }
 
+// ============================================================
+// TrollStore 自启三组件架构 (参考 TrollVNC)
+// 1. NEHotspotHelper  - 系统级后台重拉 (扛重启引擎)
+// 2. WatchDog         - 拉起后保持存活 (定时检查+重启)
+// 3. LaunchAtLogin    - 把App带到前台并解锁
+// ============================================================
+
+static void scheduleDaemonRestart() {
+    @autoreleasepool {
+        if (!localPortOpen(GSERV_PORT)) {
+            daemonRun(nil);
+        }
+    }
+}
+
+// --- 组件1: NEHotspotHelper 系统级后台重拉 ---
+// 通过注册NEHotspotHelper, 系统在WiFi事件时会唤醒App,
+// 从而在重启后自动拉起daemon服务
+static void registerHotspotHelper() {
+    @autoreleasepool {
+        NSBundle* netExtBundle = [NSBundle bundleWithPath:@"/System/Library/Frameworks/NetworkExtension.framework"];
+        if (!netExtBundle || ![netExtBundle load]) {
+            NSLog(@"[CL-AutoStart] Failed to load NetworkExtension.framework");
+            return;
+        }
+        Class NEHotspotHelperClass = NSClassFromString(@"NEHotspotHelper");
+        if (!NEHotspotHelperClass) {
+            NSLog(@"[CL-AutoStart] NEHotspotHelper class not found");
+            return;
+        }
+        SEL registerSelector = NSSelectorFromString(@"registerWithOptions:queue:handler:");
+        if (![NEHotspotHelperClass respondsToSelector:registerSelector]) {
+            NSLog(@"[CL-AutoStart] NEHotspotHelper does not respond to registerWithOptions:queue:handler:");
+            return;
+        }
+        // 使用字符串字面量, 因为框架是动态加载的, 编译时无法链接kNEHotspotHelperOptionDisplayName常量
+        NSDictionary* options = @{
+            @"DisplayLabel": @"ChargeLimiter"
+        };
+        dispatch_queue_t queue = dispatch_queue_create("ChargeLimiter.HotspotHelper", NULL);
+
+        void (^hotspotHandler)(id) = ^(id cmd) {
+            @autoreleasepool {
+                NSLog(@"[CL-AutoStart] NEHotspotHelper callback triggered, restarting daemon");
+                scheduleDaemonRestart();
+            }
+        };
+
+        BOOL result = ((BOOL(*)(Class, SEL, NSDictionary*, dispatch_queue_t, void(^)(id)))objc_msgSend)(
+            NEHotspotHelperClass, registerSelector, options, queue, hotspotHandler);
+
+        if (result) {
+            NSLog(@"[CL-AutoStart] NEHotspotHelper registered successfully");
+        } else {
+            NSLog(@"[CL-AutoStart] NEHotspotHelper registration failed");
+        }
+    }
+}
+
+// --- 组件3: LaunchAtLogin 前台拉起 ---
+// Darwin通知回调必须使用C函数指针, 不能使用block
+static void systemBootCallback(CFNotificationCenterRef center, void* observer,
+                                CFStringRef name, void const* object, CFDictionaryRef userInfo) {
+    @autoreleasepool {
+        NSLog(@"[CL-AutoStart] System notification received: %@", (__bridge NSString*)name);
+        // 重启daemon
+        scheduleDaemonRestart();
+        // 延迟拉起App到前台 (等待daemon启动完成)
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
+                        dispatch_get_main_queue(), ^{
+            @autoreleasepool {
+                // 使用FBSOpenApplication拉起自身到前台
+                Class FBSSystemServiceClass = NSClassFromString(@"FBSSystemService");
+                if (FBSSystemServiceClass) {
+                    id sharedService = [FBSSystemServiceClass performSelector:NSSelectorFromString(@"sharedService")];
+                    if (sharedService) {
+                        NSString* bid = NSBundle.mainBundle.bundleIdentifier;
+                        SEL openSel = NSSelectorFromString(@"openApplication:withOptions:withResult:");
+                        if ([sharedService respondsToSelector:openSel]) {
+                            ((void(*)(id, SEL, NSString*, id, id))objc_msgSend)(
+                                sharedService, openSel, bid, nil, nil);
+                            NSLog(@"[CL-AutoStart] Launched app to foreground via FBSSystemService");
+                        }
+                    }
+                }
+            }
+        });
+    }
+}
+
+static void registerSystemNotifications() {
+    @autoreleasepool {
+        CFNotificationCenterRef center = CFNotificationCenterGetDarwinNotifyCenter();
+        // 系统启动完成通知
+        CFNotificationCenterAddObserver(center, NULL, systemBootCallback,
+            CFSTR("com.apple.springboard.systemLaunch"), NULL,
+            CFNotificationSuspensionBehaviorDeliverImmediately);
+        // 系统从休眠唤醒通知
+        CFNotificationCenterAddObserver(center, NULL, systemBootCallback,
+            CFSTR("com.apple.system.resumed"), NULL,
+            CFNotificationSuspensionBehaviorDeliverImmediately);
+        // 锁屏解锁通知
+        CFNotificationCenterAddObserver(center, NULL, systemBootCallback,
+            CFSTR("com.apple.springboard.lockstate"), NULL,
+            CFNotificationSuspensionBehaviorDeliverImmediately);
+        NSLog(@"[CL-AutoStart] System notifications registered");
+    }
+}
+
+// --- 组件2: WatchDog 保持存活 ---
+// 定时检查daemon端口, 如果不存在则重启
+// 配合daemon端的信号忽略(SIGHUP/SIGTERM/SIG_IGN)确保存活
 static void start_daemon() {
     @autoreleasepool {
         if (g_jbtype == JBTYPE_TROLLSTORE) {
+            NSLog(@"[CL-AutoStart] TrollStore mode: initializing auto-start components");
+
+            // 组件1: NEHotspotHelper - 系统级后台重拉引擎
+            registerHotspotHelper();
+
+            // 组件3: LaunchAtLogin - 注册系统启动/唤醒通知
+            registerSystemNotifications();
+
+            // 组件2: WatchDog - 定时检查daemon存活状态
             NSTimer* start_daemon_timer = [NSTimer timerWithTimeInterval:10 repeats:YES block:^(NSTimer* timer) {
                 @autoreleasepool {
-                    if (!localPortOpen(GSERV_PORT)) {
-                        daemonRun(nil);
-                    }
+                    scheduleDaemonRestart();
                 }
             }];
             [start_daemon_timer fire];
             [NSRunLoop.currentRunLoop addTimer:start_daemon_timer forMode:NSDefaultRunLoopMode];
+
+            NSLog(@"[CL-AutoStart] All components initialized: NEHotspotHelper + WatchDog + LaunchAtLogin");
         }
     }
 }

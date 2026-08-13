@@ -50,6 +50,10 @@
 	</dict>
 	<key>SBAppUsesLocalNotifications</key>
 	<true/>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>network-authentication</string>
+	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

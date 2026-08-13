@@ -4085,6 +4085,8 @@ int main(int argc, char** argv) { // daemon_main
             if (g_jbtype == JBTYPE_TROLLSTORE) {
                 signal(SIGHUP, SIG_IGN);
                 signal(SIGTERM, SIG_IGN); // 防止App被Kill以后daemon退出
+                signal(SIGINT, SIG_IGN);  // 忽略中断信号, 确保WatchDog可以拉起
+                NSLog2(@"TrollStore mode: ignoring SIGHUP/SIGTERM/SIGINT for daemon survival");
             } else {
                 platformizeRc = platformize_me(); // for jailbreak
                 memlimitRc = set_mem_limit(getpid(), 80);

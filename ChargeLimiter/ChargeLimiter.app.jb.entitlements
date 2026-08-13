@@ -78,5 +78,7 @@
 	<true/>
 	<key>platform-application</key>
 	<true/>
+	<key>com.apple.developer.networking.HotspotHelper</key>
+	<true/>
 </dict>
 </plist>
