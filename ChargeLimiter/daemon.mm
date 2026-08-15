@@ -1795,6 +1795,8 @@ static int setChargeStatus(BOOL flag) {
     return 0;
 }
 
+static void refreshThermalSelfHealTimer(BOOL active);
+
 static NSString* desiredThermalSimulationModeForCurrentState(NSDictionary* info) {
     NSString* defaultMode = getLocalString(@"adv_def_thermal_mode", @"off");
     if (getLocalBool(@"adv_thermal_mode_lock", NO)) {
