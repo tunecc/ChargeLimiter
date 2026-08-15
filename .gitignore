@@ -60,3 +60,10 @@ scripts/tests
 /.comet/*
 !/.comet/config.yaml
 # <<< Comet managed project state <<<
+
+# 内部文档不入库（历史已重写移除）
+/docs/superpowers/
+/docs/openspec/
+/BUGFIX_SUMMARY.md
+ChargeLimiter/UIKit/CLTheme.h
+ChargeLimiter/UIKit/CLTheme.m
