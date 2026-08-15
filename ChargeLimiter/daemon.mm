@@ -1988,6 +1988,11 @@ static void performAcccharge(BOOL flag) {
     BOOL acc_charge_lpm = getLocalBool(@"acc_charge_lpm", NO);
     if (acc_charge) {
         if (flag) { // 修改状态
+            // 幂等守卫：充电态策略每次电池事件都会重申 performAcccharge(YES)，
+            // 重复执行会覆盖亮度缓存并重复写系统开关
+            if (cache_status != nil) {
+                return;
+            }
             cache_status = [NSMutableDictionary new];
             if (acc_charge_airmode) {
                 setAirEnable(YES);
@@ -3290,6 +3295,12 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
             }
         }
     } while(false);
+    // 稳态充电重申加速充电状态：开机越狱后已插电时走不到任何命令翻转分支
+    // （插电事件/电量恢复/温控恢复），LPM 等加速项由此路径开启。幂等由
+    // performAcccharge 内的 cache_status 守卫保证。
+    if (is_adaptor_connected && [nextPolicyState isEqualToString:@"charging"] && !is_adaptor_new_disconnected) {
+        performAcccharge(YES);
+    }
     if (is_adaptor_new_disconnected) {
         performAcccharge(NO);
         resetHoldSessionState();
