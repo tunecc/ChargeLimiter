@@ -1798,9 +1798,11 @@ static int setChargeStatus(BOOL flag) {
 static NSString* desiredThermalSimulationModeForCurrentState(NSDictionary* info) {
     NSString* defaultMode = getLocalString(@"adv_def_thermal_mode", @"off");
     if (getLocalBool(@"adv_thermal_mode_lock", NO)) {
+        refreshThermalSelfHealTimer(NO);
         return defaultMode;
     }
     if (!getLocalBool(@"adv_limit_inflow", NO)) {
+        refreshThermalSelfHealTimer(NO);
         return defaultMode;
     }
 
@@ -1816,14 +1818,66 @@ static NSString* desiredThermalSimulationModeForCurrentState(NSDictionary* info)
     BOOL chargeAllowed = g_chargeCommandEnabled || currentLooksCharging(getEffectiveBatteryCurrent(safeInfo));
     BOOL chargeSessionActive = adaptorConnected && chargeAllowed;
     if (!chargeSessionActive) {
+        refreshThermalSelfHealTimer(NO);
         return defaultMode;
     }
+    refreshThermalSelfHealTimer(YES);
 
     return getLocalString(@"adv_limit_inflow_mode", defaultMode);
 }
 
+// ensure 语义：读回 cltm pref 校验，不一致重写并记事件。
+// 锁屏期间 cltm/cfprefsd 可能清除或覆盖 thermalSimulationMode，且锁屏期电池事件
+// 稀疏，事件驱动 sync 存在空窗——写后无校验的话，pref 丢失无感知、无自愈。
 static void syncThermalSimulationModeForCurrentState(NSDictionary* info) {
-    setThermalSimulationMode(desiredThermalSimulationModeForCurrentState(info));
+    NSString* desired = desiredThermalSimulationModeForCurrentState(info);
+    NSString* actual = getThermalSimulationModePref();
+    if ([actual isEqualToString:desired]) {
+        return;
+    }
+    setThermalSimulationMode(desired);
+    NSString* reread = getThermalSimulationModePref();
+    if (![reread isEqualToString:desired]) {
+        NSFileErrorLog(@"thermal write unconfirmed desired=%@ reread=%@", desired, reread);
+        appendPolicyEventHistory(@"thermal_event",
+                                 g_policyState ?: @"",
+                                 g_policyState ?: @"",
+                                 @"thermal_write_unconfirmed",
+                                 info ?: bat_info,
+                                 @{ @"desired_mode": desired ?: @"", @"reread_mode": reread ?: @"" },
+                                 time(0));
+    }
+}
+
+static dispatch_source_t g_thermalSelfHealTimer = nil;
+
+// 限流会话激活期间启动 60s 周期自愈：锁屏期电池事件稀疏，事件驱动 sync 有空窗，
+// cltm 若在锁屏期清了 pref，靠本定时器兜底重写（原版无此问题是因为它从不重写、
+// pref 一次写入长期留存，但新架构需要主动维持）。
+// 用 armed 标志而非 suspend：dispatch_suspend 重复调用会过度暂停导致崩溃。
+static void refreshThermalSelfHealTimer(BOOL active) {
+    if (active) {
+        if (g_thermalSelfHealTimer == nil) {
+            g_thermalSelfHealTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+                                                            dispatch_get_global_queue(0, 0));
+            dispatch_source_set_event_handler(g_thermalSelfHealTimer, ^{
+                NSDictionary* info = nil;
+                if (0 != getBatInfo(&info)) {
+                    info = nil;
+                }
+                syncThermalSimulationModeForCurrentState(info);
+            });
+            dispatch_resume(g_thermalSelfHealTimer);
+        }
+        dispatch_source_set_timer(g_thermalSelfHealTimer,
+                                  dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC),
+                                  60 * NSEC_PER_SEC, 0);
+    }
+    // 停止即把间隔推到遥远未来；timer 保持 resumed，避免 suspend/resume 状态机问题
+    else if (g_thermalSelfHealTimer != nil) {
+        dispatch_source_set_timer(g_thermalSelfHealTimer,
+                                  DISPATCH_TIME_FOREVER, 60 * NSEC_PER_SEC, 0);
+    }
 }
 
 static uint64_t g_thermalSyncGeneration = 0;
