@@ -1839,8 +1839,12 @@ static void scheduleDebouncedThermalSync(void) {
         if (gen != g_thermalSyncGeneration) {
             return;
         }
-        getBatInfo(&bat_info);
-        syncThermalSimulationModeForCurrentState(bat_info);
+        // 用局部快照，不写共享 bat_info（该块跑在 global queue，与 handler/runloop 并发）
+        NSDictionary* info = nil;
+        if (0 != getBatInfo(&info)) {
+            info = nil;
+        }
+        syncThermalSimulationModeForCurrentState(info);
     });
 }
 
