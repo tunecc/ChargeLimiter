@@ -1726,10 +1726,12 @@ static NSString* desiredThermalSimulationModeForCurrentState(NSDictionary* info)
         safeInfo = @{};
     }
 
-    // 限流只依赖"正在充电"这个状态，不依赖 ExternalChargeCapable 等电源连接信号。
-    // 某些充电器 ExternalChargeCapable 为 false 但实际在充电（代码注释已确认），
-    // 用 IsCharging 判断会误判。改用 g_chargeCommandEnabled ＋ 电流方向判断更可靠。
-    BOOL chargeSessionActive = g_chargeCommandEnabled || [safeInfo[@"IsCharging"] boolValue] || currentLooksCharging(getEffectiveBatteryCurrent(safeInfo));
+    // 限流只在真实充电会话激活：适配器已连接 +（充电命令允许 或 存在充电电流）。
+    // 不单信 IsCharging（iOS17 粘滞为 true）与 g_chargeCommandEnabled（初始 YES 且可能粘滞），
+    // 否则未插电时也会向 cltm 持续写限流模式，长期模拟高温态漂移。
+    BOOL adaptorConnected = isAdaptorConnect(safeInfo, @(getLocalBool(@"adv_disable_inflow", NO)));
+    BOOL chargeAllowed = g_chargeCommandEnabled || currentLooksCharging(getEffectiveBatteryCurrent(safeInfo));
+    BOOL chargeSessionActive = adaptorConnected && chargeAllowed;
     if (!chargeSessionActive) {
         return defaultMode;
     }
@@ -3118,6 +3120,9 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
     if (is_adaptor_new_disconnected) {
         performAcccharge(NO);
         resetHoldSessionState();
+        // 拔线清除软件停充抑制：下次插线从干净状态开始，也避免粘滞 YES
+        // 在未插电时维持限流模拟。
+        g_chargeCommandEnabled = YES;
         nextPolicyState = @"battery";
         nextPolicyReason = @"adaptor_disconnected";
     }
