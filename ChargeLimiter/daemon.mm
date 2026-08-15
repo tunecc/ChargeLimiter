@@ -1827,27 +1827,21 @@ static void syncThermalSimulationModeForCurrentState(NSDictionary* info) {
 }
 
 static uint64_t g_thermalSyncGeneration = 0;
-static dispatch_source_t g_thermalSyncTimer = nil;
 
 // UI 切限流等级会连发两条 set_conf（开关+等级）；逐键立即 sync 会在两条间
 // 用旧等级写一次 thermalSimulationMode。合并为 200ms 去抖，最终只写一次最终配置。
+// 每次 dispatch_after 各自捕获 gen，被更新请求取代的旧块在触发时早退。
+// （不能用单一 dispatch_source：其 handler 只创建一次，捕获首次 gen，后续触发会被误判为过期。）
 static void scheduleDebouncedThermalSync(void) {
     uint64_t gen = ++g_thermalSyncGeneration;
-    if (g_thermalSyncTimer == nil) {
-        g_thermalSyncTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
-                                                    dispatch_get_global_queue(0, 0));
-        dispatch_source_set_event_handler(g_thermalSyncTimer, ^{
-            if (gen != g_thermalSyncGeneration) {
-                return;
-            }
-            getBatInfo(&bat_info);
-            syncThermalSimulationModeForCurrentState(bat_info);
-        });
-        dispatch_resume(g_thermalSyncTimer);
-    }
-    dispatch_source_set_timer(g_thermalSyncTimer,
-                              dispatch_time(DISPATCH_TIME_NOW, 200 * NSEC_PER_MSEC),
-                              DISPATCH_TIME_FOREVER, 0);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 200 * NSEC_PER_MSEC),
+                   dispatch_get_global_queue(0, 0), ^{
+        if (gen != g_thermalSyncGeneration) {
+            return;
+        }
+        getBatInfo(&bat_info);
+        syncThermalSimulationModeForCurrentState(bat_info);
+    });
 }
 
 static int setBatteryStatus(BOOL flag) {
