@@ -1654,10 +1654,90 @@ static BOOL shouldFallbackFromPredictiveInhibitStop(BOOL isAdaptorConnected,
     return (now - g_lastChargeCommandTs) >= kPredictiveInhibitFallbackVerifyDelaySeconds;
 }
 
+static uint64_t g_chargeEnableVerifyGeneration = 0;
+
+// 限流模式下电流被压制，验证阈值联动 thermal mode 降档。
+static int chargeEnableThresholdForCurrentThermalMode(void) {
+    NSString* mode = getLocalString(@"adv_limit_inflow_mode", @"moderate");
+    BOOL limitActive = getLocalBool(@"adv_limit_inflow", NO) &&
+                       !getLocalBool(@"adv_thermal_mode_lock", NO);
+    if (limitActive && ([mode isEqualToString:@"moderate"] || [mode isEqualToString:@"heavy"])) {
+        return 30;
+    }
+    return kHoldCurrentChargeThresholdmA;
+}
+
+// iOS17 restore 后 ChargingOverride 位图可能仍粘 inhibit（真机 2026-08-02），
+// 命令层成功但硬件未恢复充电 → "已连接电源·未充电"。写后验证 + 一次重写 +
+// legacy 回退，对称复用停充侧 shouldFallbackFromPredictiveInhibitStop 骨架。
+static void scheduleChargeEnableVerification(void) {
+    uint64_t gen = ++g_chargeEnableVerifyGeneration;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(kPredictiveInhibitFallbackVerifyDelaySeconds * NSEC_PER_SEC)),
+                   dispatch_get_global_queue(0, 0), ^{
+        if (gen != g_chargeEnableVerifyGeneration || !g_chargeCommandEnabled) {
+            return; // 已被后续命令取代或已再次停充
+        }
+        NSDictionary* snapshot = nil;
+        if (0 != getBatInfo(&snapshot)) {
+            return;
+        }
+        NSDictionary* safe = snapshot ?: @{};
+        int current = getEffectiveBatteryCurrent(safe);
+        if (current >= chargeEnableThresholdForCurrentThermalMode()) {
+            return; // 已恢复充电
+        }
+        // 未恢复：重写一次 override restore
+        io_service_t serv = CLCopyOverrideWriteService();
+        if (serv != IO_OBJECT_NULL) {
+            writeChargeStatusOverride(serv, NO);
+            IOObjectRelease(serv);
+        }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 4 * NSEC_PER_SEC),
+                       dispatch_get_global_queue(0, 0), ^{
+            if (gen != g_chargeEnableVerifyGeneration || !g_chargeCommandEnabled) {
+                return;
+            }
+            NSDictionary* recheck = nil;
+            if (0 != getBatInfo(&recheck)) {
+                return;
+            }
+            NSDictionary* safeRe = recheck ?: @{};
+            int reCurrent = getEffectiveBatteryCurrent(safeRe);
+            if (reCurrent >= chargeEnableThresholdForCurrentThermalMode()) {
+                return;
+            }
+            // 重写仍无效：legacy 直写 + 事件记录
+            kern_return_t legacyRet = KERN_FAILURE;
+            io_service_t legacyServ = CLCopyOverrideWriteService();
+            if (legacyServ != IO_OBJECT_NULL) {
+                NSMutableDictionary* props = [NSMutableDictionary dictionary];
+                props[@"IsCharging"] = @YES;
+                props[@"PredictiveChargingInhibit"] = @NO;
+                legacyRet = IORegistryEntrySetCFProperties(legacyServ, (__bridge CFTypeRef)props);
+                IOObjectRelease(legacyServ);
+            }
+            NSDictionary* extras = @{
+                @"charging_override": safeRe[@"ChargingOverride"] ?: @"nil",
+                @"not_charging_reason": safeRe[@"NotChargingReason"] ?: @"nil",
+                @"instant_amperage": @(reCurrent),
+                @"legacy_io_return": @(legacyRet),
+            };
+            NSFileErrorLog(@"charge enable unconfirmed after rewrite, legacy fallback ret=%d", legacyRet);
+            appendPolicyEventHistory(@"charge_path_event",
+                                     g_policyState ?: @"",
+                                     g_policyState ?: @"",
+                                     @"charge_enable_unconfirmed",
+                                     safeRe, extras, time(0));
+        });
+    });
+}
+
 static int setChargeStatus(BOOL flag) {
     if (g_chargeControlProbeRunning) {
         return 0; // 探针期间忽略自动/手动写
     }
+    BOOL wasEnabled = g_chargeCommandEnabled;
     // iOS 17+: 写到 AppleSmartBattery 的 IsCharging+PredictiveChargingInhibit（极性相反）。
     // ChargingOverride 是发布属性，不能当 setProperties key（真机 BadArgument）。
     // Manager setProperties 返回 kIOReturnUnsupported。
@@ -1670,6 +1750,9 @@ static int setChargeStatus(BOOL flag) {
             if (ret == 0) {
                 g_chargeCommandEnabled = flag;
                 g_lastChargeCommandTs = time(0);
+                if (!wasEnabled && flag) {
+                    scheduleChargeEnableVerification();
+                }
                 return 0;
             }
             // override 写失败：记事件后回退旧逻辑，不直接失败。
