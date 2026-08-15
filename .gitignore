@@ -55,3 +55,8 @@ AGENTS.md
 scripts/tests
 .claude/worktrees/
 .worktrees/
+# >>> Comet managed project state >>>
+!/.comet/
+/.comet/*
+!/.comet/config.yaml
+# <<< Comet managed project state <<<
