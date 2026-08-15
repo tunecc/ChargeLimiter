@@ -3613,6 +3613,10 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
         data[@"LastPolicyChangeTime"] = @(g_lastPolicyChangeTs);
         data[@"LastChargeCommandTime"] = @(g_lastChargeCommandTs);
         data[@"LastInflowCommandTime"] = @(g_lastInflowCommandTs);
+        // 主页"高温模拟"卡片随电池刷新轮询实时更新：get_conf 只在进页面/手动刷新时
+        // 拉取，若只在 get_conf 里带 thermal_simulate_mode，切换等级后卡片最长滞后到
+        // 下次进入页面（原版 Web UI 每秒轮询 get_conf，UIKit 版丢了这条链路）。
+        data[@"ThermalSimulateMode"] = getThermalSimulationMode();
         data[@"PolicyTransitionHistory"] = recentPolicyTransitionHistory();
         NSArray* dbPolicyEvents = getPolicyEventDBData((int)kPolicyEventHistoryLimit, 0);
         data[@"PolicyEventHistory"] = dbPolicyEvents.count > 0 ? dbPolicyEvents : recentPolicyEventHistory();

@@ -237,6 +237,7 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
         self.lastPolicyChangeTime = [data[@"LastPolicyChangeTime"] doubleValue];
         self.lastChargeCommandTime = [data[@"LastChargeCommandTime"] doubleValue];
         self.lastInflowCommandTime = [data[@"LastInflowCommandTime"] doubleValue];
+        self.thermalSimulateMode = [self thermalModeFromString:data[@"ThermalSimulateMode"]];
         self.smartChargeStatus = [data[@"SmartChargeStatus"] integerValue];
         self.smartChargeManagedByDaemon = [data[@"SmartChargeManagedByDaemon"] boolValue];
         self.smartChargeOriginalStatus = [data[@"SmartChargeOriginalStatus"] integerValue];
