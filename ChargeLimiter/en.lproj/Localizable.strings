@@ -241,6 +241,7 @@
 "系统当前正在充电" = "The system is currently charging";
 "低电量保护，强制恢复充电" = "Critical battery protection forced charging to resume";
 "温度达到上限，暂停充电" = "Charging paused because temperature reached the upper limit";
+"温度未恢复，暂停充电" = "Charging paused while temperature is still elevated";
 "满充计划窗口内，暂时解除上限" = "The full-charge window temporarily lifted the upper limit";
 "达到保持目标，停止充电" = "Reached the hold target and stopped charging";
 "低于保持下边界，开始补电" = "Dropped below the hold lower bound and started topping up";
