@@ -1743,6 +1743,30 @@ static void syncThermalSimulationModeForCurrentState(NSDictionary* info) {
     setThermalSimulationMode(desiredThermalSimulationModeForCurrentState(info));
 }
 
+static uint64_t g_thermalSyncGeneration = 0;
+static dispatch_source_t g_thermalSyncTimer = nil;
+
+// UI 切限流等级会连发两条 set_conf（开关+等级）；逐键立即 sync 会在两条间
+// 用旧等级写一次 thermalSimulationMode。合并为 200ms 去抖，最终只写一次最终配置。
+static void scheduleDebouncedThermalSync(void) {
+    uint64_t gen = ++g_thermalSyncGeneration;
+    if (g_thermalSyncTimer == nil) {
+        g_thermalSyncTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+                                                    dispatch_get_global_queue(0, 0));
+        dispatch_source_set_event_handler(g_thermalSyncTimer, ^{
+            if (gen != g_thermalSyncGeneration) {
+                return;
+            }
+            getBatInfo(&bat_info);
+            syncThermalSimulationModeForCurrentState(bat_info);
+        });
+        dispatch_resume(g_thermalSyncTimer);
+    }
+    dispatch_source_set_timer(g_thermalSyncTimer,
+                              dispatch_time(DISPATCH_TIME_NOW, 200 * NSEC_PER_MSEC),
+                              DISPATCH_TIME_FOREVER, 0);
+}
+
 static int setBatteryStatus(BOOL flag) {
     if (g_chargeControlProbeRunning) {
         return 0; // 探针期间忽略自动写
@@ -3452,7 +3476,7 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             @"adv_def_thermal_mode",
             @"adv_thermal_mode_lock"
         ] containsObject:key]) {
-            syncThermalSimulationModeForCurrentState(bat_info);
+            scheduleDebouncedThermalSync();
         }
         if (shouldRefreshBatteryPolicyForConfigKey(key)) {
             refreshBatteryStateAndApplyPolicy();
