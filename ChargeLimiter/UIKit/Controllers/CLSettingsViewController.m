@@ -1522,6 +1522,9 @@ static NSString *CLHistoryPolicyReasonLabel(NSString *reason) {
     if ([reason isEqualToString:@"temperature_high"]) {
         return CLL(@"温度达到上限，暂停充电");
     }
+    if ([reason isEqualToString:@"temperature_hysteresis"]) {
+        return CLL(@"温度未恢复，暂停充电");
+    }
     if ([reason isEqualToString:@"full_charge_window"]) {
         return CLL(@"满充计划窗口内，暂时解除上限");
     }

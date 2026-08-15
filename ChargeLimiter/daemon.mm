@@ -432,7 +432,7 @@ static void notifyForChargeCommandTransition(BOOL previousExternalConnected,
 static NSString* policyEventTypeForTransition(NSString* nextPolicyState, NSString* reason) {
     NSString* safeState = nextPolicyState ?: @"";
     NSString* safeReason = reason ?: @"";
-    if ([safeReason isEqualToString:@"temperature_high"] || [safeReason isEqualToString:@"temperature_recovered"] || [safeState isEqualToString:@"temp_paused"]) {
+    if ([safeReason isEqualToString:@"temperature_high"] || [safeReason isEqualToString:@"temperature_recovered"] || [safeReason isEqualToString:@"temperature_hysteresis"] || [safeState isEqualToString:@"temp_paused"]) {
         return @"thermal_event";
     }
     if ([safeReason hasPrefix:@"hold_"] || [safeState hasPrefix:@"hold"]) {
@@ -3169,12 +3169,24 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
             }
         }
         if (is_adaptor_connected && !disable_capacity_control && capacity.intValue >= charge_above) { // 停充-电量高,优先级=2
+            // 温控滞回：此前因温度暂停、且温度尚未降到恢复线以下时，归因保持 temp_paused。
+            // 否则温度在 charge_temp_above 附近振荡时，状态会在 temp_paused 与
+            // stopped/capacity_high 间每个电池事件翻转一次，顶部电池图标跟着跳变
+            // （两条路径充电行为相同，都停充，跳的只是状态归因/显示）。
+            BOOL temp_hysteresis_active = (enable_temp &&
+                                           [previousPolicyState isEqualToString:@"temp_paused"] &&
+                                           temperature > charge_temp_below);
             if (g_chargeCommandEnabled || current_looks_charging) {
                 setBatteryStatus(NO);
                 performAcccharge(NO);
             }
             if (shouldIssueDisableInflowCommand(adv_disable_inflow, inflow_enabled_snapshot, previousPolicyState)) {
                 setInflowStatus(NO);
+            }
+            if (temp_hysteresis_active && !adv_disable_inflow) {
+                nextPolicyState = @"temp_paused";
+                nextPolicyReason = @"temperature_hysteresis";
+                break;
             }
             nextPolicyState = adv_disable_inflow ? @"no_inflow" : @"stopped";
             nextPolicyReason = @"capacity_high";
