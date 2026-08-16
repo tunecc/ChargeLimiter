@@ -132,6 +132,11 @@ static NSString* g_smartChargeCoordinationSessionID = nil;
 static time_t g_smartChargeCoordinationStartedTs = 0;
 static BOOL g_holdHasReachedTargetSincePlug = NO;
 static BOOL g_holdMonitorCheckRequested = NO;
+// 加速充电项是否已在本充电会话首次应用过。区分「首次应用」与「稳态重申/恢复」
+// 两条职责：首次应用只由进入充电态的命令翻转分支触发，稳态重申只做已被外部
+// 清除时的恢复，避免稳态路径借用幂等守卫在 app/apply_now 触发策略时误首次应用
+// （即「开 app 秒进 LPM」）或在插电瞬态丢失边沿时不应用（即「插电不进 LPM」）。
+static BOOL g_accChargeAppliedThisSession = NO;
 static NSArray* g_recentPolicyTransitions = nil;
 static NSArray* g_policyEventHistory = nil;
 static BOOL g_predictiveInhibitFallbackActive = NO;
@@ -1988,12 +1993,15 @@ static void performAcccharge(BOOL flag) {
     BOOL acc_charge_lpm = getLocalBool(@"acc_charge_lpm", NO);
     if (acc_charge) {
         if (flag) { // 修改状态
-            // 幂等守卫：充电态策略每次电池事件都会重申 performAcccharge(YES)，
+            // 幂等守卫：充电态策略每次电池事件都会重申加速项（稳态重申路径），
             // 重复执行会覆盖亮度缓存并重复写系统开关
             if (cache_status != nil) {
                 return;
             }
             cache_status = [NSMutableDictionary new];
+            // 标记本次充电会话已首次应用加速项；稳态重申路径据此判断只做恢复、
+            // 不再首次应用，命令翻转分支据此知道加速项已生效无需重做。
+            g_accChargeAppliedThisSession = YES;
             if (acc_charge_airmode) {
                 setAirEnable(YES);
             }
@@ -2038,6 +2046,7 @@ static void performAcccharge(BOOL flag) {
                 setLPMEnable(NO);
             }
             cache_status = nil;
+            g_accChargeAppliedThisSession = NO;
         }
     }
 }
@@ -3117,6 +3126,7 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
     int effective_current = getEffectiveBatteryCurrent(safeInfo);
     BOOL current_looks_charging = currentLooksCharging(effective_current);
     BOOL current_looks_discharging = currentLooksDischarging(effective_current);
+    (void)current_looks_discharging; // 预留：放电态判定，保留供后续策略分支使用
     BOOL predictive_inhibit_active = [safeInfo[@"PredictiveChargingInhibit"] boolValue];
     if (shouldFallbackFromPredictiveInhibitStop(is_adaptor_connected,
                                                 is_charging,
@@ -3295,11 +3305,35 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
             }
         }
     } while(false);
-    // 稳态充电重申加速充电状态：开机越狱后已插电时走不到任何命令翻转分支
-    // （插电事件/电量恢复/温控恢复），LPM 等加速项由此路径开启。幂等由
-    // performAcccharge 内的 cache_status 守卫保证。
-    if (is_adaptor_connected && [nextPolicyState isEqualToString:@"charging"] && !is_adaptor_new_disconnected) {
-        performAcccharge(YES);
+    // 稳态重申加速充电状态：开机越狱后已插电时走不到任何命令翻转分支
+    // （插电事件/电量恢复/温控恢复），LPM 等加速项由此路径维持。但「首次应用」
+    // 只由进入充电态的命令翻转分支触发（含 daemon bootstrap 补的一次策略），
+    // 稳态重申只做「恢复」—— 仅当本次会话已应用过加速项、且某项被外部清除
+    // （用户在设置里手动改、或系统/其它进程改）时按需重拉对应开关。不调用
+    // performAcccharge(YES) 以免覆盖亮度缓存、也不在 app/apply_now 触发策略时
+    // 借稳态路径误首次应用（即「开 app 秒进 LPM」）。
+    if (is_adaptor_connected && [nextPolicyState isEqualToString:@"charging"] && !is_adaptor_new_disconnected
+        && g_accChargeAppliedThisSession) {
+        BOOL acc_charge_airmode = getLocalBool(@"acc_charge_airmode", NO);
+        BOOL acc_charge_wifi = getLocalBool(@"acc_charge_wifi", NO);
+        BOOL acc_charge_blue = getLocalBool(@"acc_charge_blue", NO);
+        BOOL acc_charge_bright = getLocalBool(@"acc_charge_bright", NO);
+        BOOL acc_charge_lpm = getLocalBool(@"acc_charge_lpm", NO);
+        if (acc_charge_lpm && !isLPMEnable()) {
+            setLPMEnable(YES);
+        }
+        if (acc_charge_airmode && !isAirEnable()) {
+            setAirEnable(YES);
+        }
+        if (acc_charge_wifi && isWiFiEnable()) {
+            setWiFiEnable(NO);
+        }
+        if (acc_charge_blue && isBlueEnable()) {
+            setBlueEnable(NO);
+        }
+        if (acc_charge_bright && getBrightness() != 0.0f) {
+            setBrightness(0.0f);
+        }
     }
     if (is_adaptor_new_disconnected) {
         performAcccharge(NO);
@@ -4226,6 +4260,11 @@ void detectUPSBattery() {
         selfHealSmartChargeOnBootstrap();
         refreshFullChargeScheduleTimer(0);
         evaluateFullChargeSchedule(YES);
+        // 开机越狱后已插电时，电池通知尚未到达、命令翻转分支走不到，加速项等
+        // 充电态副作用无路径首次应用。bat_info 已由 getBatInfo 填充，主动跑一次
+        // 策略让进入充电态的分支首次应用加速项，替代旧的「稳态重申首次应用」
+        // （稳态重申现仅做恢复，不再首次应用，避免 app/apply_now 触发时误开 LPM）。
+        refreshBatteryStateAndApplyPolicy();
         NSFileInfoLog(@"%@ daemon_started backend=%@ port=%d",
                       log_prefix,
                       @"bsd_socket",

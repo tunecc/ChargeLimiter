@@ -217,6 +217,228 @@ static char kCLAdvSwitchViewKey;
     [self.contentStack addArrangedSubview:row];
 }
 
+- (void)addDisclosureSwitchRowWithIcon:(NSString *)iconName
+                                 title:(NSString *)title
+                                subtitle:(NSString *)subtitle
+                                  isOn:(BOOL)isOn
+                             expanded:(BOOL)expanded
+                                 color:(UIColor *)color
+                                   tag:(NSInteger)tag
+                                target:(id)target
+                       switchAction:(SEL)switchAction
+                    disclosureAction:(SEL)disclosureAction {
+    UIView *row = [[UIView alloc] init];
+    row.translatesAutoresizingMaskIntoConstraints = NO;
+    row.tag = tag;
+
+    UIImageView *iconView = [[UIImageView alloc] init];
+    iconView.translatesAutoresizingMaskIntoConstraints = NO;
+    iconView.contentMode = UIViewContentModeScaleAspectFit;
+    UIColor *iconColor = color ?: [UIColor systemBlueColor];
+    iconView.tintColor = isOn ? iconColor : [[UIColor secondaryLabelColor] colorWithAlphaComponent:0.7];
+    UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:16 weight:UIImageSymbolWeightMedium];
+    iconView.image = CLSymbolImage(iconName, config);
+    [row addSubview:iconView];
+
+    UILabel *titleLabel = [[UILabel alloc] init];
+    titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    titleLabel.text = title;
+    titleLabel.font = [UIFont systemFontOfSize:16];
+    titleLabel.textColor = [UIColor labelColor];
+    titleLabel.numberOfLines = 0;
+    [row addSubview:titleLabel];
+
+    UISwitch *switchView = [[UISwitch alloc] init];
+    switchView.translatesAutoresizingMaskIntoConstraints = NO;
+    switchView.on = isOn;
+    switchView.tag = tag;
+    switchView.onTintColor = iconColor;
+    [switchView addTarget:target action:switchAction forControlEvents:UIControlEventValueChanged];
+    [switchView addTarget:self action:@selector(updateSwitchIconTint:) forControlEvents:UIControlEventValueChanged];
+    objc_setAssociatedObject(switchView, "iconView", iconView, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(switchView, "iconColor", iconColor, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [switchView setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    [switchView setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    [row addSubview:switchView];
+
+    // 倒三角 disclosure（点击展开/收起子项）
+    UIImageView *disclosure = [[UIImageView alloc] init];
+    disclosure.translatesAutoresizingMaskIntoConstraints = NO;
+    UIImageSymbolConfiguration *disclosureConfig = [UIImageSymbolConfiguration configurationWithPointSize:18 weight:UIImageSymbolWeightSemibold];
+    disclosure.image = CLSymbolImage(expanded ? @"chevron.up" : @"chevron.down", disclosureConfig);
+    disclosure.tintColor = [UIColor tertiaryLabelColor];
+    disclosure.contentMode = UIViewContentModeScaleAspectFit;
+    [disclosure setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    [disclosure setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    disclosure.userInteractionEnabled = YES;
+
+    UIButton *disclosureButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    disclosureButton.translatesAutoresizingMaskIntoConstraints = NO;
+    disclosureButton.backgroundColor = [UIColor clearColor];
+    [disclosureButton addSubview:disclosure];
+    [disclosureButton addTarget:target action:disclosureAction forControlEvents:UIControlEventTouchUpInside];
+    [row addSubview:disclosureButton];
+
+    CGFloat minimumRowHeight = 50;
+    UILabel *subtitleLabel = nil;
+
+    if (subtitle) {
+        subtitleLabel = [[UILabel alloc] init];
+        subtitleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        subtitleLabel.text = subtitle;
+        subtitleLabel.font = [UIFont systemFontOfSize:12];
+        subtitleLabel.textColor = [UIColor secondaryLabelColor];
+        subtitleLabel.numberOfLines = 0;
+        [row addSubview:subtitleLabel];
+        minimumRowHeight = 70;
+
+        [NSLayoutConstraint activateConstraints:@[
+            [titleLabel.topAnchor constraintEqualToAnchor:row.topAnchor constant:12],
+            [subtitleLabel.topAnchor constraintEqualToAnchor:titleLabel.bottomAnchor constant:2],
+            [subtitleLabel.leadingAnchor constraintEqualToAnchor:iconView.trailingAnchor constant:14],
+            [titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:disclosureButton.leadingAnchor constant:-10],
+            [subtitleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:disclosureButton.leadingAnchor constant:-10],
+            [subtitleLabel.bottomAnchor constraintEqualToAnchor:row.bottomAnchor constant:-12]
+        ]];
+    } else {
+        [NSLayoutConstraint activateConstraints:@[
+            [titleLabel.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+            [titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:disclosureButton.leadingAnchor constant:-10],
+            [titleLabel.topAnchor constraintGreaterThanOrEqualToAnchor:row.topAnchor constant:10],
+            [titleLabel.bottomAnchor constraintLessThanOrEqualToAnchor:row.bottomAnchor constant:-10]
+        ]];
+    }
+
+    [NSLayoutConstraint activateConstraints:@[
+        [row.heightAnchor constraintGreaterThanOrEqualToConstant:minimumRowHeight],
+        [iconView.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:16],
+        [iconView.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+        [iconView.widthAnchor constraintEqualToConstant:26],
+        [titleLabel.leadingAnchor constraintEqualToAnchor:iconView.trailingAnchor constant:14],
+        // 倒三角贴在开关左侧，再往左挪一点
+        [disclosureButton.trailingAnchor constraintEqualToAnchor:switchView.leadingAnchor constant:-14],
+        [disclosureButton.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+        [disclosureButton.widthAnchor constraintEqualToConstant:30],
+        [disclosureButton.heightAnchor constraintEqualToConstant:30],
+        [disclosure.centerXAnchor constraintEqualToAnchor:disclosureButton.centerXAnchor],
+        [disclosure.centerYAnchor constraintEqualToAnchor:disclosureButton.centerYAnchor],
+        [disclosure.widthAnchor constraintEqualToConstant:20],
+        [disclosure.heightAnchor constraintEqualToConstant:20],
+        [switchView.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-16],
+        [switchView.centerYAnchor constraintEqualToAnchor:row.centerYAnchor]
+    ]];
+
+    objc_setAssociatedObject(row, &kCLAdvSwitchColorKey, iconColor, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(row, &kCLAdvSwitchIconViewKey, iconView, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(row, &kCLAdvSwitchTitleLabelKey, titleLabel, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (subtitleLabel) {
+        objc_setAssociatedObject(row, &kCLAdvSwitchSubtitleLabelKey, subtitleLabel, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    objc_setAssociatedObject(row, &kCLAdvSwitchViewKey, switchView, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    [self.contentStack addArrangedSubview:row];
+}
+
+- (void)addAccChargeSubRowWithIcon:(NSString *)iconName
+                             title:(NSString *)title
+                          subtitle:(NSString *)subtitle
+                              isOn:(BOOL)isOn
+                           enabled:(BOOL)enabled
+                             color:(UIColor *)color
+                               tag:(NSInteger)tag
+                            target:(id)target
+                            action:(SEL)action {
+    UIView *row = [[UIView alloc] init];
+    row.translatesAutoresizingMaskIntoConstraints = NO;
+    row.tag = tag;
+
+    UIImageView *iconView = [[UIImageView alloc] init];
+    iconView.translatesAutoresizingMaskIntoConstraints = NO;
+    iconView.contentMode = UIViewContentModeScaleAspectFit;
+    UIColor *iconColor = color ?: [UIColor systemBlueColor];
+    iconView.tintColor = enabled ? (isOn ? iconColor : [[UIColor secondaryLabelColor] colorWithAlphaComponent:0.7])
+                                 : [UIColor tertiaryLabelColor];
+    UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:16 weight:UIImageSymbolWeightMedium];
+    iconView.image = CLSymbolImage(iconName, config);
+    [row addSubview:iconView];
+
+    UILabel *titleLabel = [[UILabel alloc] init];
+    titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    titleLabel.text = title;
+    titleLabel.font = [UIFont systemFontOfSize:16];
+    titleLabel.textColor = enabled ? [UIColor labelColor] : [UIColor secondaryLabelColor];
+    titleLabel.numberOfLines = 0;
+    titleLabel.alpha = enabled ? 1.0 : 0.6;
+    [row addSubview:titleLabel];
+
+    UISwitch *switchView = [[UISwitch alloc] init];
+    switchView.translatesAutoresizingMaskIntoConstraints = NO;
+    switchView.on = isOn;
+    switchView.tag = tag;
+    switchView.onTintColor = iconColor;
+    switchView.enabled = enabled;
+    switchView.alpha = enabled ? 1.0 : 0.6;
+    [switchView addTarget:target action:action forControlEvents:UIControlEventValueChanged];
+    [switchView addTarget:self action:@selector(updateSwitchIconTint:) forControlEvents:UIControlEventValueChanged];
+    objc_setAssociatedObject(switchView, "iconView", iconView, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(switchView, "iconColor", iconColor, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [switchView setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    [switchView setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    [row addSubview:switchView];
+
+    CGFloat minimumRowHeight = 50;
+    UILabel *subtitleLabel = nil;
+
+    if (subtitle) {
+        subtitleLabel = [[UILabel alloc] init];
+        subtitleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        subtitleLabel.text = subtitle;
+        subtitleLabel.font = [UIFont systemFontOfSize:12];
+        subtitleLabel.textColor = enabled ? [UIColor secondaryLabelColor] : [UIColor tertiaryLabelColor];
+        subtitleLabel.numberOfLines = 0;
+        subtitleLabel.alpha = enabled ? 1.0 : 0.6;
+        [row addSubview:subtitleLabel];
+        minimumRowHeight = 70;
+
+        [NSLayoutConstraint activateConstraints:@[
+            [titleLabel.topAnchor constraintEqualToAnchor:row.topAnchor constant:12],
+            [subtitleLabel.topAnchor constraintEqualToAnchor:titleLabel.bottomAnchor constant:2],
+            [subtitleLabel.leadingAnchor constraintEqualToAnchor:iconView.trailingAnchor constant:14],
+            [titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:switchView.leadingAnchor constant:-12],
+            [subtitleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:switchView.leadingAnchor constant:-12],
+            [subtitleLabel.bottomAnchor constraintEqualToAnchor:row.bottomAnchor constant:-12]
+        ]];
+    } else {
+        [NSLayoutConstraint activateConstraints:@[
+            [titleLabel.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+            [titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:switchView.leadingAnchor constant:-12],
+            [titleLabel.topAnchor constraintGreaterThanOrEqualToAnchor:row.topAnchor constant:10],
+            [titleLabel.bottomAnchor constraintLessThanOrEqualToAnchor:row.bottomAnchor constant:-10]
+        ]];
+    }
+
+    // 子项缩进：icon 相对主开关右移，体现上下级
+    [NSLayoutConstraint activateConstraints:@[
+        [row.heightAnchor constraintGreaterThanOrEqualToConstant:minimumRowHeight],
+        [iconView.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:44],
+        [iconView.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+        [iconView.widthAnchor constraintEqualToConstant:26],
+        [titleLabel.leadingAnchor constraintEqualToAnchor:iconView.trailingAnchor constant:14],
+        [switchView.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-16],
+        [switchView.centerYAnchor constraintEqualToAnchor:row.centerYAnchor]
+    ]];
+
+    objc_setAssociatedObject(row, &kCLAdvSwitchColorKey, iconColor, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(row, &kCLAdvSwitchIconViewKey, iconView, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(row, &kCLAdvSwitchTitleLabelKey, titleLabel, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (subtitleLabel) {
+        objc_setAssociatedObject(row, &kCLAdvSwitchSubtitleLabelKey, subtitleLabel, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    objc_setAssociatedObject(row, &kCLAdvSwitchViewKey, switchView, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    [self.contentStack addArrangedSubview:row];
+}
+
 - (void)addPickerRowWithIcon:(NSString *)iconName title:(NSString *)title value:(NSString *)value color:(UIColor *)color tag:(NSInteger)tag target:(id)target action:(SEL)action {
     UIView *row = [[UIView alloc] init];
     row.translatesAutoresizingMaskIntoConstraints = NO;
@@ -285,6 +507,102 @@ static char kCLAdvSwitchViewKey;
         [valueLabel.bottomAnchor constraintLessThanOrEqualToAnchor:row.bottomAnchor constant:-10]
     ]];
     
+    [self.contentStack addArrangedSubview:row];
+}
+
+- (void)addPickerRowWithIcon:(NSString *)iconName title:(NSString *)title subtitle:(NSString *)subtitle value:(NSString *)value color:(UIColor *)color tag:(NSInteger)tag target:(id)target action:(SEL)action {
+    UIView *row = [[UIView alloc] init];
+    row.translatesAutoresizingMaskIntoConstraints = NO;
+    row.tag = tag;
+    UIColor *rowColor = color ?: [UIColor systemBlueColor];
+
+    UIImageView *iconView = [[UIImageView alloc] init];
+    iconView.translatesAutoresizingMaskIntoConstraints = NO;
+    iconView.contentMode = UIViewContentModeScaleAspectFit;
+    iconView.tintColor = rowColor;
+    UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:16 weight:UIImageSymbolWeightMedium];
+    iconView.image = CLSymbolImage(iconName, config);
+    [row addSubview:iconView];
+
+    UILabel *titleLabel = [[UILabel alloc] init];
+    titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    titleLabel.text = title;
+    titleLabel.font = [UIFont systemFontOfSize:16];
+    titleLabel.textColor = [UIColor labelColor];
+    titleLabel.numberOfLines = 0;
+    [row addSubview:titleLabel];
+
+    UILabel *valueLabel = [[UILabel alloc] init];
+    valueLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    valueLabel.text = value;
+    valueLabel.font = [UIFont systemFontOfSize:16];
+    valueLabel.textColor = [UIColor secondaryLabelColor];
+    valueLabel.numberOfLines = 0;
+    valueLabel.textAlignment = NSTextAlignmentRight;
+    [valueLabel setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    [valueLabel setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    valueLabel.tag = tag + 10000;
+    [row addSubview:valueLabel];
+
+    UIImageView *chevron = [[UIImageView alloc] init];
+    chevron.translatesAutoresizingMaskIntoConstraints = NO;
+    chevron.image = CLSymbolImage(@"chevron.right", nil);
+    chevron.tintColor = [UIColor tertiaryLabelColor];
+    [chevron setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    [chevron setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    [row addSubview:chevron];
+
+    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:target action:action];
+    [row addGestureRecognizer:tap];
+    objc_setAssociatedObject(row, &kCLAdvPickerColorKey, rowColor, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(row, &kCLAdvPickerIconViewKey, iconView, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(row, &kCLAdvPickerTitleLabelKey, titleLabel, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(row, &kCLAdvPickerValueLabelKey, valueLabel, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(row, &kCLAdvPickerChevronKey, chevron, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    CGFloat minimumRowHeight = 50;
+    UILabel *subtitleLabel = nil;
+    if (subtitle.length > 0) {
+        subtitleLabel = [[UILabel alloc] init];
+        subtitleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        subtitleLabel.text = subtitle;
+        subtitleLabel.font = [UIFont systemFontOfSize:12];
+        subtitleLabel.textColor = [UIColor secondaryLabelColor];
+        subtitleLabel.numberOfLines = 0;
+        [row addSubview:subtitleLabel];
+        minimumRowHeight = 70;
+
+        [NSLayoutConstraint activateConstraints:@[
+            [titleLabel.topAnchor constraintEqualToAnchor:row.topAnchor constant:12],
+            [subtitleLabel.topAnchor constraintEqualToAnchor:titleLabel.bottomAnchor constant:2],
+            [subtitleLabel.leadingAnchor constraintEqualToAnchor:iconView.trailingAnchor constant:14],
+            [titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:valueLabel.leadingAnchor constant:-12],
+            [subtitleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:valueLabel.leadingAnchor constant:-12],
+            [subtitleLabel.bottomAnchor constraintEqualToAnchor:row.bottomAnchor constant:-12]
+        ]];
+    } else {
+        [NSLayoutConstraint activateConstraints:@[
+            [titleLabel.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+            [titleLabel.topAnchor constraintGreaterThanOrEqualToAnchor:row.topAnchor constant:10],
+            [titleLabel.bottomAnchor constraintLessThanOrEqualToAnchor:row.bottomAnchor constant:-10]
+        ]];
+    }
+
+    [NSLayoutConstraint activateConstraints:@[
+        [row.heightAnchor constraintGreaterThanOrEqualToConstant:minimumRowHeight],
+        [iconView.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:16],
+        [iconView.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+        [iconView.widthAnchor constraintEqualToConstant:26],
+        [titleLabel.leadingAnchor constraintEqualToAnchor:iconView.trailingAnchor constant:14],
+        [chevron.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-16],
+        [chevron.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+        [valueLabel.leadingAnchor constraintGreaterThanOrEqualToAnchor:titleLabel.trailingAnchor constant:8],
+        [valueLabel.trailingAnchor constraintEqualToAnchor:chevron.leadingAnchor constant:-8],
+        [valueLabel.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+        [valueLabel.topAnchor constraintGreaterThanOrEqualToAnchor:row.topAnchor constant:10],
+        [valueLabel.bottomAnchor constraintLessThanOrEqualToAnchor:row.bottomAnchor constant:-10]
+    ]];
+
     [self.contentStack addArrangedSubview:row];
 }
 
@@ -561,6 +879,12 @@ static const NSInteger CLAdvHoldTempDisableSmartChargeTag = 312;
 static const NSInteger CLAdvDisableSmartChargeTag = 311;
 static const NSInteger CLAdvHoldModeBandTag = 305;
 static const NSInteger CLAdvHoldModeBehaviorTag = 313;
+static const NSInteger CLAdvAccChargeMainTag = 399;       // 加速充电主开关（含 disclosure）
+static const NSInteger CLAdvAccChargeAirModeTag = 401;
+static const NSInteger CLAdvAccChargeWifiTag = 402;
+static const NSInteger CLAdvAccChargeBluetoothTag = 403;
+static const NSInteger CLAdvAccChargeBrightnessTag = 404;
+static const NSInteger CLAdvAccChargeLPMTag = 405;
 
 #pragma mark - 策略诊断控制器
 
@@ -1668,6 +1992,7 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
 @interface CLAdvancedSettingsViewController : UIViewController
 @property (nonatomic, strong) UIScrollView *scrollView;
 @property (nonatomic, strong) UIStackView *mainStack;
+@property (nonatomic, assign) BOOL accChargeExpanded;
 - (BOOL)isHoldSuppressedBySystemCapacityControlForManager:(CLBatteryManager *)manager;
 - (BOOL)isHoldControlAvailableForManager:(CLBatteryManager *)manager;
 - (NSString *)holdUnavailableReasonForManager:(CLBatteryManager *)manager;
@@ -1747,6 +2072,8 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
 - (void)languageDidChange {
     CLApplyLanguageFromSettings();
     self.title = CLL(@"充电高级");
+    // 语言切换重建视图，展开态不保留，回到默认收起（spec A41 / 决策 D3）
+    self.accChargeExpanded = NO;
     for (UIView *v in self.view.subviews) {
         [v removeFromSuperview];
     }
@@ -1762,8 +2089,42 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
 }
 
 - (void)configDidUpdate {
-    [self normalizeAdvancedOptionInterlocksIfNeeded];
-    [self reloadContentRows];
+    BOOL normalized = [self normalizeAdvancedOptionInterlocksIfNeeded];
+    if (self.accChargeExpanded) {
+        // 加速充电展开态：避免整页重建打断连点，只就地刷新加速充电子项的启用/置灰与开关值
+        [self refreshAccChargeSubRowsInPlace];
+        if (normalized) {
+            [self reloadContentRows];
+        }
+    } else {
+        [self reloadContentRows];
+    }
+}
+
+- (void)refreshAccChargeSubRowsInPlace {
+    CLAdvSettingsCard *accCard = [self accChargeCardInStack];
+    if (!accCard) {
+        return;
+    }
+    CLBatteryManager *manager = [CLBatteryManager shared];
+    BOOL enabled = manager.accChargeEnabled;
+    NSArray<UIView *> *rows = [accCard.contentStack.arrangedSubviews copy];
+    for (UIView *v in rows) {
+        UISwitch *sw = objc_getAssociatedObject(v, &kCLAdvSwitchViewKey);
+        if (!sw || sw.tag == CLAdvAccChargeMainTag) {
+            continue;
+        }
+        // 同步当前开关值与启用态
+        switch (sw.tag) {
+            case CLAdvAccChargeAirModeTag: sw.on = manager.accChargeAirMode; break;
+            case CLAdvAccChargeWifiTag: sw.on = manager.accChargeWifi; break;
+            case CLAdvAccChargeBluetoothTag: sw.on = manager.accChargeBluetooth; break;
+            case CLAdvAccChargeBrightnessTag: sw.on = manager.accChargeBrightness; break;
+            case CLAdvAccChargeLPMTag: sw.on = manager.accChargeLPM; break;
+            default: break;
+        }
+        [self updateSwitchRow:v enabled:enabled];
+    }
 }
 
 - (BOOL)normalizeAdvancedOptionInterlocksIfNeeded {
@@ -1905,9 +2266,19 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
     
     // 加速充电
     CLAdvSettingsCard *accCard = [[CLAdvSettingsCard alloc] init];
-    [accCard addSectionHeader:CLL(@"加速充电")];
-    [accCard addPickerRowWithIcon:@"bolt.car" title:CLL(@"加速充电") value:CLL(@"进入") color:[UIColor systemGreenColor] tag:399 target:self action:@selector(accChargeTapped)];
-    [self addTipRowToCard:accCard text:CLL(@"关闭部分功能以减少耗电，加快充电速度")];
+    [accCard addDisclosureSwitchRowWithIcon:@"bolt.car"
+                                      title:CLL(@"加速充电")
+                                   subtitle:CLL(@"关闭部分功能以减少耗电，加快充电速度")
+                                       isOn:manager.accChargeEnabled
+                                   expanded:self.accChargeExpanded
+                                      color:[UIColor systemGreenColor]
+                                        tag:CLAdvAccChargeMainTag
+                                     target:self
+                               switchAction:@selector(accChargeMainChanged:)
+                           disclosureAction:@selector(accChargeDisclosureTapped)];
+    if (self.accChargeExpanded) {
+        [self appendAccChargeSubRowsToCard:accCard enabled:manager.accChargeEnabled];
+    }
     [self.mainStack addArrangedSubview:accCard];
     
     // 停充控制
@@ -1935,9 +2306,7 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
 
     // 限流控制
     CLAdvSettingsCard *limitCard = [[CLAdvSettingsCard alloc] init];
-    [limitCard addSectionHeader:CLL(@"限流控制")];
-    [limitCard addPickerRowWithIcon:@"thermometer.sun.fill" title:CLL(@"限流等级") value:[self limitInflowValueText] color:[UIColor systemOrangeColor] tag:306 target:self action:@selector(limitInflowModeTapped:)];
-    [self addTipRowToCard:limitCard text:CLL(@"选择“关闭”可禁用自动限流；其他等级会自动启用。")];
+    [limitCard addPickerRowWithIcon:@"thermometer.sun.fill" title:CLL(@"限流等级") subtitle:CLL(@"选择“关闭”可禁用自动限流；其他等级会自动启用。") value:[self limitInflowValueText] color:[UIColor systemOrangeColor] tag:306 target:self action:@selector(limitInflowModeTapped:)];
     [self.mainStack addArrangedSubview:limitCard];
     
     // 高温模拟
@@ -2094,11 +2463,239 @@ static const NSInteger CLAdvHoldModeBehaviorTag = 313;
 
 #pragma mark - Actions
 
-- (void)accChargeTapped {
-    Class vcClass = NSClassFromString(@"CLAccChargeViewController");
-    if (vcClass) {
-        UIViewController *vc = [[vcClass alloc] init];
-        [self.navigationController pushViewController:vc animated:YES];
+- (void)accChargeDisclosureTapped {
+    self.accChargeExpanded = !self.accChargeExpanded;
+    // 就地增删子项行，不重建整页，保证连点即时响应。
+    CLAdvSettingsCard *accCard = [self accChargeCardInStack];
+    if (!accCard) {
+        [self reloadContentRows];
+        return;
+    }
+    if (self.accChargeExpanded) {
+        BOOL enabled = [CLBatteryManager shared].accChargeEnabled;
+        [self insertAccChargeSubRowsIntoCard:accCard afterMainRow:YES enabled:enabled];
+    } else {
+        [self removeAccChargeSubRowsFromCard:accCard];
+    }
+    UIView *mainRow = [self switchRowInCard:accCard tag:CLAdvAccChargeMainTag];
+    [self updateDisclosureInRow:mainRow expanded:self.accChargeExpanded];
+}
+
+- (CLAdvSettingsCard *)accChargeCardInStack {
+    // accCard 是 mainStack 第一个 arrangedSubview
+    UIView *first = self.mainStack.arrangedSubviews.firstObject;
+    if ([first isKindOfClass:[CLAdvSettingsCard class]]) {
+        return (CLAdvSettingsCard *)first;
+    }
+    return nil;
+}
+
+- (void)insertAccChargeSubRowsIntoCard:(CLAdvSettingsCard *)card afterMainRow:(BOOL)afterMain enabled:(BOOL)enabled {
+    // 幂等：已存在子项行（tag 401-405）时直接返回，避免连点导致的重复插入
+    if ([self accChargeCardHasSubRows:card]) {
+        return;
+    }
+    CLBatteryManager *manager = [CLBatteryManager shared];
+    // 索引：主开关行之后依次插入（separator + subRow）×5
+    NSUInteger insertIndex = 0;
+    if (afterMain) {
+        NSUInteger mainIdx = NSNotFound;
+        NSArray<UIView *> *rows = card.contentStack.arrangedSubviews;
+        for (NSUInteger i = 0; i < rows.count; i++) {
+            if (rows[i].tag == CLAdvAccChargeMainTag) {
+                mainIdx = i;
+                break;
+            }
+        }
+        insertIndex = (mainIdx == NSNotFound) ? 0 : mainIdx + 1;
+    }
+
+    NSArray<NSDictionary *> *subs = @[
+        @{@"icon":@"airplane", @"title":CLL(@"飞行模式"), @"color":[UIColor systemOrangeColor], @"tag":@(CLAdvAccChargeAirModeTag), @"on":@(manager.accChargeAirMode)},
+        @{@"icon":@"wifi", @"title":CLL(@"关闭 WiFi"), @"color":[UIColor systemBlueColor], @"tag":@(CLAdvAccChargeWifiTag), @"on":@(manager.accChargeWifi)},
+        @{@"icon":@"antenna.radiowaves.left.and.right", @"title":CLL(@"关闭蓝牙"), @"color":[UIColor systemIndigoColor], @"tag":@(CLAdvAccChargeBluetoothTag), @"on":@(manager.accChargeBluetooth)},
+        @{@"icon":@"sun.max.fill", @"title":CLL(@"降低亮度"), @"color":[UIColor systemYellowColor], @"tag":@(CLAdvAccChargeBrightnessTag), @"on":@(manager.accChargeBrightness)},
+        @{@"icon":@"battery.25", @"title":CLL(@"低电量模式"), @"color":[UIColor systemGreenColor], @"tag":@(CLAdvAccChargeLPMTag), @"on":@(manager.accChargeLPM)},
+    ];
+
+    for (NSUInteger i = 0; i < subs.count; i++) {
+        NSDictionary *d = subs[i];
+        UIView *sep = [self newSeparatorView];
+        UIView *sub = [self newAccChargeSubRowWithIcon:d[@"icon"]
+                                                 title:d[@"title"]
+                                              subtitle:nil
+                                                  isOn:[d[@"on"] boolValue]
+                                               enabled:enabled
+                                                 color:d[@"color"]
+                                                   tag:[d[@"tag"] integerValue]
+                                                target:self
+                                                action:@selector(accChargeSubChanged:)];
+        [card.contentStack insertArrangedSubview:sep atIndex:insertIndex + i*2];
+        [card.contentStack insertArrangedSubview:sub atIndex:insertIndex + i*2 + 1];
+    }
+}
+
+- (void)appendAccChargeSubRowsToCard:(CLAdvSettingsCard *)card enabled:(BOOL)enabled {
+    CLBatteryManager *manager = [CLBatteryManager shared];
+    NSArray<NSDictionary *> *subs = @[
+        @{@"icon":@"airplane", @"title":CLL(@"飞行模式"), @"color":[UIColor systemOrangeColor], @"tag":@(CLAdvAccChargeAirModeTag), @"on":@(manager.accChargeAirMode)},
+        @{@"icon":@"wifi", @"title":CLL(@"关闭 WiFi"), @"color":[UIColor systemBlueColor], @"tag":@(CLAdvAccChargeWifiTag), @"on":@(manager.accChargeWifi)},
+        @{@"icon":@"antenna.radiowaves.left.and.right", @"title":CLL(@"关闭蓝牙"), @"color":[UIColor systemIndigoColor], @"tag":@(CLAdvAccChargeBluetoothTag), @"on":@(manager.accChargeBluetooth)},
+        @{@"icon":@"sun.max.fill", @"title":CLL(@"降低亮度"), @"color":[UIColor systemYellowColor], @"tag":@(CLAdvAccChargeBrightnessTag), @"on":@(manager.accChargeBrightness)},
+        @{@"icon":@"battery.25", @"title":CLL(@"低电量模式"), @"color":[UIColor systemGreenColor], @"tag":@(CLAdvAccChargeLPMTag), @"on":@(manager.accChargeLPM)},
+    ];
+    for (NSDictionary *d in subs) {
+        [card addSeparator];
+        [card addAccChargeSubRowWithIcon:d[@"icon"]
+                                   title:d[@"title"]
+                                subtitle:nil
+                                    isOn:[d[@"on"] boolValue]
+                                 enabled:enabled
+                                   color:d[@"color"]
+                                     tag:[d[@"tag"] integerValue]
+                                  target:self
+                                  action:@selector(accChargeSubChanged:)];
+    }
+}
+
+- (void)removeAccChargeSubRowsFromCard:(CLAdvSettingsCard *)card {
+    // 幂等：没有子项行时直接返回，避免连点空操作
+    if (![self accChargeCardHasSubRows:card]) {
+        return;
+    }
+    NSMutableArray<UIView *> *toRemove = [NSMutableArray array];
+    BOOL reachedMain = NO;
+    NSArray<UIView *> *rows = [card.contentStack.arrangedSubviews copy];
+    for (UIView *v in rows) {
+        if (v.tag == CLAdvAccChargeMainTag) {
+            reachedMain = YES;
+            continue;
+        }
+        if (reachedMain) {
+            [toRemove addObject:v];
+        }
+    }
+    for (UIView *v in toRemove) {
+        [card.contentStack removeArrangedSubview:v];
+        [v removeFromSuperview];
+    }
+}
+
+- (BOOL)accChargeCardHasSubRows:(CLAdvSettingsCard *)card {
+    if (!card) {
+        return NO;
+    }
+    for (UIView *v in card.contentStack.arrangedSubviews) {
+        NSInteger t = v.tag;
+        if (t == CLAdvAccChargeAirModeTag || t == CLAdvAccChargeWifiTag ||
+            t == CLAdvAccChargeBluetoothTag || t == CLAdvAccChargeBrightnessTag ||
+            t == CLAdvAccChargeLPMTag) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+- (void)updateDisclosureInRow:(UIView *)row expanded:(BOOL)expanded {
+    if (!row) {
+        return;
+    }
+    for (UIView *sub in row.subviews) {
+        if ([sub isKindOfClass:[UIButton class]]) {
+            for (UIView *img in sub.subviews) {
+                if ([img isKindOfClass:[UIImageView class]]) {
+                    UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:18 weight:UIImageSymbolWeightSemibold];
+                    ((UIImageView *)img).image = CLSymbolImage(expanded ? @"chevron.up" : @"chevron.down", cfg);
+                    return;
+                }
+            }
+        }
+    }
+}
+
+- (UIView *)newSeparatorView {
+    CGFloat hairline = 1.0 / UIScreen.mainScreen.scale;
+    UIView *container = [[UIView alloc] init];
+    container.translatesAutoresizingMaskIntoConstraints = NO;
+    UIView *separator = [[UIView alloc] init];
+    separator.backgroundColor = [UIColor separatorColor];
+    separator.translatesAutoresizingMaskIntoConstraints = NO;
+    [container addSubview:separator];
+    [NSLayoutConstraint activateConstraints:@[
+        [container.heightAnchor constraintEqualToConstant:hairline],
+        [separator.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:56],
+        [separator.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+        [separator.heightAnchor constraintEqualToConstant:hairline],
+        [separator.centerYAnchor constraintEqualToAnchor:container.centerYAnchor]
+    ]];
+    return container;
+}
+
+- (UIView *)newAccChargeSubRowWithIcon:(NSString *)iconName
+                                 title:(NSString *)title
+                              subtitle:(NSString *)subtitle
+                                  isOn:(BOOL)isOn
+                               enabled:(BOOL)enabled
+                                 color:(UIColor *)color
+                                   tag:(NSInteger)tag
+                                target:(id)target
+                                action:(SEL)action {
+    // 构造一个临时卡片，借用其 contentStack 取出子行（复用 addAccChargeSubRowWithIcon 的布局）
+    CLAdvSettingsCard *tmp = [[CLAdvSettingsCard alloc] init];
+    [tmp addAccChargeSubRowWithIcon:iconName title:title subtitle:subtitle isOn:isOn enabled:enabled color:color tag:tag target:target action:action];
+    UIView *row = tmp.contentStack.arrangedSubviews.firstObject;
+    [tmp.contentStack removeArrangedSubview:row];
+    return row;
+}
+
+- (void)accChargeMainChanged:(UISwitch *)sender {
+    CLBatteryManager *manager = [CLBatteryManager shared];
+    manager.accChargeEnabled = sender.on;
+    [[CLAPIClient shared] setConfigWithKey:@"acc_charge" value:@(sender.on) completion:nil];
+    // 主开关切换后子项启用/置灰状态随之变化：若已展开，就地更新子项启用态，不重建整页
+    if (self.accChargeExpanded) {
+        CLAdvSettingsCard *accCard = [self accChargeCardInStack];
+        NSArray<UIView *> *rows = [accCard.contentStack.arrangedSubviews copy];
+        for (UIView *v in rows) {
+            if ([v isKindOfClass:[UIView class]]) {
+                UISwitch *sw = objc_getAssociatedObject(v, &kCLAdvSwitchViewKey);
+                if (sw && sw.tag != CLAdvAccChargeMainTag) {
+                    [self updateSwitchRow:v enabled:sender.on];
+                }
+            }
+        }
+    }
+}
+
+- (void)accChargeSubChanged:(UISwitch *)sender {
+    CLBatteryManager *manager = [CLBatteryManager shared];
+    NSString *key = nil;
+
+    switch (sender.tag) {
+        case CLAdvAccChargeAirModeTag:
+            manager.accChargeAirMode = sender.on;
+            key = @"acc_charge_airmode";
+            break;
+        case CLAdvAccChargeWifiTag:
+            manager.accChargeWifi = sender.on;
+            key = @"acc_charge_wifi";
+            break;
+        case CLAdvAccChargeBluetoothTag:
+            manager.accChargeBluetooth = sender.on;
+            key = @"acc_charge_blue";
+            break;
+        case CLAdvAccChargeBrightnessTag:
+            manager.accChargeBrightness = sender.on;
+            key = @"acc_charge_bright";
+            break;
+        case CLAdvAccChargeLPMTag:
+            manager.accChargeLPM = sender.on;
+            key = @"acc_charge_lpm";
+            break;
+    }
+
+    if (key) {
+        [[CLAPIClient shared] setConfigWithKey:key value:@(sender.on) completion:nil];
     }
 }
 
