@@ -67,7 +67,6 @@
 		A720B97D2F2F0995008B9C91 /* CLSettingsViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9662F2F0995008B9C91 /* CLSettingsViewController.m */; };
 		A720B97E2F2F0995008B9C91 /* CLHelpViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9602F2F0995008B9C91 /* CLHelpViewController.m */; };
 		A720B97F2F2F0995008B9C91 /* CLBatteryManager.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9762F2F0995008B9C91 /* CLBatteryManager.m */; };
-		A720B9812F2F0995008B9C91 /* CLAccChargeViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B95E2F2F0995008B9C91 /* CLAccChargeViewController.m */; };
 		A720B9822F2F0995008B9C91 /* CLAPIClient.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9742F2F0995008B9C91 /* CLAPIClient.m */; };
 		A720B9832F2F0995008B9C91 /* CLTestApp.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9772F2F0995008B9C91 /* CLTestApp.m */; };
 		A720B9842F2F0995008B9C91 /* CLAdvancedSettingsViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B95F2F2F0995008B9C91 /* CLAdvancedSettingsViewController.m */; };
@@ -75,7 +74,6 @@
 		A720B99E2F2F0995008B9C91 /* CLSettingsViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9662F2F0995008B9C91 /* CLSettingsViewController.m */; };
 		A720B99F2F2F0995008B9C91 /* CLHelpViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9602F2F0995008B9C91 /* CLHelpViewController.m */; };
 		A720B9A02F2F0995008B9C91 /* CLBatteryManager.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9762F2F0995008B9C91 /* CLBatteryManager.m */; };
-		A720B9A22F2F0995008B9C91 /* CLAccChargeViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B95E2F2F0995008B9C91 /* CLAccChargeViewController.m */; };
 		A720B9A32F2F0995008B9C91 /* CLAPIClient.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9742F2F0995008B9C91 /* CLAPIClient.m */; };
 		A720B9A42F2F0995008B9C91 /* CLTestApp.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9772F2F0995008B9C91 /* CLTestApp.m */; };
 		A720B9A52F2F0995008B9C91 /* CLAdvancedSettingsViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B95F2F2F0995008B9C91 /* CLAdvancedSettingsViewController.m */; };
@@ -120,7 +118,6 @@
 		6E2F8AD59E4B4C0682159485 /* CLSettingsViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9662F2F0995008B9C91 /* CLSettingsViewController.m */; };
 		2F5B9C5C05BB470AABCA370A /* CLHelpViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9602F2F0995008B9C91 /* CLHelpViewController.m */; };
 		3FB0FD700B8648B99C897221 /* CLBatteryManager.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9762F2F0995008B9C91 /* CLBatteryManager.m */; };
-		2C6FE838E0D84A0E993576AA /* CLAccChargeViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B95E2F2F0995008B9C91 /* CLAccChargeViewController.m */; };
 		21D44B46C60148ADA33F021A /* CLAPIClient.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9742F2F0995008B9C91 /* CLAPIClient.m */; };
 		AD15D596C3804CF08D7EB2F5 /* CLTestApp.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9772F2F0995008B9C91 /* CLTestApp.m */; };
 		5469A50775CC4D6F83F5C016 /* CLAdvancedSettingsViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B95F2F2F0995008B9C91 /* CLAdvancedSettingsViewController.m */; };
@@ -198,7 +195,6 @@
 		18D0C42E2B7FC64F006A7AB7 /* BackBoardServices.tbd */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = "sourcecode.text-based-dylib-definition"; path = BackBoardServices.tbd; sourceTree = "<group>"; };
 		18D455212B91A5BD0032EDE7 /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
 		18D455232B91A5BD0032EDE7 /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
-		A720B95E2F2F0995008B9C91 /* CLAccChargeViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = CLAccChargeViewController.m; sourceTree = "<group>"; };
 		A720B95F2F2F0995008B9C91 /* CLAdvancedSettingsViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = CLAdvancedSettingsViewController.m; sourceTree = "<group>"; };
 		A720B9602F2F0995008B9C91 /* CLHelpViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = CLHelpViewController.m; sourceTree = "<group>"; };
 		A720B9612F2F0995008B9C91 /* CLMainViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CLMainViewController.h; sourceTree = "<group>"; };
@@ -407,7 +403,6 @@
 		A720B9672F2F0995008B9C91 /* Controllers */ = {
 			isa = PBXGroup;
 			children = (
-				A720B95E2F2F0995008B9C91 /* CLAccChargeViewController.m */,
 				A720B95F2F2F0995008B9C91 /* CLAdvancedSettingsViewController.m */,
 				A720B9602F2F0995008B9C91 /* CLHelpViewController.m */,
 				A720B9612F2F0995008B9C91 /* CLMainViewController.h */,
@@ -751,7 +746,6 @@
 				A720B97E2F2F0995008B9C91 /* CLHelpViewController.m in Sources */,
 				A720B97F2F2F0995008B9C91 /* CLBatteryManager.m in Sources */,
 				A720B9A92F2F0C0B008B9C91 /* CLSimpleHTTPServer.m in Sources */,
-				A720B9812F2F0995008B9C91 /* CLAccChargeViewController.m in Sources */,
 				A720B9822F2F0995008B9C91 /* CLAPIClient.m in Sources */,
 				A720B9832F2F0995008B9C91 /* CLTestApp.m in Sources */,
 				A7FF00102F6D001000000001 /* CLLocalization.m in Sources */,
@@ -771,7 +765,6 @@
 				A720B99F2F2F0995008B9C91 /* CLHelpViewController.m in Sources */,
 				A720B9A02F2F0995008B9C91 /* CLBatteryManager.m in Sources */,
 				A720B9A82F2F0C0B008B9C91 /* CLSimpleHTTPServer.m in Sources */,
-				A720B9A22F2F0995008B9C91 /* CLAccChargeViewController.m in Sources */,
 				A720B9A32F2F0995008B9C91 /* CLAPIClient.m in Sources */,
 				A720B9A42F2F0995008B9C91 /* CLTestApp.m in Sources */,
 				A7FF00122F6D001000000003 /* CLLocalization.m in Sources */,
@@ -811,7 +804,6 @@
 				2F5B9C5C05BB470AABCA370A /* CLHelpViewController.m in Sources */,
 				3FB0FD700B8648B99C897221 /* CLBatteryManager.m in Sources */,
 				7B1EF274758B44B8B1FF08DA /* CLSimpleHTTPServer.m in Sources */,
-				2C6FE838E0D84A0E993576AA /* CLAccChargeViewController.m in Sources */,
 				21D44B46C60148ADA33F021A /* CLAPIClient.m in Sources */,
 				AD15D596C3804CF08D7EB2F5 /* CLTestApp.m in Sources */,
 				876448EE6523421DA13762B6 /* CLLocalization.m in Sources */,
