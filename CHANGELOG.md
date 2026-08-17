@@ -8,7 +8,7 @@
 
 ### 修复
 
-- **重越狱 / 重启用户空间（userspace reboot）后未打开 APP 时，加速充电低电量模式不生效**：v1.15.2 把加速项「首次应用」收敛到「进入充电态的命令翻转分支」（插电边沿 / 电量跨阈值等），但 userspace 重启后已插电稳态无新边沿，命令翻转分支不触发，会话级标志 `g_accChargeAppliedThisSession` 保持 NO，加速项（LPM/airmode/wifi/blue/bright）不被首次应用；打开一次 APP 触发 `apply_now` + 电池事件刷新，使插电边沿重新成立从而首次应用，此后 daemon 持有标志持续生效——即「开一次 APP 后即使杀后台也持续生效」的现象。新增 `applyBootstrapAccChargeIfNeeded`：仅在「加速充电开启 + 适配器已连接 + 充电稳态 + 本次会话未首次应用」时调用 `performAcccharge(YES)` 一次（命中幂等守卫无副作用），在 daemon `serve()` 末尾与每个 `onBatteryEvent` 内各调用一次，覆盖 IORegistry 延迟发布 `ExternalChargeCapable`/`AdapterDetails` 的场景。不引入长驻轮询/定时器，不改变稳态重申段语义（仍只做恢复，不重新引入「开 app 秒进 LPM」回归）。
+- **重越狱 / 重启用户空间（userspace reboot）后未打开 APP 时，加速充电低电量模式不生效**：v1.15.2 把加速项「首次应用」收敛到「进入充电态的命令翻转分支」（插电边沿 / 电量跨阈值等），但 userspace 重启后已插电稳态无新边沿，命令翻转分支不触发，加速项（LPM/airmode/wifi/blue/bright）不被首次应用；打开一次 APP 触发 `apply_now` + 电池事件刷新 `old_bat_info`，使插电边沿重新成立从而首次应用，此后 daemon 持有标志持续生效——即「开一次 APP 后即使杀后台也持续生效」、且首次应用延迟取决于首个边沿到来的「玄学时间」。回退到原版稳态重申语义：`applyChargePolicy` 在 `is_adaptor_connected && nextPolicyState == charging && !is_adaptor_new_disconnected` 时调用 `performAcccharge(YES)`，命中幂等守卫（`cache_status != nil` 直接 return）首次应用/恢复无副作用。userspace 重启后已插电稳态由 `serve()` 末尾 `refreshBatteryStateAndApplyPolicy()` 触发该稳态重申段首次应用；未插电时 `is_adaptor_connected == NO` 天然不进入，不会开 app 秒进 LPM。删除 v1.15.2 的 `g_accChargeAppliedThisSession` 标志与 v1.15.3 的 `applyBootstrapAccChargeIfNeeded` 兜底（已被稳态重申段覆盖）。
 
 ## v1.15.2 - 2026-08-16
 

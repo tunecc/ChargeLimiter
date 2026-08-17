@@ -132,11 +132,6 @@ static NSString* g_smartChargeCoordinationSessionID = nil;
 static time_t g_smartChargeCoordinationStartedTs = 0;
 static BOOL g_holdHasReachedTargetSincePlug = NO;
 static BOOL g_holdMonitorCheckRequested = NO;
-// 加速充电项是否已在本充电会话首次应用过。区分「首次应用」与「稳态重申/恢复」
-// 两条职责：首次应用只由进入充电态的命令翻转分支触发，稳态重申只做已被外部
-// 清除时的恢复，避免稳态路径借用幂等守卫在 app/apply_now 触发策略时误首次应用
-// （即「开 app 秒进 LPM」）或在插电瞬态丢失边沿时不应用（即「插电不进 LPM」）。
-static BOOL g_accChargeAppliedThisSession = NO;
 static NSArray* g_recentPolicyTransitions = nil;
 static NSArray* g_policyEventHistory = nil;
 static BOOL g_predictiveInhibitFallbackActive = NO;
@@ -223,11 +218,6 @@ static void appendSmartChargeCoordinationEvent(NSString* reason, int fromStatus,
 static void loadSmartChargeCoordinationRuntimeState(void);
 static void tryRestoreSmartChargeAfterCoordination(NSString* reason);
 static void performAcccharge(BOOL flag);
-// daemon bootstrap 与首个电池事件兜底首次应用加速项：仅在充电稳态成立、且本次
-// 会话尚未首次应用（g_accChargeAppliedThisSession == NO）时调用 performAcccharge(YES)。
-// 命中 performAcccharge 内幂等守卫无副作用；不引入长驻轮询，不重新引入稳态重申
-// 首次应用（避免「开 app 秒进 LPM」回归）。
-static void applyBootstrapAccChargeIfNeeded(NSDictionary* info, NSString* policyState);
 static void restoreSmartChargeForReset(NSString* reason);
 static void restoreThermalSimulationForReset(void);
 static void restoreAcceleratedChargeStateForReset(void);
@@ -1998,15 +1988,14 @@ static void performAcccharge(BOOL flag) {
     BOOL acc_charge_lpm = getLocalBool(@"acc_charge_lpm", NO);
     if (acc_charge) {
         if (flag) { // 修改状态
-            // 幂等守卫：充电态策略每次电池事件都会重申加速项（稳态重申路径），
-            // 重复执行会覆盖亮度缓存并重复写系统开关
+            // 幂等守卫：充电态稳态重申路径每个电池事件都会调用 performAcccharge(YES)，
+            // cache_status != nil 时直接 return，避免覆盖亮度缓存并重复写系统开关。
+            // 这也是 userspace 重启后已插电稳态首次应用加速项的兜底入口：
+            // 稳态重申不依赖 is_adaptor_new_connected 边沿，只要处于充电稳态即补首次应用。
             if (cache_status != nil) {
                 return;
             }
             cache_status = [NSMutableDictionary new];
-            // 标记本次充电会话已首次应用加速项；稳态重申路径据此判断只做恢复、
-            // 不再首次应用，命令翻转分支据此知道加速项已生效无需重做。
-            g_accChargeAppliedThisSession = YES;
             if (acc_charge_airmode) {
                 setAirEnable(YES);
             }
@@ -2051,44 +2040,8 @@ static void performAcccharge(BOOL flag) {
                 setLPMEnable(NO);
             }
             cache_status = nil;
-            g_accChargeAppliedThisSession = NO;
         }
     }
-}
-
-// daemon bootstrap 与首个 IOKit 电池事件兜底首次应用加速项。
-// 仅在「加速充电开启 + 适配器已连接 + 充电稳态（is_charging 或 充电电流 > 阈值）
-// + 本次会话尚未首次应用（g_accChargeAppliedThisSession == NO）」时调用一次
-// performAcccharge(YES)。命中 performAcccharge 内幂等守卫（cache_status != nil
-// 直接 return）后无副作用。覆盖以下空窗：
-// - userspace 重启 / 重越狱后已插电稳态：serve() 内 refreshBatteryStateAndApplyPolicy
-//   因 is_adaptor_new_connected 边沿退化为 NO（old_bat_info 已是已连接态）走不到
-//   命令翻转分支，g_accChargeAppliedThisSession 保持 NO。
-// - IORegistry 延迟发布 ExternalChargeCapable/AdapterDetails：serve() bootstrap
-//   时 bat_info 尚未反映充电稳态，首个真正的电池事件到来时才补齐。
-// 不引入长驻轮询、不改稳态重申段语义（稳态重申仍以 g_accChargeAppliedThisSession
-// == YES 为前置条件只做恢复），避免重新引入「开 app 秒进 LPM」回归。
-static void applyBootstrapAccChargeIfNeeded(NSDictionary* info, NSString* policyState) {
-    if (!getLocalBool(@"acc_charge", NO)) {
-        return;
-    }
-    if (g_accChargeAppliedThisSession) {
-        return;
-    }
-    NSDictionary* safeInfo = info ?: @{};
-    BOOL adv_disable_inflow = getLocalBool(@"adv_disable_inflow", NO);
-    BOOL is_adaptor_connected = isAdaptorConnect(safeInfo, @(adv_disable_inflow));
-    if (!is_adaptor_connected) {
-        return;
-    }
-    BOOL is_charging = [safeInfo[@"IsCharging"] boolValue];
-    BOOL current_looks_charging = currentLooksCharging(getEffectiveBatteryCurrent(safeInfo));
-    BOOL charging_steady = (is_charging || current_looks_charging)
-                        || [policyState isEqualToString:@"charging"];
-    if (!charging_steady) {
-        return;
-    }
-    performAcccharge(YES);
 }
 
 static NSString* getMsgForLang(NSString* msgid, NSString* lang) {
@@ -3345,35 +3298,14 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
             }
         }
     } while(false);
-    // 稳态重申加速充电状态：开机越狱后已插电时走不到任何命令翻转分支
-    // （插电事件/电量恢复/温控恢复），LPM 等加速项由此路径维持。但「首次应用」
-    // 只由进入充电态的命令翻转分支触发（含 daemon bootstrap 补的一次策略），
-    // 稳态重申只做「恢复」—— 仅当本次会话已应用过加速项、且某项被外部清除
-    // （用户在设置里手动改、或系统/其它进程改）时按需重拉对应开关。不调用
-    // performAcccharge(YES) 以免覆盖亮度缓存、也不在 app/apply_now 触发策略时
-    // 借稳态路径误首次应用（即「开 app 秒进 LPM」）。
-    if (is_adaptor_connected && [nextPolicyState isEqualToString:@"charging"] && !is_adaptor_new_disconnected
-        && g_accChargeAppliedThisSession) {
-        BOOL acc_charge_airmode = getLocalBool(@"acc_charge_airmode", NO);
-        BOOL acc_charge_wifi = getLocalBool(@"acc_charge_wifi", NO);
-        BOOL acc_charge_blue = getLocalBool(@"acc_charge_blue", NO);
-        BOOL acc_charge_bright = getLocalBool(@"acc_charge_bright", NO);
-        BOOL acc_charge_lpm = getLocalBool(@"acc_charge_lpm", NO);
-        if (acc_charge_lpm && !isLPMEnable()) {
-            setLPMEnable(YES);
-        }
-        if (acc_charge_airmode && !isAirEnable()) {
-            setAirEnable(YES);
-        }
-        if (acc_charge_wifi && isWiFiEnable()) {
-            setWiFiEnable(NO);
-        }
-        if (acc_charge_blue && isBlueEnable()) {
-            setBlueEnable(NO);
-        }
-        if (acc_charge_bright && getBrightness() != 0.0f) {
-            setBrightness(0.0f);
-        }
+    // 稳态重申加速充电状态：充电稳态每个电池事件重申 performAcccharge(YES)。
+    // 这是 userspace 重启 / 重越狱后已插电稳态首次应用加速项的兜底入口——
+    // 不依赖 is_adaptor_new_connected 边沿（拔→插），也不依赖电量跨阈值，
+    // 只要 is_adaptor_connected 且 nextPolicyState==charging 即补首次应用/恢复。
+    // performAcccharge 内 cache_status 幂等守卫保证同一会话只真正应用一次。
+    // 未插电稳态（is_adaptor_connected==NO）天然不进入，不会开 app 秒进 LPM。
+    if (is_adaptor_connected && [nextPolicyState isEqualToString:@"charging"] && !is_adaptor_new_disconnected) {
+        performAcccharge(YES);
     }
     if (is_adaptor_new_disconnected) {
         performAcccharge(NO);
@@ -3439,12 +3371,6 @@ static void onBatteryEvent(io_service_t serv) {
             return;
         }
         applyChargePolicy(old_bat_info, bat_info);
-        // IOKit 电池事件兜底首次应用：userspace 重启后 IORegistry 可能延迟发布
-        // ExternalChargeCapable/AdapterDetails，serve() 内 bootstrap 兜底读取到的
-        // bat_info 尚未反映充电稳态；首个真正的电池事件到来时若已进入充电稳态、
-        // 且本次会话尚未首次应用加速项，补一次 performAcccharge(YES)。命中幂等守卫
-        // 无副作用；前置 is_adaptor_connected 避免未插电稳态误开 LPM。
-        applyBootstrapAccChargeIfNeeded(bat_info, g_policyState);
         onBatteryEventEnd();
     }
 }
@@ -4308,20 +4234,10 @@ void detectUPSBattery() {
         evaluateFullChargeSchedule(YES);
         // 开机越狱后已插电时，电池通知尚未到达、命令翻转分支走不到，加速项等
         // 充电态副作用无路径首次应用。bat_info 已由 getBatInfo 填充，主动跑一次
-        // 策略让进入充电态的分支首次应用加速项，替代旧的「稳态重申首次应用」
-        // （稳态重申现仅做恢复，不再首次应用，避免 app/apply_now 触发时误开 LPM）。
+        // 策略；applyChargePolicy 稳态重申段会在 is_adaptor_connected &&
+        // nextPolicyState==charging 时调用 performAcccharge(YES)，命中幂等守卫
+        // 首次应用加速项。这是 userspace 重启后已插电稳态首次应用加速项的兜底。
         refreshBatteryStateAndApplyPolicy();
-        // userspace 重启 / 重越狱后已插电稳态空窗兜底：refreshBatteryStateAndApplyPolicy
-        // 内的命令翻转分支依赖 is_adaptor_new_connected 边沿；若此时 old_bat_info
-        // 已是「已连接」态（IOKit 事件先于 bootstrap 路径触发过一次，或 bat_info
-        // 在 getBatInfo 时已就绪），边沿退化为 NO、命令翻转分支不触发，加速项
-        // （LPM/airmode/wifi/blue/bright）不会被首次应用，g_accChargeAppliedThisSession
-        // 保持 NO，稳态重申也跳过 —— 即「未开 APP 时加速充电 LPM 不生效」。
-        // 这里在充电稳态成立且本次会话未首次应用时补一次 performAcccharge(YES)，
-        // 命中 performAcccharge 内幂等守卫（cache_status != nil 直接 return）无副作用。
-        // 仅 daemon bootstrap 跑一次，不引入长驻轮询；前置 acc_charge / 适配器连接 /
-        // 充电态，避免加速充电关闭或未插电时误应用（即「开 app 秒进 LPM」回归）。
-        applyBootstrapAccChargeIfNeeded(bat_info, g_policyState);
         NSFileInfoLog(@"%@ daemon_started backend=%@ port=%d",
                       log_prefix,
                       @"bsd_socket",
