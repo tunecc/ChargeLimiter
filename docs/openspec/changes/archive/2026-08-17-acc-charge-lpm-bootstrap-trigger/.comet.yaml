@@ -1,6 +1,6 @@
 workflow: hotfix
 language: zh-CN
-phase: build
+phase: archive
 context_compression: off
 build_mode: direct
 build_pause: null
@@ -13,14 +13,14 @@ auto_transition: true
 base_ref: 049b9bcb4960ef2239b614246d59689a6d2b25b8
 design_doc: null
 plan: null
-verify_result: pending
+verify_result: pass
 verify_failures: 0
-verification_report: null
+verification_report: docs/openspec/changes/archive/2026-08-17-acc-charge-lpm-bootstrap-trigger/verification_report.md
 branch_status: pending
 created_at: 2026-08-17
-verified_at: null
-archive_confirmation: null
-archived: false
+verified_at: 2026-08-17
+archive_confirmation: confirmed
+archived: true
 bound_branch: main
 direct_override: null
 handoff_context: null

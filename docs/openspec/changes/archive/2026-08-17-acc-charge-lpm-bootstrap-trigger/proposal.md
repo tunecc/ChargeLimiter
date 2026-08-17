@@ -1,13 +1,21 @@
 # Proposal: 重越狱/重启用户空间后未开 APP 时加速充电低电量模式不生效
 
-## 问题描述
+## Why
 
 用户开启「加速充电 → 低电量模式」(acc_charge_lpm) 后，出现：
 
 1. **重越狱 / 重启用户空间（userspace reboot）后，未打开 APP 时加速充电低电量模式不生效**。即使此时已插电、电池已处于充电态，LPM 不被开启，其它加速项（airmode / wifi / blue / bright）同理。
 2. **只要打开一次 APP（哪怕立即杀掉后台），此后即使不打开 APP，加速充电 LPM 等也会持续生效**（包括充电态进入即开 LPM、拔线还原、稳态恢复被外部清除的项）。
 
-其它功能本次未测试。
+其它功能本次未测试。该问题让用户每次重越狱 / 重启用户空间后必须手动打开一次 APP 才能让加速充电生效，与「daemon 由 launchd 常驻、用户无需干预」的预期不符。
+
+## What Changes
+
+在 daemon `serve()` bootstrap 路径与 `onBatteryEvent` 内各增加一个「充电稳态兜底首次应用加速项」的入口 `applyBootstrapAccChargeIfNeeded(info, policyState)`：
+
+- 仅在 `acc_charge` 开启 + 适配器已连接 + 充电稳态（`is_charging || current_looks_charging || policyState == charging`）+ `g_accChargeAppliedThisSession == NO` 时调用 `performAcccharge(YES)` 一次。
+- 命中 `performAcccharge` 内既有幂等守卫（`cache_status != nil` 直接 return）无副作用；`g_accChargeAppliedThisSession` 由 `performAcccharge(YES)` 内部置 YES，稳态重申段随即承接恢复语义。
+- 不引入长驻轮询、不新增定时器；不改变稳态重申段语义（仍只做恢复、不调用 `performAcccharge(YES)`），避免重新引入 v1.15.2 修复的「开 app 秒进 LPM」回归。
 
 ## 根因分析
 
@@ -37,3 +45,4 @@ daemon 启动时只有一次 bootstrap 主动补策略的机会（`serve()` 末�
 - 不能重新引入「稳态重申路径首次应用」导致的「开 app 秒进 LPM」回归：稳态重申仍只做恢复，不调用 `performAcccharge(YES)`。
 - 不显著增加后台资源开销：修复应在 daemon bootstrap 路径内一次性补齐，不引入长驻轮询。
 - 拔线 / 停充 / daemon 重启后行为不变。
+
