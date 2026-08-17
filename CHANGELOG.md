@@ -4,6 +4,12 @@
 
 写法参考了 Keep a Changelog 和一些成熟项目常见的结构：每个版本先说明主线，再按少量分类列出用户真正会感知到的变化，尽量详细，但不写成长文。
 
+## Unreleased
+
+### 修复
+
+- **重越狱 / 重启用户空间（userspace reboot）后未打开 APP 时，加速充电低电量模式不生效**：v1.15.2 把加速项「首次应用」收敛到「进入充电态的命令翻转分支」（插电边沿 / 电量跨阈值等），但 userspace 重启后已插电稳态无新边沿，命令翻转分支不触发，会话级标志 `g_accChargeAppliedThisSession` 保持 NO，加速项（LPM/airmode/wifi/blue/bright）不被首次应用；打开一次 APP 触发 `apply_now` + 电池事件刷新，使插电边沿重新成立从而首次应用，此后 daemon 持有标志持续生效——即「开一次 APP 后即使杀后台也持续生效」的现象。新增 `applyBootstrapAccChargeIfNeeded`：仅在「加速充电开启 + 适配器已连接 + 充电稳态 + 本次会话未首次应用」时调用 `performAcccharge(YES)` 一次（命中幂等守卫无副作用），在 daemon `serve()` 末尾与每个 `onBatteryEvent` 内各调用一次，覆盖 IORegistry 延迟发布 `ExternalChargeCapable`/`AdapterDetails` 的场景。不引入长驻轮询/定时器，不改变稳态重申段语义（仍只做恢复，不重新引入「开 app 秒进 LPM」回归）。
+
 ## v1.15.2 - 2026-08-16
 
 本版主线：**修复充电控制与限流稳定性回归**。延续 v1.15.x 重构后的限流/温控链路，针对 issue#1 反馈与真机回归暴露的多处回归逐项补强，覆盖停充、限流、温控暂停、加速充电四条路径，并补齐锁屏后限流失效与开机已插电时 LPM 不生效两类长期空窗。
