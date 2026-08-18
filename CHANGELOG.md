@@ -8,6 +8,17 @@
 
 ### 修复
 
+- **roothide 包架构修正为 arm64e**：v1.15.0 适配 Relaxin roothide 时，把 roothide scheme 的 daemon 二进制构建成 arm64，靠「arm64 能在 arm64e 设备上跑」兼容性侥幸通过，但 DEBIAN/control 的 `Architecture: iphoneos-arm64e` 标签与实际二进制 arm64 不一致。Relaxin 开源后从源码确认 Relaxin 生态（`RLXBootstrapRootScanner`、`Vendor/ElleKit/CydiaSubstrate.framework`、`DevKit/Packaging/RelaxinLite/package-deb.sh`）全是 arm64e，roothide 包理应 arm64e。`scripts/build_packages.sh` roothide scheme `ARCHS=arm64` 改为 `ARCHS=arm64e`，同步 arch check。arm64 二进制在 arm64e 设备上虽能兼容运行（功能不受影响），但修正后 control 标签与二进制架构一致，符合 Relaxin 生态约定。
+
+### 复核与验收
+
+- **基于 Relaxin 开源源码复核 v1.15.0 摸黑适配**：D1-D7 源码层面全部 PASS（见 `docs/superpowers/specs/2026-08-18-relaxin-roothide-adapt-revisit-design.md` §3）。结论：v1.15.0 适配在 Relaxin 源码层面基本正确，无「明显做错需要推倒重来」的点。
+- **真机验收（iPhone 15 Pro Max / iOS 17.1）**：9 项场景全部 PASS（构建/安装/daemon 启动/充电控制/加速充电 LPM/设置持久化/daemon 通信/卸载/markAppsAsDebugged 开关）。
+- **root persona spawn exec 126 根因查清**（design-doc §2）：ChargeLimiter App（mobile）用 `SPAWN_FLAG_ROOT` spawn daemon 命中 Relaxin `systemhook/src/common.c:209-296` 的 iOS 17 persona fix 链；persona fix 失败时子进程被 SIGKILL，但 `SPAWN_FLAG_NOWAIT` 下父进程 spawn rc 仍为 0，daemon 永不在线。v1.15.0 改为 roothide 下非 root spawn + setuid 位 + `platformize_me()` 提权，绕开整条 persona fix 链，正确。
+- **附加发现（开 follow-up change 修，与 Relaxin 无关）**：iOS 17 禁流态下 `ExternalConnected`/`ExternalChargeCapable` 由系统间接派生会抖动，息屏充电触发热控/停充→禁流后，一亮屏可能误发「开始充电」通知（充电线没动过）。原版也有此隐患，iOS 17 新禁流 key（`FieldDiagsInflowInhibit`/`OBCInflowInhibit`）让它更容易触发。根因与修复方向见 memory `ios17-inflow-external-connected-flicker`，开独立 follow-up change 修。
+
+### 修复
+
 - **重越狱 / 重启用户空间（userspace reboot）后未打开 APP 时，加速充电低电量模式不生效**：v1.15.2 把加速项「首次应用」收敛到「进入充电态的命令翻转分支」（插电边沿 / 电量跨阈值等），但 userspace 重启后已插电稳态无新边沿，命令翻转分支不触发，加速项（LPM/airmode/wifi/blue/bright）不被首次应用；打开一次 APP 触发 `apply_now` + 电池事件刷新 `old_bat_info`，使插电边沿重新成立从而首次应用，此后 daemon 持有标志持续生效——即「开一次 APP 后即使杀后台也持续生效」、且首次应用延迟取决于首个边沿到来的「玄学时间」。回退到原版稳态重申语义：`applyChargePolicy` 在 `is_adaptor_connected && nextPolicyState == charging && !is_adaptor_new_disconnected` 时调用 `performAcccharge(YES)`，命中幂等守卫（`cache_status != nil` 直接 return）首次应用/恢复无副作用。userspace 重启后已插电稳态由 `serve()` 末尾 `refreshBatteryStateAndApplyPolicy()` 触发该稳态重申段首次应用；未插电时 `is_adaptor_connected == NO` 天然不进入，不会开 app 秒进 LPM。删除 v1.15.2 的 `g_accChargeAppliedThisSession` 标志与 v1.15.3 的 `applyBootstrapAccChargeIfNeeded` 兜底（已被稳态重申段覆盖）。
 
 ## v1.15.2 - 2026-08-16
