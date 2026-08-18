@@ -1,0 +1,79 @@
+schema: comet.native.v4
+name: ios17-inflow-flicker-fix
+language: zh-CN
+phase: build
+status: active
+state_version: 2
+brief: brief.md
+spec_changes: []
+workspace:
+  isolation: worktree
+  change_branch: comet/ios17-inflow-flicker-fix
+  target_branch: main
+  finish: null
+loop:
+  stage: building
+  goal_cycle: 1
+  iteration: 1
+  attempt: 0
+  retry_epoch: 0
+  failed_iteration_count: 0
+  no_progress_count: 0
+  execution_failure_count: 0
+  previous_unresolved_ids: []
+  next_action: submit-builder-candidate
+acceptance:
+  - id: A1
+    source: brief.md
+    text: 息屏充电 → 热控触发 `setInflowStatus(NO)`（temp_paused）进入禁流稳态 → 亮屏 → **不**收到
+      `noti_start_charge` 通知（充电线全程未动）。
+    result: pending
+    reason: null
+  - id: A2
+    source: brief.md
+    text: 息屏充电 → 容量到上限触发停充（adv_disable_inflow=YES 路径）进入禁流稳态 → 亮屏 → **不**收到
+      `noti_start_charge`。
+    result: pending
+    reason: null
+  - id: A3
+    source: brief.md
+    text: 禁流稳态下系统周期性刷新 IOKit 属性导致 `ExternalChargeCapable` 短暂 false→true 抖动 →
+      `isAdaptorNewConnect` 不产生边沿 → 不误发通知。
+    result: pending
+    reason: null
+  - id: A4
+    source: brief.md
+    text: 禁流稳态下真正拔线 → `AdapterDetails` 消失 → `isAdaptorConnect` 正确返回 NO → 后续重新插电时
+      `isAdaptorNewConnect` 正常产生边沿 → 正常发 `noti_start_charge`（真插电仍要通知）。
+    result: pending
+    reason: null
+  - id: A5
+    source: brief.md
+    text: 非禁流态（正常充电中、未触发任何禁流）→ `isAdaptorConnect` 走原 `ExternalChargeCapable`
+      路径，行为与原版一致，不回归。
+    result: pending
+    reason: null
+  - id: A6
+    source: brief.md
+    text: 热控恢复（temperature_recovered）从 temp_paused 恢复充电 → 仍按原逻辑发
+      `noti_resume_charge_temperature`，不被禁流态守卫误抑制。
+    result: pending
+    reason: null
+builder_handoff: null
+blockers: []
+verification: null
+history: []
+history_overflow:
+  dropped_entries: 0
+  first_dropped_at: null
+  last_dropped_at: null
+  outcome_counts:
+    pass: 0
+    fail: 0
+    blocked: 0
+    execution-error: 0
+    recovery: 0
+verification_result: pending
+verification_report: null
+archived: false
+created_at: 2026-08-18T10:37:18.299Z

@@ -160,6 +160,17 @@ static const NSTimeInterval kDisableInflowRetryDelaySeconds = 0.6;
 static const NSTimeInterval kPredictiveInhibitFallbackVerifyDelaySeconds = 8.0;
 static NSString* const kDaemonResetAndExitNotifyName = @"com.chargelimiter.mod.daemon.reset_and_exit";
 
+// iOS 17 禁流态守卫：禁流态下 ExternalConnected/ExternalChargeCapable 由系统间接派生，息屏周期性刷新会抖动，
+// 不能当插电边沿判据。此函数用语义判定当前是否处于禁流态：用户开关 adv_disable_inflow=YES，或上一轮
+// policy 落在禁流相关态（no_inflow / temp_paused）。与 isInflowRuntimeLikelyDisabled 口径对齐，不引入时间窗口。
+static BOOL isInflowGuardActive(BOOL advDisableInflow, NSString* policyState) {
+    if (advDisableInflow) {
+        return YES;
+    }
+    NSString* state = policyState ?: @"";
+    return [state isEqualToString:@"no_inflow"] || [state isEqualToString:@"temp_paused"];
+}
+
 static BOOL isInflowRuntimeLikelyDisabled(BOOL advDisableInflow, BOOL inflowEnabledSnapshot, NSString* previousPolicyState) {
     if (!advDisableInflow || inflowEnabledSnapshot) {
         return NO;
@@ -1237,7 +1248,10 @@ static BOOL isAdaptorConnect(NSDictionary* info, NSNumber* disableInflow) { // �
         return YES;
     }
     // 某些充电器ExternalConnected为false,而禁流时ExternalConnected/ExternalChargeCapable均为false
-    if (disableInflow.boolValue) { // 禁流模式下只能通过电源信息判断, 某些时候系统会缓存该信息导致不准确
+    // iOS 17 禁流改写 override key 后，ExternalConnected/ExternalChargeCapable 由系统间接派生，
+    // 息屏周期性刷新会抖动，不能当插电判据。禁流态下统一走 AdapterDetails["Description"]：
+    // 既覆盖用户开关 adv_disable_inflow=YES，也覆盖热控/停充触发的 temp_paused/no_inflow 禁流稳态。
+    if (disableInflow.boolValue || isInflowGuardActive(NO, g_policyState)) { // 禁流模式下只能通过电源信息判断, 某些时候系统会缓存该信息导致不准确
         NSDictionary* AdapterDetails = info[@"AdapterDetails"];
         if (AdapterDetails == nil) {
             return NO;
@@ -1254,6 +1268,12 @@ static BOOL isAdaptorConnect(NSDictionary* info, NSNumber* disableInflow) { // �
 }
 
 static BOOL isAdaptorNewConnect(NSDictionary* oldInfo, NSDictionary* info, NSNumber* disableInflow) {
+    // iOS 17 禁流稳态守卫：禁流态下 ExternalChargeCapable/ExternalConnected 派生值抖动会制造 false→true 伪边沿。
+    // 只要当前或上一轮处于禁流态（用户开关或 policy 为 no_inflow/temp_paused），就抑制插电边沿；
+    // 真正拔线由 AdapterDetails 消失检测，拔线后 policy 转出禁流态、守卫解除，后续真插电边沿正常产生。
+    if (disableInflow.boolValue || isInflowGuardActive(NO, g_policyState)) {
+        return NO;
+    }
     return !isAdaptorConnect(oldInfo, disableInflow) && isAdaptorConnect(info, disableInflow);
 }
 
@@ -2122,6 +2142,13 @@ static NSString* notificationMessageIDForChargeCommandTransition(BOOL previousEx
     BOOL stillPlugged = (previousExternalConnected && currentExternalConnected);
 
     if (freshPlug) {
+        // iOS 17 禁流态 freshPlug 门禁兜底：禁流稳态下 ExternalConnected/ExternalChargeCapable 派生值抖动
+        // 会制造伪插电边沿（previousExternalConnected 因禁流被读成 false、current 被系统刷新回 true）。
+        // 此时充电线未动，不应误发 noti_start_charge。当前或上一轮处于禁流态时抑制此 freshPlug。
+        // 热控恢复（temperature_recovered）走下方 stillPlugged 分支发 noti_resume_charge_temperature，不受影响。
+        if (isInflowGuardActive(NO, currentState) || isInflowGuardActive(NO, previousState)) {
+            return nil;
+        }
         if ([currentState isEqualToString:@"charging"]) {
             return @"noti_start_charge";
         }
