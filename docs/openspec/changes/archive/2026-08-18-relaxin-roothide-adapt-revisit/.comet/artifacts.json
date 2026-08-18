@@ -1,0 +1,8 @@
+{
+  "openspec_proposal": "docs/openspec/changes/relaxin-roothide-adapt-revisit/proposal.md",
+  "openspec_design": "docs/openspec/changes/relaxin-roothide-adapt-revisit/design.md",
+  "openspec_tasks": "docs/openspec/changes/relaxin-roothide-adapt-revisit/tasks.md",
+  "handoff_context": "docs/openspec/changes/archive/2026-08-18-relaxin-roothide-adapt-revisit/.comet/handoff/design-context.json",
+  "handoff_markdown": "docs/openspec/changes/archive/2026-08-18-relaxin-roothide-adapt-revisit/.comet/handoff/design-context.md",
+  "archive_directory": "docs/openspec/changes/archive/2026-08-18-relaxin-roothide-adapt-revisit"
+}

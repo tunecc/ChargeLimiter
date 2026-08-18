@@ -1,0 +1,13 @@
+{
+  "change": "relaxin-roothide-adapt-revisit",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "ff3ddea32eb8ef43fb2675160242dff6602fabd34851bd59ca41a38a52b94414",
+  "files": [
+    { "path": "docs/openspec/changes/relaxin-roothide-adapt-revisit/proposal.md", "sha256": "7c5412bbbf2d1c8b31a9e495f7254b41e8819593a9aaa299b019dc2dec31e02f" },
+    { "path": "docs/openspec/changes/relaxin-roothide-adapt-revisit/design.md", "sha256": "5a3558f2bc7ee1f6283ebb6052fba62fc16eb0461b01f0e70876265173075943" },
+    { "path": "docs/openspec/changes/relaxin-roothide-adapt-revisit/tasks.md", "sha256": "eb2c1c1a6b7f6c247008d44f2322bfd38b67fc3a7f1a38ceefac49f5b4735c27" }
+  ]
+}
