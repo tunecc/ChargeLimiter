@@ -429,7 +429,7 @@ if [ "$BUILD_NATIVE_ROOTHIDE" = "1" ]; then
     CODE_SIGNING_ALLOWED=NO \
     THEOS_PACKAGE_SCHEME=roothide \
     THEOS_PACKAGE_INSTALL_PREFIX= \
-    ARCHS=arm64 \
+    ARCHS=arm64e \
     MonkeyDevInstallOnAnyBuild=NO \
     MonkeyDevBuildPackageOnAnyBuild=NO
 else
@@ -718,9 +718,9 @@ check_roothide_stage() {
     exit 1
   }
 
-  # Native scheme also builds arm64 (iphoneos-arm64e is the roothide dpkg
-  # architecture label, not CPU slice).
-  check_app "$APP_PATH" "arm64"
+  # Native roothide scheme builds arm64e (matches Relaxin roothide device slice
+  # and the iphoneos-arm64e dpkg architecture label in DEBIAN/control).
+  check_app "$APP_PATH" "arm64e"
 
   # Link-path guard: residual /var/jb load commands are never valid in roothide stage.
   # Rootful-shaped native binaries that only link system libs (no jb paths) are OK.
