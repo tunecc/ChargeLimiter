@@ -11,20 +11,25 @@ def func_body(name):
     return m.group(0) if m else ""
 
 
+def strip_comments(body):
+    # 断言只看代码不看注释：注释提及历史函数名不算依赖
+    return re.sub(r"//[^\n]*", "", body)
+
+
 class TestThermalLockscreenHold(unittest.TestCase):
     """锁屏期限流自取消回归：desired 计算不得依赖锁屏态会抖动的派生信号。"""
 
     def test_desired_not_depend_on_isadaptorconnect(self):
         # isAdaptorConnect 读 ExternalChargeCapable（iOS17 系统派生值，限流态锁屏期会塌），
-        # desired 计算不得用它判定适配器在位
-        body = func_body("desiredThermalSimulationModeForCurrentState")
+        # desired 计算不得用它判定适配器在位（断言剥离注释，只看代码）
+        body = strip_comments(func_body("desiredThermalSimulationModeForCurrentState"))
         self.assertNotIn("isAdaptorConnect", body)
 
     def test_desired_uses_adapter_details(self):
         # 适配器在位改用 AdapterDetails（存在且 Description != "batt"），禁流守卫已真机验证稳定
-        body = func_body("desiredThermalSimulationModeForCurrentState")
+        body = strip_comments(func_body("desiredThermalSimulationModeForCurrentState"))
         self.assertIn("AdapterDetails", body)
-        self.assertIn("batt", body)
+        self.assertIn("adapterDescriptionIsBattery", body)
 
     def test_desired_keeps_unplug_fallback(self):
         # 未插电仍回退默认档，防 672ab65 修的"未插电持续写限流"回归

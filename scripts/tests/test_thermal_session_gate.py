@@ -14,11 +14,13 @@ def func_body(name):
 class TestThermalSessionGate(unittest.TestCase):
     def test_charge_session_requires_adaptor(self):
         body = func_body("desiredThermalSimulationModeForCurrentState")
-        # 适配器在位判定用 AdapterDetails（稳定物理信号），不用 isAdaptorConnect
-        # （其依赖 ExternalChargeCapable，iOS17 锁屏/限流态下系统派生值会塌，见
-        # test_thermal_lockscreen_hold.py）
-        self.assertIn("AdapterDetails", body)
-        self.assertNotIn("isAdaptorConnect", body)
+        # 适配器在位判定用 AdapterDetails（稳定物理信号），不用读 ExternalChargeCapable
+        # 的旧路径（iOS17 锁屏/限流态下系统派生值会塌，见 test_thermal_lockscreen_hold.py）。
+        # 断言剥离注释只看代码。
+        import re as _re
+        code = _re.sub(r"//[^\n]*", "", body)
+        self.assertIn("AdapterDetails", code)
+        self.assertNotIn("isAdaptorConnect", code)
 
     def test_charge_session_not_ischarging_only(self):
         body = func_body("desiredThermalSimulationModeForCurrentState")
