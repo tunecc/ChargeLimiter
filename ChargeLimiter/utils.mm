@@ -3535,15 +3535,6 @@ NSString* getThermalSimulationMode() {
     return @"off";
 }
 
-// 读 cltm 域里我们写入的 pref 本值，用于写后校验/自愈。
-// getThermalSimulationMode() 反映的是本进程 thermalState（系统已应用的热态），
-// 不能用来判断 pref 是否仍留存——锁屏期间 cltm/cfprefsd 可能清掉或覆盖 pref，
-// 而进程 thermalState 采样滞后，两者不等价。
-NSString* getThermalSimulationModePref() {
-    NSUserDefaults* defs = [[NSUserDefaults alloc] initWithSuiteName:@"com.apple.cltm"];
-    NSString* mode = [defs stringForKey:@"thermalSimulationMode"];
-    return mode ?: @"off";
-}
 
 void setThermalSimulationMode(NSString* mode) {
     if (@available(iOS 11.0, *)) {
