@@ -1,0 +1,350 @@
+schema: comet.native.v4
+name: ios17-inflow-flicker-fix
+language: zh-CN
+phase: archive
+status: done
+state_version: 22
+brief: brief.md
+spec_changes: []
+workspace:
+  isolation: worktree
+  change_branch: comet/ios17-inflow-flicker-fix
+  target_branch: main
+  finish: keep
+loop:
+  stage: done
+  goal_cycle: 1
+  iteration: 2
+  attempt: 2
+  retry_epoch: 1
+  failed_iteration_count: 0
+  no_progress_count: 0
+  execution_failure_count: 0
+  previous_unresolved_ids: []
+  next_action: null
+acceptance:
+  - id: A1
+    source: brief.md
+    text: 息屏充电 → 热控触发 `setInflowStatus(NO)`（temp_paused）进入禁流稳态 → 亮屏 → **不**收到
+      `noti_start_charge` 通知（充电线全程未动）。
+    result: passed
+    reason:
+      text: 源码逻辑 passed：热控触发 setInflowStatus(NO) 进入 temp_paused
+        后，isInflowGuardActive(NO, g_policyState) 命中（daemon.mm
+        L171），isAdaptorConnect 走 AdapterDetails 分支不读
+        ExternalChargeCapable（L1254-1263），isAdaptorNewConnect 直接 return
+        NO（L1274-1276），freshPlug 门禁在 currentState/previousState 为 temp_paused
+        时返回 nil（L2149-2151），不会误发
+        noti_start_charge。test_inflow_guard_helper_exists_and_uses_semantic_state
+        / test_freshPlug_gate_suppressed_in_inflow_state
+        已通过。真机验收作为发布后回归项（用户已确认接受 blocked→pass 归档），不阻塞。
+      truncated: false
+  - id: A2
+    source: brief.md
+    text: 息屏充电 → 容量到上限触发停充（adv_disable_inflow=YES 路径）进入禁流稳态 → 亮屏 → **不**收到
+      `noti_start_charge`。
+    result: passed
+    reason:
+      text: 源码逻辑 passed：adv_disable_inflow=YES 路径下
+        isInflowGuardActive(advDisableInflow=YES,...) 第一分支即返回 YES（L167-169），与原
+        disableInflow.boolValue 分支叠加覆盖停充稳态；isAdaptorNewConnect L1274 条件命中 return
+        NO，freshPlug 门禁 L2149 命中 return
+        nil。test_isAdaptorNewConnect_suppresses_edge_in_inflow_state /
+        test_freshPlug_gate_suppressed_in_inflow_state 已通过。真机验收作为发布后回归项，不阻塞。
+      truncated: false
+  - id: A3
+    source: brief.md
+    text: 禁流稳态下系统周期性刷新 IOKit 属性导致 `ExternalChargeCapable` 短暂 false→true 抖动 →
+      `isAdaptorNewConnect` 不产生边沿 → 不误发通知。
+    result: passed
+    reason:
+      text: 源码逻辑 passed：禁流稳态下 ExternalChargeCapable 短暂 false→true
+        抖动时，isAdaptorNewConnect 因 isInflowGuardActive 命中直接 return NO
+        不产生边沿（L1274-1276），isAdaptorConnect 也不读
+        ExternalChargeCapable（L1254-1263），freshPlug
+        门禁双轮守卫再兜底（L2149）。test_isAdaptorConnect_uses_inflow_guard_when_not_user_disabled
+        / test_isAdaptorNewConnect_suppresses_edge_in_inflow_state
+        已通过。真机验收作为发布后回归项，不阻塞。
+      truncated: false
+  - id: A4
+    source: brief.md
+    text: 禁流稳态下真正拔线 → `AdapterDetails` 消失 → `isAdaptorConnect` 正确返回 NO → 后续重新插电时
+      `isAdaptorNewConnect` 正常产生边沿 → 正常发 `noti_start_charge`（真插电仍要通知）。
+    result: passed
+    reason:
+      text: 源码与静态测试可判定。禁流态下真拔线时 AdapterDetails 消失 → isAdaptorConnect 走 L1256-1258 返回
+        NO；policy 转出禁流态（no_inflow/temp_paused）后 isInflowGuardActive 返回
+        NO，守卫解除，isAdaptorNewConnect 恢复 !isAdaptorConnect(oldInfo) &&
+        isAdaptorConnect(info) 边沿判定（L1277），freshPlug 门禁 L2149 不再命中，可正常发
+        noti_start_charge（L2152-2154）。brief Constraints
+        守卫有界性满足。test_isAdaptorConnect_uses_inflow_guard_when_not_user_disabled
+        验证 AdapterDetails 分支语义。
+      truncated: false
+  - id: A5
+    source: brief.md
+    text: 非禁流态（正常充电中、未触发任何禁流）→ `isAdaptorConnect` 走原 `ExternalChargeCapable`
+      路径，行为与原版一致，不回归。
+    result: passed
+    reason:
+      text: 源码与静态测试可判定。非禁流态（adv_disable_inflow=NO 且 g_policyState 非
+        no_inflow/temp_paused）下 isInflowGuardActive 返回 NO，isAdaptorConnect 走
+        else 分支读
+        ExternalChargeCapable.boolValue（L1264-1267），与原版一致；isAdaptorNewConnect
+        走原边沿判定（L1277）；freshPlug 门禁 L2149 不命中，按原逻辑 L2152-2154 发
+        noti_start_charge。全量 unittest discover 138 项通过，无回归。
+      truncated: false
+  - id: A6
+    source: brief.md
+    text: 热控恢复（temperature_recovered）从 temp_paused 恢复充电 → 仍按原逻辑发
+      `noti_resume_charge_temperature`，不被禁流态守卫误抑制。
+    result: passed
+    reason:
+      text: 源码逻辑 passed：热控恢复 temperature_recovered 从 temp_paused 转出时走 stillPlugged
+        分支（previousExternalConnected &&
+        currentExternalConnected，L2142、L2158-2160），不进 freshPlug
+        守卫；resumedFromTempPause 判定 L2176-2177 命中，L2178-2180 正常返回
+        noti_resume_charge_temperature，不被禁流态守卫误抑制。test_inflow_guard_does_not_block_temperature_resume
+        验证 temperature_recovered 与 noti_resume_charge_temperature
+        路径存在。真机验收作为发布后回归项，不阻塞。
+      truncated: false
+builder_handoff:
+  candidate_id: a9a5a071-dd65-4e79-964b-b5eef8f7045a
+  identity_provider: skill-coordinated
+  builder_execution_ref: skill-coordinated:builder:22864724-4a76-4220-9f93-533a8a0a1abe
+  iteration: 2
+  summary:
+    text: iteration 2 候选：实现代码不变（iteration 1 已通过 Verifier 源码逻辑层验收，A4/A5
+      passed，A1/A2/A3/A6 源码逻辑 passed）。本轮更新 known_limits：Xcode 三 scheme
+      编译验证已通过（ChargeLimiter rootful/roothide/rootless BUILD SUCCEEDED，daemon.mm
+      改动编译通过无新增警告，已消除该 known_limit）；真机验收转为发布后回归项（用户已确认接受 blocked→pass 归档，真机场景
+      1-6 时序日志作为发布后回归验证，不作为本次归档阻塞）。修复方向与 memory ios-power-re-playbook /
+      ios17-charge-control-root-cause 一致，未发现遗漏或回归。
+    truncated: false
+  addressed_acceptance_ids:
+    - A1
+    - A2
+    - A3
+    - A4
+    - A5
+    - A6
+  checks:
+    - name:
+        text: scripts/tests/test_ios17_inflow_flicker_guard.py
+        truncated: false
+      result: passed
+      note:
+        text: 5 项全通过：守卫语义判定、isAdaptorConnect 分支、isAdaptorNewConnect 边沿抑制、freshPlug
+          门禁、热控恢复不误抑制
+        truncated: false
+    - name:
+        text: scripts/tests/test_ios17_charge_override_paths.py
+        truncated: false
+      result: passed
+      note:
+        text: 16 项全通过，iOS17 override key 写法未回归
+        truncated: false
+    - name:
+        text: 全量 unittest discover（scripts/tests，138 项）
+        truncated: false
+      result: passed
+      note:
+        text: 无回归
+        truncated: false
+    - name:
+        text: Xcode 编译验证（三 scheme）
+        truncated: false
+      result: passed
+      note:
+        text: ChargeLimiter rootful/roothide/rootless 三 scheme BUILD SUCCEEDED，daemon.mm
+          改动编译通过无新增警告；仅 Run Script phase 历史警告（既有，非本次引入）
+        truncated: false
+  checks_truncated: false
+  known_limits:
+    - text: 真机验收作为发布后回归项：A1/A2/A3/A6 的真机时序日志（息屏→禁流→亮屏 noti_start_charge 不触发、IOKit
+        ExternalChargeCapable 抖动时序、热控恢复 noti_resume_charge_temperature 触发）需
+        iPhone 15 Pro Max / iOS 17.1 真机验证，作为发布后回归项，不阻塞本次归档（用户已确认接受）
+      truncated: false
+  known_limits_truncated: false
+  submitted_at: 2026-08-18T13:22:59.954Z
+blockers: []
+verification:
+  candidate_id: a9a5a071-dd65-4e79-964b-b5eef8f7045a
+  identity_provider: skill-coordinated
+  verifier_execution_ref: skill-coordinated:verifier:f1d7e474-be22-4bd9-bac1-63828c80f42c
+  iteration: 2
+  attempt: 2
+  assurance: skill-coordinated
+  verdict: pass
+  checks:
+    - id: inflow-flicker-guard
+      name:
+        text: inflow-flicker-guard
+        truncated: false
+      argv_display:
+        - text: -m
+          truncated: false
+        - text: unittest
+          truncated: false
+        - text: test_ios17_inflow_flicker_guard
+          truncated: false
+        - text: -v
+          truncated: false
+      argv_truncated: false
+      cwd_ref: scripts/tests
+      status: passed
+      exit_code: 0
+      duration_ms: 66
+    - id: ios17-override-paths
+      name:
+        text: ios17-override-paths
+        truncated: false
+      argv_display:
+        - text: -m
+          truncated: false
+        - text: unittest
+          truncated: false
+        - text: test_ios17_charge_override_paths
+          truncated: false
+        - text: -v
+          truncated: false
+      argv_truncated: false
+      cwd_ref: scripts/tests
+      status: passed
+      exit_code: 0
+      duration_ms: 47
+    - id: full-test-discover
+      name:
+        text: full-test-discover
+        truncated: false
+      argv_display:
+        - text: -m
+          truncated: false
+        - text: unittest
+          truncated: false
+        - text: discover
+          truncated: false
+        - text: -s
+          truncated: false
+        - text: .
+          truncated: false
+        - text: -p
+          truncated: false
+        - text: "[REDACTED]"
+          truncated: false
+      argv_truncated: false
+      cwd_ref: scripts/tests
+      status: passed
+      exit_code: 0
+      duration_ms: 324
+  summary:
+    text: verdict=pass：A1-A6 源码逻辑层全 passed（静态测试 5+16+138 项通过、Xcode 三 scheme 编译 BUILD
+      SUCCEEDED 无新增警告），真机验收作为发布后回归项（用户已确认接受）。修复方向与 memory ios-power-re-playbook
+      / ios17-charge-control-root-cause 一致，未发现遗漏或回归。
+    truncated: false
+  risks:
+    - text: 真机验收作为发布后回归项：A1/A2/A3/A6 的真机时序日志（息屏→禁流→亮屏 noti_start_charge 不触发、IOKit
+        ExternalChargeCapable 抖动时序、热控恢复 noti_resume_charge_temperature 触发）需
+        iPhone 15 Pro Max / iOS 17.1 真机发布后回归验证
+      truncated: false
+  risks_truncated: false
+  completed_at: 2026-08-18T13:53:06.310Z
+history:
+  - goal_cycle: 1
+    iteration: 1
+    attempt: 1
+    outcome: execution-error
+    unresolved_ids: []
+    summary:
+      text: "Native Verifier response was invalid: Native Verifier final result fields
+        are invalid"
+      truncated: false
+    completed_at: 2026-08-18T12:07:09.965Z
+  - goal_cycle: 1
+    iteration: 1
+    attempt: 2
+    outcome: blocked
+    unresolved_ids:
+      - A1
+      - A2
+      - A3
+      - A6
+    summary:
+      text: verdict=blocked：A4/A5 passed（源码与静态测试充分），A1/A2/A3/A6 源码逻辑层 passed 但因
+        Builder 声明未做真机验收（息屏→禁流→亮屏时序、IOKit 抖动时序、热控恢复通知触发真机日志未验证）标 blocked，无
+        failed 项。修复方向与 memory ios-power-re-playbook /
+        ios17-charge-control-root-cause 一致，未发现遗漏或回归。
+      truncated: false
+    completed_at: 2026-08-18T12:29:55.313Z
+  - goal_cycle: 1
+    iteration: 1
+    attempt: 3
+    outcome: blocked
+    unresolved_ids:
+      - A1
+      - A2
+      - A3
+      - A6
+    summary:
+      text: verdict=blocked：A4/A5 passed（源码与静态测试充分），A1/A2/A3/A6 源码逻辑层 passed 但因
+        Builder 声明未做真机验收（息屏→禁流→亮屏时序、IOKit 抖动时序、热控恢复通知触发真机日志未验证）标 blocked，无
+        failed 项。修复方向与 memory ios-power-re-playbook /
+        ios17-charge-control-root-cause 一致，未发现遗漏或回归。
+      truncated: false
+    completed_at: 2026-08-18T12:50:30.036Z
+  - goal_cycle: 1
+    iteration: 1
+    attempt: 3
+    outcome: recovery
+    unresolved_ids: []
+    summary:
+      text: 用户确认 B 方案：接受 blocked 归档，真机验收作为发布后回归项。回到 Build 提交新候选（iteration 2），更新
+        known_limits：Xcode 三 scheme 编译已通过（已消除该
+        known_limit），真机验收转为发布后回归项而非阻塞。实现代码不变。
+      truncated: false
+    completed_at: 2026-08-18T13:04:50.042Z
+  - goal_cycle: 1
+    iteration: 2
+    attempt: 1
+    outcome: pass
+    unresolved_ids: []
+    summary:
+      text: verdict=pass：A1-A6 源码逻辑层全 passed（静态测试 5+16+138 项通过、Xcode 三 scheme 编译 BUILD
+        SUCCEEDED 无新增警告），真机验收作为发布后回归项（用户已确认接受）。修复方向与 memory
+        ios-power-re-playbook / ios17-charge-control-root-cause 一致，未发现遗漏或回归。
+      truncated: false
+    completed_at: 2026-08-18T13:27:29.172Z
+  - goal_cycle: 1
+    iteration: 2
+    attempt: 1
+    outcome: recovery
+    unresolved_ids: []
+    summary:
+      text: Local Runtime was unavailable at Archive ready; the synchronized
+        implementation must be verified again.
+      truncated: false
+    completed_at: 2026-08-18T13:34:29.083Z
+  - goal_cycle: 1
+    iteration: 2
+    attempt: 2
+    outcome: pass
+    unresolved_ids: []
+    summary:
+      text: verdict=pass：A1-A6 源码逻辑层全 passed（静态测试 5+16+138 项通过、Xcode 三 scheme 编译 BUILD
+        SUCCEEDED 无新增警告），真机验收作为发布后回归项（用户已确认接受）。修复方向与 memory
+        ios-power-re-playbook / ios17-charge-control-root-cause 一致，未发现遗漏或回归。
+      truncated: false
+    completed_at: 2026-08-18T13:53:06.310Z
+history_overflow:
+  dropped_entries: 0
+  first_dropped_at: null
+  last_dropped_at: null
+  outcome_counts:
+    pass: 0
+    fail: 0
+    blocked: 0
+    execution-error: 0
+    recovery: 0
+verification_result: pass
+verification_report: verification.md
+archived: true
+created_at: 2026-08-18T10:37:18.299Z
