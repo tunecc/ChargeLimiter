@@ -125,6 +125,9 @@ static NSString* g_lastPolicyChangeReason = @"daemon_boot";
 static time_t g_lastPolicyChangeTs = 0;
 static time_t g_lastChargeCommandTs = 0;
 static time_t g_lastInflowCommandTs = 0;
+// 锁屏限流粘滞兜底：上次 desired 稳定为限流档时置位；用于读数空洞期（锁屏派生值
+// 塌掉/AdapterDetails 短暂缺失）不瞬时降档。明确退出信号到达时清除。
+static BOOL g_thermalLimitActive = NO;
 static int g_smartChargeStatus = -1;
 static BOOL g_tempSmartChargeDisabledByCL = NO;
 static int g_smartChargeCoordinationOriginalStatus = -1;
@@ -158,6 +161,9 @@ static const NSUInteger kPolicyEventDBLimit = 5000;
 static const int kDisableInflowRetryMaxAttempts = 3;
 static const NSTimeInterval kDisableInflowRetryDelaySeconds = 0.6;
 static const NSTimeInterval kPredictiveInhibitFallbackVerifyDelaySeconds = 8.0;
+// 限流档（moderate/heavy）下充电电流被压制到 120mA 以下，desired 会话判定的
+// 电流阈值联动降档（与 chargeEnableThresholdForCurrentThermalMode 同源，见其注释）。
+static const int kThermalLimitCurrentThresholdmA = 30;
 static NSString* const kDaemonResetAndExitNotifyName = @"com.chargelimiter.mod.daemon.reset_and_exit";
 
 // iOS 17 禁流态守卫：禁流态下 ExternalConnected/ExternalChargeCapable 由系统间接派生，息屏周期性刷新会抖动，
@@ -1817,6 +1823,21 @@ static int setChargeStatus(BOOL flag) {
 
 static void refreshThermalSelfHealTimer(BOOL active);
 
+// AdapterDetails 描述电池供电（无适配器在位）。
+static BOOL adapterDescriptionIsBattery(NSDictionary* AdapterDetails) {
+    NSString* PSDesc = [AdapterDetails[@"Description"] isKindOfClass:[NSString class]]
+        ? AdapterDetails[@"Description"] : nil;
+    return (PSDesc == nil || [PSDesc isEqualToString:@"batt"]);
+}
+
+// 限流档（moderate/heavy）压制充电电流，desired 会话判定的电流阈值联动降档。
+static int thermalLimitCurrentThresholdForMode(NSString* mode) {
+    if ([mode isEqualToString:@"moderate"] || [mode isEqualToString:@"heavy"]) {
+        return kThermalLimitCurrentThresholdmA;
+    }
+    return kHoldCurrentChargeThresholdmA;
+}
+
 static NSString* desiredThermalSimulationModeForCurrentState(NSDictionary* info) {
     NSString* defaultMode = getLocalString(@"adv_def_thermal_mode", @"off");
     if (getLocalBool(@"adv_thermal_mode_lock", NO)) {
@@ -1833,19 +1854,45 @@ static NSString* desiredThermalSimulationModeForCurrentState(NSDictionary* info)
         safeInfo = @{};
     }
 
-    // 限流只在真实充电会话激活：适配器已连接 +（充电命令允许 或 存在充电电流）。
-    // 不单信 IsCharging（iOS17 粘滞为 true）与 g_chargeCommandEnabled（初始 YES 且可能粘滞），
-    // 否则未插电时也会向 cltm 持续写限流模式，长期模拟高温态漂移。
-    BOOL adaptorConnected = isAdaptorConnect(safeInfo, @(getLocalBool(@"adv_disable_inflow", NO)));
-    BOOL chargeAllowed = g_chargeCommandEnabled || currentLooksCharging(getEffectiveBatteryCurrent(safeInfo));
+    // 限流只在真实充电会话激活。适配器在位不读 ExternalChargeCapable——iOS17 限流态
+    // 下它是系统派生值，锁屏期 cltm 周期性重算会塌为 false，导致限流被 desired 自己
+    // 取消（v1.15.2 锁屏失效根因）。改用 AdapterDetails 物理信号（存在且
+    // Description != "batt"），禁流守卫已真机验证其在派生值抖动期稳定。
+    // 未插电仍回退 defaultMode，防未插电持续写限流漂移。
+    NSDictionary* AdapterDetails = safeInfo[@"AdapterDetails"];
+    BOOL adaptorConnected = (AdapterDetails != nil && !adapterDescriptionIsBattery(AdapterDetails));
+    // 限流档下电流被压制到 120mA 以下，充电电流判定阈值联动降档。
+    NSString* limitModeForThreshold = getLocalString(@"adv_limit_inflow_mode", defaultMode);
+    int chargeThreshold = thermalLimitCurrentThresholdForMode(limitModeForThreshold);
+    BOOL chargeAllowed = g_chargeCommandEnabled || (getEffectiveBatteryCurrent(safeInfo) > chargeThreshold);
     BOOL chargeSessionActive = adaptorConnected && chargeAllowed;
     if (!chargeSessionActive) {
+        // 粘滞兜底：限流档上一轮仍在激活、且没有明确退出信号（拔线 / 停充命令 /
+        // 关限流开关）时，视为读数空洞（锁屏派生值塌掉、AdapterDetails 短暂缺失），
+        // 维持限流档不降档。否则锁屏期第一个塌掉的读数就会经 ensure-sync 把 pref
+        // 改写成 off，自愈定时器跑同一判定还会把 off 写得更牢。
+        BOOL hasExplicitExitSignal = (!adaptorConnected && AdapterDetails == nil) || !g_chargeCommandEnabled;
+        if (g_thermalLimitActive && !hasExplicitExitSignal) {
+            appendPolicyEventHistory(@"thermal_event",
+                                     g_policyState ?: @"",
+                                     g_policyState ?: @"",
+                                     @"thermal_session_sticky_hold",
+                                     safeInfo,
+                                     @{ @"charge_command_enabled": @(g_chargeCommandEnabled),
+                                        @"adaptor_details_present": @(AdapterDetails != nil) },
+                                     time(0));
+            refreshThermalSelfHealTimer(YES);
+            return getLocalString(@"adv_limit_inflow_mode", defaultMode);
+        }
+        g_thermalLimitActive = NO;
         refreshThermalSelfHealTimer(NO);
         return defaultMode;
     }
     refreshThermalSelfHealTimer(YES);
 
-    return getLocalString(@"adv_limit_inflow_mode", defaultMode);
+    NSString* limitMode = getLocalString(@"adv_limit_inflow_mode", defaultMode);
+    g_thermalLimitActive = ![limitMode isEqualToString:defaultMode] && ![limitMode isEqualToString:@"off"];
+    return limitMode;
 }
 
 // ensure 语义：读回 cltm pref 校验，不一致重写并记事件。
@@ -1856,6 +1903,25 @@ static void syncThermalSimulationModeForCurrentState(NSDictionary* info) {
     NSString* actual = getThermalSimulationModePref();
     if ([actual isEqualToString:desired]) {
         return;
+    }
+    // desired 从限流档降为默认档时记录降档事件：真机上直接定位是哪个信号导致降档
+    // （历史教训：v1.15.2 的锁屏失效根因正是 desired 在锁屏态被算错，sync 只是执行者）。
+    BOOL wasLimitMode = (![actual isEqualToString:@"off"] &&
+                         getLocalBool(@"adv_limit_inflow", NO) &&
+                         !getLocalBool(@"adv_thermal_mode_lock", NO));
+    BOOL nowDefaultMode = [desired isEqualToString:getLocalString(@"adv_def_thermal_mode", @"off")] ||
+                          [desired isEqualToString:@"off"];
+    if (wasLimitMode && nowDefaultMode) {
+        appendPolicyEventHistory(@"thermal_event",
+                                 g_policyState ?: @"",
+                                 g_policyState ?: @"",
+                                 @"thermal_desired_downgrade",
+                                 info ?: bat_info,
+                                 @{ @"desired_mode": desired ?: @"",
+                                    @"actual_mode": actual ?: @"",
+                                    @"charge_command_enabled": @(g_chargeCommandEnabled),
+                                    @"thermal_limit_active": @(g_thermalLimitActive) },
+                                 time(0));
     }
     setThermalSimulationMode(desired);
     NSString* reread = getThermalSimulationModePref();
