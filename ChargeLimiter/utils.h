@@ -72,7 +72,6 @@ void setAutoBrightEnable(BOOL flag);
 
 NSDictionary* getThermalData();
 NSString* getThermalSimulationMode();
-NSString* getThermalSimulationModePref();
 void setThermalSimulationMode(NSString* mode);
 NSString* getPPMSimulationMode();
 void setPPMSimulationMode(NSString* mode);

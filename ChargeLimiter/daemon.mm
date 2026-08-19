@@ -125,11 +125,6 @@ static NSString* g_lastPolicyChangeReason = @"daemon_boot";
 static time_t g_lastPolicyChangeTs = 0;
 static time_t g_lastChargeCommandTs = 0;
 static time_t g_lastInflowCommandTs = 0;
-// 锁屏限流粘滞兜底：上次 desired 确认限流档激活时置位/记时。读数空洞期
-// （AdapterDetails 短暂缺失）不瞬时降档；有界窗口 + 确凿退出信号（"batt" /
-// 停充命令）防止未插电残留。明确退出或超窗即清除。
-static BOOL g_thermalLimitActive = NO;
-static time_t g_thermalLimitActiveTs = 0;
 static int g_smartChargeStatus = -1;
 static BOOL g_tempSmartChargeDisabledByCL = NO;
 static int g_smartChargeCoordinationOriginalStatus = -1;
@@ -163,12 +158,6 @@ static const NSUInteger kPolicyEventDBLimit = 5000;
 static const int kDisableInflowRetryMaxAttempts = 3;
 static const NSTimeInterval kDisableInflowRetryDelaySeconds = 0.6;
 static const NSTimeInterval kPredictiveInhibitFallbackVerifyDelaySeconds = 8.0;
-// 限流档（moderate/heavy）下充电电流被压制到 120mA 以下，desired 会话判定的
-// 电流阈值联动降档（与 chargeEnableThresholdForCurrentThermalMode 同源，见其注释）。
-static const int kThermalLimitCurrentThresholdmA = 30;
-// 粘滞兜底窗口：限流档上一轮激活后，读数空洞（AdapterDetails 短暂缺失）最长维持
-// 限流档的时间；超过即视为真实退出（防未插电/拔线残留）。
-static const NSTimeInterval kThermalLimitStickyWindowSeconds = 300;
 static NSString* const kDaemonResetAndExitNotifyName = @"com.chargelimiter.mod.daemon.reset_and_exit";
 
 // iOS 17 禁流态守卫：禁流态下 ExternalConnected/ExternalChargeCapable 由系统间接派生，息屏周期性刷新会抖动，
@@ -1826,196 +1815,21 @@ static int setChargeStatus(BOOL flag) {
     return 0;
 }
 
-static void refreshThermalSelfHealTimer(BOOL active);
-
-// AdapterDetails 描述电池供电（无适配器在位）。
-static BOOL adapterDescriptionIsBattery(NSDictionary* AdapterDetails) {
-    NSString* PSDesc = [AdapterDetails[@"Description"] isKindOfClass:[NSString class]]
-        ? AdapterDetails[@"Description"] : nil;
-    return (PSDesc == nil || [PSDesc isEqualToString:@"batt"]);
-}
-
-// 限流档（moderate/heavy）压制充电电流，desired 会话判定的电流阈值联动降档。
-static int thermalLimitCurrentThresholdForMode(NSString* mode) {
-    if ([mode isEqualToString:@"moderate"] || [mode isEqualToString:@"heavy"]) {
-        return kThermalLimitCurrentThresholdmA;
-    }
-    return kHoldCurrentChargeThresholdmA;
-}
-
-static NSString* desiredThermalSimulationModeForCurrentState(NSDictionary* info) {
-    NSString* defaultMode = getLocalString(@"adv_def_thermal_mode", @"off");
-    if (getLocalBool(@"adv_thermal_mode_lock", NO)) {
-        refreshThermalSelfHealTimer(NO);
-        return defaultMode;
-    }
-    if (!getLocalBool(@"adv_limit_inflow", NO)) {
-        refreshThermalSelfHealTimer(NO);
-        return defaultMode;
-    }
-
-    NSDictionary* safeInfo = [info isKindOfClass:[NSDictionary class]] ? info : bat_info;
-    if (safeInfo == nil) {
-        safeInfo = @{};
-    }
-
-    // 限流只在真实充电会话激活。适配器在位不读 ExternalChargeCapable——iOS17 限流态
-    // 下它是系统派生值，锁屏期 cltm 周期性重算会塌为 false，导致限流被 desired 自己
-    // 取消（v1.15.2 锁屏失效根因）。改用 AdapterDetails 物理信号（存在且
-    // Description != "batt"），禁流守卫已真机验证其在派生值抖动期稳定。
-    // 未插电仍回退 defaultMode，防未插电持续写限流漂移。UPS（SBC）电源下
-    // ExternalConnected/ExternalChargeCapable 恒 false，沿用电源适配器判定的
-    // gUPSPS 特判。
-    NSDictionary* AdapterDetails = safeInfo[@"AdapterDetails"];
-    BOOL adapterSaysBattery = (AdapterDetails != nil && adapterDescriptionIsBattery(AdapterDetails));
-    BOOL adaptorConnected = (gUPSPS != nil) || (AdapterDetails != nil && !adapterSaysBattery);
-    // 限流档下电流被压制到 120mA 以下，充电电流判定阈值联动降档。
-    NSString* limitModeForThreshold = getLocalString(@"adv_limit_inflow_mode", defaultMode);
-    int chargeThreshold = thermalLimitCurrentThresholdForMode(limitModeForThreshold);
-    BOOL chargeAllowed = g_chargeCommandEnabled || (getEffectiveBatteryCurrent(safeInfo) > chargeThreshold);
-    BOOL chargeSessionActive = adaptorConnected && chargeAllowed;
-    if (!chargeSessionActive) {
-        // 粘滞兜底：限流档上一轮仍在激活窗口内、且没有确凿退出信号（Description
-        // 明确读出 "batt" = 真拔线；停充命令 = 电流本应为 0）时，视为读数空洞
-        // （AdapterDetails 短暂缺失），维持限流档不降档。否则锁屏期第一个塌掉的
-        // 读数就会经 ensure-sync 把 pref 改写成 off，自愈定时器跑同一判定还会把
-        // off 写得更牢。nil（读不到）不算退出信号——空洞恰恰是 nil。
-        time_t now = time(0);
-        BOOL withinStickyWindow = g_thermalLimitActive &&
-            (now - g_thermalLimitActiveTs) < kThermalLimitStickyWindowSeconds;
-        BOOL hasExplicitExitSignal = adapterSaysBattery || !g_chargeCommandEnabled;
-        if (withinStickyWindow && !hasExplicitExitSignal) {
-            appendPolicyEventHistory(@"thermal_event",
-                                     g_policyState ?: @"",
-                                     g_policyState ?: @"",
-                                     @"thermal_session_sticky_hold",
-                                     safeInfo,
-                                     @{ @"charge_command_enabled": @(g_chargeCommandEnabled),
-                                        @"adaptor_details_present": @(AdapterDetails != nil) },
-                                     now);
-            refreshThermalSelfHealTimer(YES);
-            return getLocalString(@"adv_limit_inflow_mode", defaultMode);
-        }
-        g_thermalLimitActive = NO;
-        refreshThermalSelfHealTimer(NO);
-        return defaultMode;
-    }
-    refreshThermalSelfHealTimer(YES);
-
-    NSString* limitMode = getLocalString(@"adv_limit_inflow_mode", defaultMode);
-    BOOL limitModeActive = ![limitMode isEqualToString:defaultMode] && ![limitMode isEqualToString:@"off"];
-    if (limitModeActive) {
-        if (!g_thermalLimitActive) {
-            g_thermalLimitActiveTs = time(0);
-        }
-        g_thermalLimitActive = YES;
-    } else {
-        g_thermalLimitActive = NO;
-    }
-    return limitMode;
-}
-
-// ensure 语义：读回 cltm pref 校验，不一致重写并记事件。
-// 锁屏期间 cltm/cfprefsd 可能清除或覆盖 thermalSimulationMode，且锁屏期电池事件
-// 稀疏，事件驱动 sync 存在空窗——写后无校验的话，pref 丢失无感知、无自愈。
-static void syncThermalSimulationModeForCurrentState(NSDictionary* info) {
-    NSString* desired = desiredThermalSimulationModeForCurrentState(info);
-    NSString* actual = getThermalSimulationModePref();
-    if ([actual isEqualToString:desired]) {
-        return;
-    }
-    // desired 从限流档降为默认档时记录降档事件：真机上直接定位是哪个信号导致降档
-    // （历史教训：v1.15.2 的锁屏失效根因正是 desired 在锁屏态被算错，sync 只是执行者）。
-    BOOL wasLimitMode = (![actual isEqualToString:@"off"] &&
-                         getLocalBool(@"adv_limit_inflow", NO) &&
-                         !getLocalBool(@"adv_thermal_mode_lock", NO));
-    BOOL nowDefaultMode = [desired isEqualToString:getLocalString(@"adv_def_thermal_mode", @"off")] ||
-                          [desired isEqualToString:@"off"];
-    if (wasLimitMode && nowDefaultMode) {
-        appendPolicyEventHistory(@"thermal_event",
-                                 g_policyState ?: @"",
-                                 g_policyState ?: @"",
-                                 @"thermal_desired_downgrade",
-                                 info ?: bat_info,
-                                 @{ @"desired_mode": desired ?: @"",
-                                    @"actual_mode": actual ?: @"",
-                                    @"charge_command_enabled": @(g_chargeCommandEnabled),
-                                    @"thermal_limit_active": @(g_thermalLimitActive) },
-                                 time(0));
-    }
-    setThermalSimulationMode(desired);
-    NSString* reread = getThermalSimulationModePref();
-    if (![reread isEqualToString:desired]) {
-        NSFileErrorLog(@"thermal write unconfirmed desired=%@ reread=%@", desired, reread);
-        appendPolicyEventHistory(@"thermal_event",
-                                 g_policyState ?: @"",
-                                 g_policyState ?: @"",
-                                 @"thermal_write_unconfirmed",
-                                 info ?: bat_info,
-                                 @{ @"desired_mode": desired ?: @"", @"reread_mode": reread ?: @"" },
-                                 time(0));
-    }
-}
-
-static dispatch_source_t g_thermalSelfHealTimer = nil;
-
-// 限流会话激活期间启动 60s 周期自愈：锁屏期电池事件稀疏，事件驱动 sync 有空窗，
-// cltm 若在锁屏期清了 pref，靠本定时器兜底重写（原版无此问题是因为它从不重写、
-// pref 一次写入长期留存，但新架构需要主动维持）。
-// 用 armed 标志而非 suspend：dispatch_suspend 重复调用会过度暂停导致崩溃。
-static void refreshThermalSelfHealTimer(BOOL active) {
-    if (active) {
-        if (g_thermalSelfHealTimer == nil) {
-            g_thermalSelfHealTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
-                                                            dispatch_get_global_queue(0, 0));
-            dispatch_source_set_event_handler(g_thermalSelfHealTimer, ^{
-                NSDictionary* info = nil;
-                if (0 != getBatInfo(&info)) {
-                    info = nil;
-                }
-                syncThermalSimulationModeForCurrentState(info);
-            });
-            dispatch_resume(g_thermalSelfHealTimer);
-        }
-        dispatch_source_set_timer(g_thermalSelfHealTimer,
-                                  dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC),
-                                  60 * NSEC_PER_SEC, 0);
-    }
-    // 停止即把间隔推到遥远未来；timer 保持 resumed，避免 suspend/resume 状态机问题
-    else if (g_thermalSelfHealTimer != nil) {
-        dispatch_source_set_timer(g_thermalSelfHealTimer,
-                                  DISPATCH_TIME_FOREVER, 60 * NSEC_PER_SEC, 0);
-    }
-}
-
-static uint64_t g_thermalSyncGeneration = 0;
-
-// UI 切限流等级会连发两条 set_conf（开关+等级）；逐键立即 sync 会在两条间
-// 用旧等级写一次 thermalSimulationMode。合并为 200ms 去抖，最终只写一次最终配置。
-// 每次 dispatch_after 各自捕获 gen，被更新请求取代的旧块在触发时早退。
-// （不能用单一 dispatch_source：其 handler 只创建一次，捕获首次 gen，后续触发会被误判为过期。）
-static void scheduleDebouncedThermalSync(void) {
-    uint64_t gen = ++g_thermalSyncGeneration;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 200 * NSEC_PER_MSEC),
-                   dispatch_get_global_queue(0, 0), ^{
-        if (gen != g_thermalSyncGeneration) {
-            return;
-        }
-        // 用局部快照，不写共享 bat_info（该块跑在 global queue，与 handler/runloop 并发）
-        NSDictionary* info = nil;
-        if (0 != getBatInfo(&info)) {
-            info = nil;
-        }
-        syncThermalSimulationModeForCurrentState(info);
-    });
-}
 
 static int setBatteryStatus(BOOL flag) {
     if (g_chargeControlProbeRunning) {
         return 0; // 探针期间忽略自动写
     }
     int ret = setChargeStatus(flag);
-    syncThermalSimulationModeForCurrentState(bat_info);
+    BOOL adv_limit_inflow = getLocalBool(@"adv_limit_inflow", NO);
+    BOOL adv_thermal_mode_lock = getLocalBool(@"adv_thermal_mode_lock", NO);
+    if (!adv_thermal_mode_lock && adv_limit_inflow) {
+        if (flag) {
+            setThermalSimulationMode(getLocalString(@"adv_limit_inflow_mode", @"moderate"));
+        } else {
+            setThermalSimulationMode(getLocalString(@"adv_def_thermal_mode", @"off"));
+        }
+    }
     return ret;
 }
 
@@ -2780,7 +2594,11 @@ static void clearAllStatisticsData(void) {
 }
 
 static void onBatteryEventEnd() {
-    syncThermalSimulationModeForCurrentState(bat_info);
+    // 原版语义：thermal 模式只在命令边沿/配置变更时写入，电池事件流不参与。
+    // 锁屏期读数塌陷正是 v1.15.x 闭环同步自取消限流的根因，已整体退回命令驱动。
+    if (getLocalBool(@"adv_thermal_mode_lock", NO)) {
+        setThermalSimulationMode(getLocalString(@"adv_def_thermal_mode", @"off"));
+    }
 }
 
 static NSSet* gConfBoolKeys = nil;
@@ -3749,13 +3567,9 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
                 setLocalFloat(@"charge_temp_above", [vals[1] floatValue]);
             }
         }
-        if ([@[
-            @"adv_limit_inflow",
-            @"adv_limit_inflow_mode",
-            @"adv_def_thermal_mode",
-            @"adv_thermal_mode_lock"
-        ] containsObject:key]) {
-            scheduleDebouncedThermalSync();
+        if ([key isEqualToString:@"adv_def_thermal_mode"]) {
+            // 原版语义：默认档是用户直接配置项，改配置即刻写入 cltm
+            setThermalSimulationMode(val);
         }
         if (shouldRefreshBatteryPolicyForConfigKey(key)) {
             refreshBatteryStateAndApplyPolicy();
