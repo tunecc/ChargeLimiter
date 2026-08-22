@@ -4,10 +4,10 @@
   "mode": "compact",
   "canonical_spec": "openspec",
   "generated_by": "comet-handoff.sh",
-  "context_hash": "96fca46dcdee1e04c71d7246799c4a95fa71760e22ca80e05df26ef6d281b45f",
+  "context_hash": "74c98ebc8153fb4f784de57c59b6a3bb62ea67f7e31177de4cee5bcbeddeb499",
   "files": [
-    { "path": "docs/openspec/changes/fix-lockscreen-limit-inflow/proposal.md", "sha256": "44649ab1761ff9e272b7eb72992ea846fc37149df0f2bc3399a1868cd74b2ab7" },
-    { "path": "docs/openspec/changes/fix-lockscreen-limit-inflow/design.md", "sha256": "22230fa5ece2656a66cba3261da41068ea91056047671092031c7a8595be1d01" },
-    { "path": "docs/openspec/changes/fix-lockscreen-limit-inflow/tasks.md", "sha256": "42edf4dc1e55f49cbe750a58397e2265d5d85f93db1402bff1f18b40cf85ad60" }
+    { "path": "docs/openspec/changes/fix-lockscreen-limit-inflow/proposal.md", "sha256": "83a5034d1b93662f55ff09a17d132f923d77d89c369d21838184428225f4bd7d" },
+    { "path": "docs/openspec/changes/fix-lockscreen-limit-inflow/design.md", "sha256": "f3ba62e928d19018525fa0c67e704fa6aa02d728bcebfaede334c76397f700a5" },
+    { "path": "docs/openspec/changes/fix-lockscreen-limit-inflow/tasks.md", "sha256": "9f8d8cf3bd569797fe9cc0aa375ee54e12917a177d244d4c94a674f6b7d99211" }
   ]
 }

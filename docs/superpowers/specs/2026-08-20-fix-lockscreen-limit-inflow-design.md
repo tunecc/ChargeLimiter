@@ -1,7 +1,7 @@
 ---
-title: fix-lockscreen-limit-inflow 设计文档
-date: 2026-08-20
-change: fix-lockscreen-limit-inflow
+comet_change: fix-lockscreen-limit-inflow
+role: technical-design
+canonical_spec: openspec
 status: design
 ---
 
@@ -49,7 +49,7 @@ v1.7 原版的限流控制简单可靠：`setBatteryStatus(YES/NO)` 在充电命
 源码契约测试覆盖：
 
 - daemon 决策函数只读命令 + 四键，不读电池/适配器信号
-- `onBatteryEventEnd` 不写限流档
+- `onBatteryEventEnd` 不调 `setThermalSimulationMode`
 - 不存在 desired/sync/sticky/self-heal/debounce 代码
 - `set_limit_inflow_config` 校验五种 mode、批量写两键、成功只应用一次
 - UI 只调单一批量客户端方法

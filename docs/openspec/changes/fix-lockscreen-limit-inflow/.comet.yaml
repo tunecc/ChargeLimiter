@@ -11,7 +11,7 @@ isolation: null
 verify_mode: null
 auto_transition: true
 base_ref: 8230105621d5df61d895b48a8847385e0ce5ed22
-design_doc: null
+design_doc: docs/superpowers/specs/2026-08-20-fix-lockscreen-limit-inflow-design.md
 plan: null
 verify_result: fail
 verify_failures: 1
@@ -24,7 +24,7 @@ archived: false
 bound_branch: null
 direct_override: null
 handoff_context: docs/openspec/changes/fix-lockscreen-limit-inflow/.comet/handoff/design-context.json
-handoff_hash: 96fca46dcdee1e04c71d7246799c4a95fa71760e22ca80e05df26ef6d281b45f
+handoff_hash: 74c98ebc8153fb4f784de57c59b6a3bb62ea67f7e31177de4cee5bcbeddeb499
 classic_profile: full
 classic_migration: 1
 run_id: 1005cffc-3abd-498e-84f2-5a676572d946
