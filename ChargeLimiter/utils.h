@@ -124,6 +124,7 @@ extern "C" int getJBType_C(void);
 extern "C" NSString* getSelfExePath_C(void);
 extern "C" int get_sys_boottime_C(void);
 extern "C" void setlocalKV_C(NSString* key, id val);
+extern "C" BOOL setlocalKVBatch_C(NSDictionary* keyValues);
 extern "C" id getlocalKV_C(NSString* key);
 extern "C" void reloadLocalKVFromDisk_C(void);
 extern "C" NSDictionary* getAllKV_C(void);
