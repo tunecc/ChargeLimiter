@@ -3716,6 +3716,7 @@ static BOOL CLSuppressConfigWriteFailedNotification = NO;
 - (void)setValue:(id)value forKey:(NSString*)key;
 - (BOOL)apply;
 - (void)reloadFromDisk;
+- (BOOL)setValuesForKeys:(NSDictionary*)keyValues apply:(BOOL)doApply;
 @end
 
 static BOOL ensureStoreConfigFileExists(CLSettingsStore* store, NSString** pathOut, NSError** errorOut) {
@@ -3987,6 +3988,34 @@ static BOOL ensureStoreConfigFileExists(CLSettingsStore* store, NSString** pathO
         CLFileLogUpdateModeFromObject(self.preferences);
     }
 }
+
+// 批量写入多个键后一次 apply；失败时 reloadFromDisk 回滚，保证整组原子性。
+- (BOOL)setValuesForKeys:(NSDictionary*)keyValues apply:(BOOL)doApply {
+    @synchronized (self) {
+        for (NSString* key in keyValues) {
+            id value = keyValues[key];
+            if (value) {
+                self.cachedChanges[key] = value;
+                self.preferences[key] = value;
+                [self.removedKeys removeObject:key];
+            } else {
+                [self.preferences removeObjectForKey:key];
+                [self.cachedChanges removeObjectForKey:key];
+                [self.removedKeys addObject:key];
+            }
+        }
+        self.isDirty = YES;
+    }
+    if (!doApply) {
+        return YES;
+    }
+    if (![self apply]) {
+        [self reloadFromDisk];
+        return NO;
+    }
+    return YES;
+}
+
 @end
 
 #if TARGET_OS_SIMULATOR || defined(CL_TEST_MODE)
@@ -4265,6 +4294,11 @@ BOOL CLMigrateAppSettingsToSharedStoreIfNeeded(void) {
 
 extern "C" void setlocalKV_C(NSString* key, id val) {
     setlocalKV(key, val);
+}
+
+extern "C" BOOL setlocalKVBatch_C(NSDictionary* keyValues) {
+    CLSettingsStore* store = [CLSettingsStore shared];
+    return [store setValuesForKeys:keyValues apply:YES];
 }
 
 extern "C" id getlocalKV_C(NSString* key) {

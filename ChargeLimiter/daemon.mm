@@ -1816,20 +1816,31 @@ static int setChargeStatus(BOOL flag) {
 }
 
 
+// 集中决策：thermal mode 只由命令和配置决定，不读系统实时信号。
+// lock=YES → 默认档；charging+limit=YES → 限流档；其他 → 默认档。
+static NSString* targetThermalModeForCurrentState(void) {
+    BOOL lock = getLocalBool(@"adv_thermal_mode_lock", NO);
+    NSString* defaultMode = getLocalString(@"adv_def_thermal_mode", @"off");
+    if (lock) {
+        return defaultMode;
+    }
+    BOOL limitInflow = getLocalBool(@"adv_limit_inflow", NO);
+    if (g_chargeCommandEnabled && limitInflow) {
+        return getLocalString(@"adv_limit_inflow_mode", @"moderate");
+    }
+    return defaultMode;
+}
+
+static void applyThermalModeForCurrentState(void) {
+    setThermalSimulationMode(targetThermalModeForCurrentState());
+}
+
 static int setBatteryStatus(BOOL flag) {
     if (g_chargeControlProbeRunning) {
         return 0; // 探针期间忽略自动写
     }
     int ret = setChargeStatus(flag);
-    BOOL adv_limit_inflow = getLocalBool(@"adv_limit_inflow", NO);
-    BOOL adv_thermal_mode_lock = getLocalBool(@"adv_thermal_mode_lock", NO);
-    if (!adv_thermal_mode_lock && adv_limit_inflow) {
-        if (flag) {
-            setThermalSimulationMode(getLocalString(@"adv_limit_inflow_mode", @"moderate"));
-        } else {
-            setThermalSimulationMode(getLocalString(@"adv_def_thermal_mode", @"off"));
-        }
-    }
+    applyThermalModeForCurrentState();
     return ret;
 }
 
@@ -2596,9 +2607,6 @@ static void clearAllStatisticsData(void) {
 static void onBatteryEventEnd() {
     // 原版语义：thermal 模式只在命令边沿/配置变更时写入，电池事件流不参与。
     // 锁屏期读数塌陷正是 v1.15.x 闭环同步自取消限流的根因，已整体退回命令驱动。
-    if (getLocalBool(@"adv_thermal_mode_lock", NO)) {
-        setThermalSimulationMode(getLocalString(@"adv_def_thermal_mode", @"off"));
-    }
 }
 
 static NSSet* gConfBoolKeys = nil;
@@ -3568,17 +3576,48 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             }
         }
         if ([key isEqualToString:@"adv_def_thermal_mode"]) {
-            // 原版语义：默认档是用户直接配置项，改配置即刻写入 cltm
-            setThermalSimulationMode(val);
+            // 默认档变更后经决策函数决定当前应写入的 thermal mode
+            applyThermalModeForCurrentState();
+        }
+        if ([key isEqualToString:@"adv_limit_inflow"] ||
+            [key isEqualToString:@"adv_limit_inflow_mode"] ||
+            [key isEqualToString:@"adv_thermal_mode_lock"]) {
+            applyThermalModeForCurrentState();
         }
         if (shouldRefreshBatteryPolicyForConfigKey(key)) {
             refreshBatteryStateAndApplyPolicy();
         }
-        return @{
-            @"status": @0,
+       return @{
+           @"status": @0,
+       };
+    } else if ([api isEqualToString:@"set_limit_inflow_config"]) {
+        // 原子限流配置：一次请求同时提交 enabled + mode，串行 handler 内完成。
+        NSDictionary* body = nsreq[@"body"] ?: nsreq;
+        id enabledVal = body[@"enabled"];
+        id modeVal = body[@"mode"];
+        if (enabledVal == nil || modeVal == nil) {
+            return @{@"status": @(-1), @"error": @"missing enabled or mode"};
+        }
+        BOOL enabled = [enabledVal boolValue];
+        NSString* mode = [modeVal isKindOfClass:[NSString class]] ? modeVal : [NSString stringWithFormat:@"%@", modeVal];
+        NSSet* validModes = [NSSet setWithArray:@[@"off", @"nominal", @"light", @"moderate", @"heavy"]];
+        if (![validModes containsObject:mode]) {
+            return @{@"status": @(-1), @"error": @"invalid mode"};
+        }
+        // 批量写两键，一次 apply，失败时 reloadFromDisk 回滚
+        NSDictionary* batch = @{
+            @"adv_limit_inflow": @(enabled),
+            @"adv_limit_inflow_mode": mode,
         };
-    } else if ([api isEqualToString:@"reset_conf"]) {
-        initConf(YES);
+        BOOL ok = setlocalKVBatch_C(batch);
+        if (!ok) {
+            return @{@"status": @(-2), @"error": @"config write failed"};
+        }
+        // 成功后经决策函数更新一次 thermal mode
+        applyThermalModeForCurrentState();
+        return @{@"status": @0};
+   } else if ([api isEqualToString:@"reset_conf"]) {
+       initConf(YES);
         // 清除配置后必须把系统的「优化充电」重新打开：永久停用会写系统级开关，
         // 仅还原本地 disable_smart_charge=NO 无法恢复，需显式 enable。
         if (!getLocalBool(@"disable_smart_charge", NO) && !isSmartChargeEnable()) {

@@ -25,6 +25,9 @@ typedef void (^CLAPICallback)(NSDictionary *_Nullable response, NSError *_Nullab
 - (void)setConfigWithKey:(NSString *)key value:(id)value completion:(nullable CLAPICallback)completion;
 
 // 便捷方法 - 获取电池信息
+- (void)setLimitInflowEnabled:(BOOL)enabled mode:(NSString *)mode completion:(nullable CLAPICallback)completion;
+
+// 便捷方法 - 获取电池信息
 - (void)getBatteryInfoWithCompletion:(CLAPICallback)completion;
 
 // 便捷方法 - 立即执行策略

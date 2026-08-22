@@ -20,6 +20,7 @@
 #import "../common.h"
 extern void setlocalKV_C(NSString* key, id val);
 extern NSString* getAppDocumentsPath_C(void);
+extern BOOL setlocalKVBatch_C(NSDictionary* keyValues);
 extern BOOL localPortOpen_C(int port);
 extern int restartDaemonForApp_C(NSString* appDocs);
 #else
@@ -304,17 +305,26 @@ static int CLStartDaemonBestEffort(void) {
         return [self mockBatteryInfo];
     } else if ([api isEqualToString:@"get_conf"]) {
         return [self mockConfig];
-    } else if ([api isEqualToString:@"set_conf"]) {
-        // 模拟保存配置
-        NSString *key = params[@"key"];
-        id value = params[@"val"];
-        if (key && value) {
-            NSMutableDictionary *config = [self mockConfig][@"data"];
-            config[key] = value;
-            NSLog(@"[CL-Mock] 设置配置: %@ = %@", key, value);
-        }
+   } else if ([api isEqualToString:@"set_conf"]) {
+       // 模拟保存配置
+       NSString *key = params[@"key"];
+       id value = params[@"val"];
+       if (key && value) {
+           NSMutableDictionary *config = [self mockConfig][@"data"];
+           config[key] = value;
+           NSLog(@"[CL-Mock] 设置配置: %@ = %@", key, value);
+       }
+       return @{@"status": @0};
+    } else if ([api isEqualToString:@"set_limit_inflow_config"]) {
+        // 模拟原子限流配置
+        BOOL enabled = [params[@"enabled"] boolValue];
+        NSString *mode = params[@"mode"] ?: @"off";
+        NSMutableDictionary *config = [self mockConfig][@"data"];
+        config[@"adv_limit_inflow"] = @(enabled);
+        config[@"adv_limit_inflow_mode"] = mode;
+        NSLog(@"[CL-Mock] 原子限流配置: enabled=%d mode=%@", enabled, mode);
         return @{@"status": @0};
-    } else if ([api isEqualToString:@"set_charge_status"]) {
+   } else if ([api isEqualToString:@"set_charge_status"]) {
         NSLog(@"[CL-Mock] 设置充电状态: %@", params[@"flag"]);
         return @{@"status": @0};
     } else if ([api isEqualToString:@"set_inflow_status"]) {
@@ -556,6 +566,28 @@ static int CLStartDaemonBestEffort(void) {
 
 - (void)getBatteryInfoWithCompletion:(CLAPICallback)completion {
     [self sendRequest:@{@"api": @"get_bat_info"} completion:completion];
+}
+- (void)setLimitInflowEnabled:(BOOL)enabled mode:(NSString *)mode completion:(CLAPICallback)completion {
+    NSDictionary *params = @{
+        @"api": @"set_limit_inflow_config",
+        @"enabled": @(enabled),
+        @"mode": mode ?: @"off"
+    };
+    [self sendRequest:params completion:^(NSDictionary * _Nullable response, NSError * _Nullable error) {
+#if !CL_USE_MOCK_DATA
+        BOOL accepted = (response && [response[@"status"] intValue] == 0);
+        BOOL transportFailure = (error != nil || response == nil);
+        if (accepted || transportFailure) {
+            setlocalKVBatch_C(@{
+                @"adv_limit_inflow": @(enabled),
+                @"adv_limit_inflow_mode": mode ?: @"off"
+            });
+        }
+#endif
+        if (completion) {
+            completion(response, error);
+        }
+    }];
 }
 
 - (void)applyNowWithCompletion:(CLAPICallback)completion {
