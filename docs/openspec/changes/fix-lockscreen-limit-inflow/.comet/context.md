@@ -3,7 +3,7 @@
 - Change: fix-lockscreen-limit-inflow
 - Phase: design
 - Mode: compact
-- Context hash: 96fca46dcdee1e04c71d7246799c4a95fa71760e22ca80e05df26ef6d281b45f
+- Context hash: 74c98ebc8153fb4f784de57c59b6a3bb62ea67f7e31177de4cee5bcbeddeb499
 
 Generated-by: comet-handoff.sh
 
@@ -12,142 +12,181 @@ OpenSpec remains the canonical capability spec. This handoff is a deterministic,
 ## docs/openspec/changes/fix-lockscreen-limit-inflow/proposal.md
 
 - Source: docs/openspec/changes/fix-lockscreen-limit-inflow/proposal.md
-- Lines: 1-25
-- SHA256: 44649ab1761ff9e272b7eb72992ea846fc37149df0f2bc3399a1868cd74b2ab7
+- Lines: 1-33
+- SHA256: 83a5034d1b93662f55ff09a17d132f923d77d89c369d21838184428225f4bd7d
 
 ```md
 # Proposal: fix-lockscreen-limit-inflow
 
 ## Why
 
-用户真机反馈（iOS 17）：锁屏后限流控制失效，电流恢复到未限流水平；换回原版（ChargeLimiter-main v1.7.x 系）锁屏时限流保持正常。上一轮修复（v1.15.2 commit f03befb，读回校验 + 60s 自愈定时器）针对"锁屏期 cltm 清 pref 无人重写"的假设，真机验证完全无效——说明假设方向错了，真实根因是当前版在锁屏期自己把限流取消。
+用户真机反馈（iOS 17）：锁屏后限流控制失效，电流恢复到未限流水平；换回原版（v1.7 系）锁屏时限流保持正常。
+
+根因不是"锁屏期 cltm 清 pref 无人重写"（上一轮 f03befb 的假设，真机验证无效），而是当前版自己在锁屏期把限流取消了。`d8ad775`（v1.12.4 → v1.12.5 之间）引入 `desiredThermalSimulationModeForCurrentState` → `syncThermalSimulationModeForCurrentState` 反馈闭环，让 thermal mode 随电池/适配器实时读数推导。锁屏后这些读数抖动（`ExternalChargeCapable` 塌为 false、电流低于阈值），desired 算出 off，sync 主动把限流 pref 改写为 off。后续三版补丁（f03befb / 6a33876 / 8cb6e3c）都在闭环内打转，方向反了。
+
+`b8c0764` 已正确删除整个 desired/sync 闭环、60s 自愈、200ms 去抖、读回校验和粘滞兜底，退回原版命令驱动语义。但删除闭环后留下两个缺口：
+
+1. 配置切换不原子：UI 通过两次独立 `set_conf` 分别写 `adv_limit_inflow` 和 `adv_limit_inflow_mode`，两次请求之间 thermal mode 可能处于不一致状态。
+2. 默认等级修改可能覆盖当前限流档：`set_conf` 的 `adv_def_thermal_mode` 分支无条件 `setThermalSimulationMode(val)`，即使当前正在限流充电也会把限流改写为默认档。
 
 ## What Changes
 
-- 修复 `desiredThermalSimulationModeForCurrentState` 的充电会话判定在锁屏态使用不可靠信号的问题：
-  - `adaptorConnected` 不再经 `isAdaptorConnect` 读系统派生的 `ExternalChargeCapable`（限流态下 cltm 周期性重算会读到 false），改用稳定的 `AdapterDetails`（存在且 `Description != "batt"`）判定；
-  - `chargeAllowed` 的电流判定在限流档为 moderate/heavy 时联动 30mA 阈值（限流本身压制电流到 120mA 以下，固定 120mA 阈值会误判"不在充电"），对齐 `scheduleChargeEnableVerification` 已有先例；
-  - 限流档已写入且未出现明确退出信号（拔线 / 停充命令 / 关限流 / 等级切换）时 desired 不瞬时降档，防读数空洞期自取消。
-- desired 从限流档降为默认档时记录 policy event（`thermal_desired_downgrade`），真机可定位是哪个信号导致降档。
+- 新增 daemon 内部 API `set_limit_inflow_config`，一次请求同时提交 `enabled` 和 `mode`，串行 handler 内原子完成两键写入和一次 thermal mode 更新。
+- 集中决策函数只在命令边沿和配置变更时调用，输入只有 `g_chargeCommandEnabled` 和四个配置键，不读电池/适配器/电流/锁屏信号。
+- `set_conf` 的 `adv_def_thermal_mode` 分支改为经同一决策函数决定是否写入，不再无条件覆盖限流档。
+- `CLAPIClient` 增加 `setLimitInflowEnabled:mode:completion:`，只发一次请求；成功或 daemon 不可达时通过批量 C bridge 一次更新两个本地镜像键。
+- `CLSettingsStore` 增加批量写入口：在同一 `@synchronized` 区域内设多个键，一次 `apply`，失败时 `reloadFromDisk` 回滚保证两键不落盘一半。
+- UI 的 `limitInflowModeTapped` 改为调用单一原子方法，替代两次 `setConfigWithKey`。
 
-不改变：限流的写入路径（`setThermalSimulationMode` / cltm pref）、停充控制面（iOS 17 override 路径）、UI 配置项与语义。原版锁屏正常的机制（写一次长期留存）不受影响，本修复只是让新架构的"desired 计算"在锁屏态收敛到与原版等价的稳态。
+不改变：配置键名称、用户可见选项和语义、停充控制面、`set_conf` 对其他配置的兼容性。
 
 ## Capabilities
 
-- **Modified Capabilities**: 无 spec 级行为变更——限流在锁屏期"应保持生效"本来就是 `adv_limit_inflow` 的预期行为（CHANGELOG v1.15.2 已承诺"锁屏后限流失效"修复），本 change 是该承诺的 bug 修复落地，不新增需求场景。`.openspec.yaml` 设置 `skip_specs: true`。
+无 spec 级行为变更。限流在锁屏期保持生效是 `adv_limit_inflow` 的预期行为，本 change 是 bug 修复落地。`.openspec.yaml` 设置 `skip_specs: true`。
 
 ## Impact
 
-- 代码：`ChargeLimiter/daemon.mm`（`desiredThermalSimulationModeForCurrentState`、`syncThermalSimulationModeForCurrentState`、电流阈值常量、policy event 记录）；预计 1 个文件。
-- 测试：`scripts/tests/test_thermal_session_gate.py` 断言需同步更新（现断言 `desiredThermalSimulationModeForCurrentState` 必须含 `isAdaptorConnect`，本修复恰恰要移除该依赖）；新增锁屏态 desired 判定的源码扫描测试。
-- 风险：低。改动集中在 desired 计算分支，写路径不变；最坏情况退化为修复前行为（锁屏限流失效），不会影响停充/恢复充电链路。
+- 代码：`ChargeLimiter/daemon.mm`（新增 `set_limit_inflow_config` handler、集中决策函数、`adv_def_thermal_mode` 分支修正）；`ChargeLimiter/utils.mm`（`CLSettingsStore` 批量写入口）；`ChargeLimiter/UIKit/CLAPIClient.m`（`setLimitInflowEnabled:mode:completion:` + 批量本地镜像）；`ChargeLimiter/UIKit/Controllers/CLAdvancedSettingsViewController.m`（UI 调用改为原子方法）。预计 4 个文件。
+- 测试：新增源码契约测试覆盖原子 API、批量写、命令驱动决策和 UI 调用路径；保留 `test_thermal_mode_live_refresh`。
+- 风险：低。`b8c0764` 已删除闭环，本 change 只补配置切换原子性和决策集中化，不改写路径语义。
 
 ```
 
 ## docs/openspec/changes/fix-lockscreen-limit-inflow/design.md
 
 - Source: docs/openspec/changes/fix-lockscreen-limit-inflow/design.md
-- Lines: 1-60
-- SHA256: 22230fa5ece2656a66cba3261da41068ea91056047671092031c7a8595be1d01
+- Lines: 1-69
+- SHA256: f3ba62e928d19018525fa0c67e704fa6aa02d728bcebfaede334c76397f700a5
 
 ```md
 # Design: fix-lockscreen-limit-inflow
 
-## 根因（对比原版 + 当前版链路推演）
+## 结论
 
-### 原版为什么锁屏正常
+采用"原版命令驱动语义 + 原子配置切换"的方案。运行时 thermal mode 只由 ChargeLimiter 自己最近一次充电命令和配置决定，不读取锁屏、适配器、电流、`IsCharging`、`ExternalChargeCapable` 或 `AdapterDetails`。
 
-原版 `setBatteryStatus`（ChargeLimiter-main `daemon.mm:258-271`）只在充电命令翻转时写一次 thermal pref（`flag=YES` 写 `adv_limit_inflow_mode`，`flag=NO` 写 `adv_def_thermal_mode`），此后**从不读回、从不重写**。锁屏后电池事件继续到达，但没有任何代码路径再触碰 thermal pref，cltm 应用后限流长期保持。原版对锁屏天然免疫，因为它不依赖任何实时信号维持限流。
+## 根因与历史边界
 
-### 当前版的失效链路（自反馈取消）
+v1.7 到 v1.12.4 的实现只在 `setBatteryStatus(YES/NO)` 命令边沿写入 thermal mode：继续充电使用 `adv_limit_inflow_mode`，停充使用 `adv_def_thermal_mode`。电池事件不会持续重写 thermal pref，因此锁屏天然不会改变限流状态。
 
-当前版（v1.15.x 架构）为每个电池事件维护 ensure 语义：`onBatteryEventEnd()` → `syncThermalSimulationModeForCurrentState` → `desiredThermalSimulationModeForCurrentState`（`daemon.mm:1820`）+ 60s 自愈定时器跑同一函数。desired 的会话判定依赖两个**锁屏态不可靠信号**：
+`d8ad775` 在 v1.12.4 与 v1.12.5 之间引入 `desiredThermalSimulationModeForCurrentState`，随后 v1.14.x、v1.15.x 逐步加入适配器、电流、读回、自愈、粘滞和去抖。这个闭环把不稳定的系统读数变成了主动降档信号，最终造成锁屏限流自取消。`b8c0764` 删除闭环并恢复命令驱动方向是正确的，但同时留下了配置切换不立即收敛、以及默认等级修改可能覆盖当前限流档的问题。
 
-1. **`isAdaptorConnect` → `ExternalChargeCapable`**（`daemon.mm:1265`）：iOS 17 下该值由系统间接派生。[[ios17-inflow-external-connected-flicker]] 已真机证实：写入 inhibit 类 override（限流的热态模拟同属此类）后，息屏期 cltm/电源管理周期性重算时该值抖动、读到 false。`672ab65` 引入此前置条件时是为了修"未插电持续写限流"，但没料到锁屏态派生值会塌。
-2. **`currentLooksCharging` 固定 120mA 阈值**（`daemon.mm:2828`）：限流生效的定义就是电流被压制（moderate/heavy 下常低于 120mA）；`scheduleChargeEnableVerification` 已为此联动了 30mA 阈值（`daemon.mm:1679` 附近），此处未联动。停充态（`g_chargeCommandEnabled=NO`）下充电电流为 0，chargeAllowed 全靠电流信号——限流态读数恰好落空。
+## 运行时模型
 
-失效链：
+新增一个集中决策函数（名称按实现阶段确定），其输入只有：
 
-```
-限流生效（pref=moderate/heavy）
-→ 锁屏后 cltm 周期性重算，ExternalChargeCapable 短暂/持续塌为 false
-   （或停充+限流组合下电流 < 120mA 且 g_chargeCommandEnabled=NO）
-→ chargeSessionActive=NO → desired=off
-→ ensure-sync 读回 pref=moderate ≠ off → 主动改写为 off（限流被自己关掉）
-→ 电流恢复 → 再触发限流写入 → 抖动循环；60s 自愈跑同一判定，把 off 写得更牢
-```
+- `g_chargeCommandEnabled`：daemon 最近一次成功发出的充电命令；
+- `adv_limit_inflow`：是否启用充电时限流；
+- `adv_limit_inflow_mode`：限流等级；
+- `adv_def_thermal_mode`：非限流时的默认等级；
+- `adv_thermal_mode_lock`：锁定默认等级。
 
-### 上一轮修复（f03befb）为什么无效
+决策规则：
 
-f03befb 假设"锁屏期 cltm 清 pref → 无人重写 → 失效"，所以加读回校验 + 自愈重写 **desired**。真实方向相反：**desired 本身在锁屏态被算错成 off**，sync 是把错误 desired 写下去的执行者。自愈定时器信任同一个错误判定，方向反了——不但救不回，还每 60s 强化一次降档。
+1. `adv_thermal_mode_lock == YES` 时，目标是默认等级。
+2. `g_chargeCommandEnabled == YES` 且 `adv_limit_inflow == YES` 且未锁定时，目标是限流等级。
+3. 其他情况目标是默认等级。
 
-## 修复方案
+该函数只在明确的命令或配置变更路径调用：`setBatteryStatus` 成功后、原子限流配置成功后、以及默认等级或锁定等级的兼容 `set_conf` 路径。`onBatteryEventEnd` 不再写 thermal mode——当前 onBatteryEventEnd 中对 `adv_thermal_mode_lock` 的 `setThermalSimulationMode` 调用移至 `set_conf` 的 `adv_thermal_mode_lock` 分支，由决策函数统一处理。
 
-全部改动集中在 `ChargeLimiter/daemon.mm` 的 desired 计算，写路径（`setThermalSimulationMode`）与策略层不动。
+## 原子限流配置接口
 
-### 1. adaptorConnected 换稳定判据（主修复）
+新增 daemon 内部 API `set_limit_inflow_config`，请求体包含 `enabled` 与 `mode`。允许的 mode 为 `off`、`nominal`、`light`、`moderate`、`heavy`。`enabled == false` 时仍保存用户选择的 mode；UI 的"关闭"选项发送 `enabled=false, mode=off`。
 
-`desiredThermalSimulationModeForCurrentState` 内不再调 `isAdaptorConnect`（读派生值 `ExternalChargeCapable`），改为本地判定 `AdapterDetails`：存在且 `Description != "batt"` 即视为适配器在位。这与 `isAdaptorConnect` 禁流分支用同一物理量，[[ios17-inflow-flicker-fix]] 已真机验证其在派生值抖动期稳定。保留未插电时回退 defaultMode 的语义（防"未插电持续写限流"回归，即 672ab65 修的 bug）。
+daemon 在现有串行 HTTP handler 内完成：校验 payload；通过共享设置 store 的批量写入口一次提交 `adv_limit_inflow` 与 `adv_limit_inflow_mode`；写盘失败时恢复原快照并返回失败；成功后按当前命令和完整配置只调用一次 `setThermalSimulationMode`。
 
-### 2. 限流态电流阈值联动
+旧 `set_conf` 保留供其他配置和旧客户端兼容。旧客户端分别更新两个限流键时仍可工作，但新 UI 不再依赖它处理限流等级。
 
-`chargeAllowed` 的 `currentLooksCharging` 判定在当前限流档为 moderate/heavy 时用 30mA 阈值（新常量 `kThermalLimitCurrentThresholdmA`），对齐 `scheduleChargeEnableVerification` 的既有联动。轻档（nominal/light）下电流压制通常仍 >120mA，维持原阈值。
+## 客户端与本地镜像
 
-### 3. 会话粘滞兜底
+`CLAPIClient` 增加 `setLimitInflowEnabled:mode:completion:`，真实设备只发送一次上述 API。成功响应或 daemon 不可达时，客户端通过 shared store 的批量 C bridge 一次更新两个本地镜像键；daemon 明确拒绝时不写本地镜像。模拟器 mock 同步更新两个键并返回成功。
 
-新增运行时标志 `g_thermalLimitActive`（上次成功写入限流档时置位）。desired 计算发现限流档本应激活但会话判定瞬时塌掉、且**没有**明确退出信号（拔线边沿 / `g_chargeCommandEnabled` 翻 NO / `adv_limit_inflow` 关闭 / 等级改轻档）时，维持限流档不降档，并记 `thermal_session_sticky_hold` 事件（限流频率，避免刷库）。退出信号到达或真实拔线时清除标志。这防的是读数空洞期（AdapterDetails 短暂缺失等）的自取消。
+共享 store 扩展批量设置能力：在同一个同步区域内把两项变更放入内存快照，再执行一次现有原子 plist 写入；失败时沿用现有 `reloadFromDisk` 回滚逻辑，保证两键不会只落盘一半。该能力是通用内部 helper，但本 change 只用于限流两键。
 
-### 4. 降档事件
+## 错误处理与并发
 
-`syncThermalSimulationModeForCurrentState` 在 desired 从限流档（≠defaultMode 且非 off）降为默认档时记录 `thermal_desired_downgrade` policy event（带 desired/actual/adaptor 判定快照），真机上直接定位降档原因。sticky hold 命中时不写 pref、不降档。
+- 请求缺字段、mode 非法或类型不符合时返回结构化错误，不静默降级。
+- 写盘失败沿用现有配置写失败诊断/通知机制，并返回失败状态；thermal pref 保持旧值。
+- HTTP handler 已是串行队列；批量请求不需要 timer、generation、dispatch debounce 或额外锁。
+- thermal 写入不读回、不自愈，不把写入结果重新推导成下一次 desired。
 
-## 备选方案（不采用）
+## 测试策略
 
-- **回退原版"写一次不维护"**：最小改动，但丢掉 672ab65 修的"未插电持续写限流漂移"防护与等级切换实时性，等于把已修 bug 再打开。
-- **去掉 ensure-sync 只靠自愈定时器**：自愈跑同一 desired 计算，单独改它无意义；且去抖 sync 还承担等级切换实时性（31b03f），不能删。
+源码契约测试覆盖：daemon 命令驱动决策不读取电池/适配器/锁屏信号；`onBatteryEventEnd` 不调 `setThermalSimulationMode`；不存在 desired/sync/self-heal/sticky 闭环；批量 API 校验五种 mode、同时写两个键且成功只应用一次；UI 只调用单一批量客户端方法；shared store 失败整组回滚。
 
-## 验证方式
+行为矩阵：
 
-- 源码扫描测试（python，scripts/tests/）：断言 desired 计算不再含 `isAdaptorConnect`、含 `AdapterDetails` 判定、moderate/heavy 阈值联动存在、sticky hold 分支存在；`test_thermal_session_gate.py` 的旧断言同步更新。
-- 三 scheme 编译验证。
-- 真机验收（用户执行）：开限流 moderate/heavy → 插电 → 锁屏 ≥30 分钟 → 电流保持限流水平、`get_diag`/policy event 无 `thermal_desired_downgrade` 持续刷屏。
+| 充电命令 | 限流开关 | 锁定 | 目标档位 |
+|---|---:|---:|---|
+| YES | YES | NO | 限流等级 |
+| YES | NO | NO | 默认等级 |
+| NO | YES | NO | 默认等级 |
+| 任意 | 任意 | YES | 默认等级 |
+
+验证包括模拟器 mock、全量 Python 契约测试、rootful/rootless/roothide 三 scheme 编译，以及真机插电切换、停充切换和锁屏保持验收。
+
+## 非目标
+
+不识别或保存锁屏状态；不根据适配器、电流、`IsCharging`、`ExternalChargeCapable`、`AdapterDetails` 或系统 thermal state 维持限流；不恢复 60 秒自愈、读回校验、粘滞窗口、降档事件或 200ms 去抖；不改变停充/禁流控制面、配置键名称和用户可见选项。
 
 ```
 
 ## docs/openspec/changes/fix-lockscreen-limit-inflow/tasks.md
 
 - Source: docs/openspec/changes/fix-lockscreen-limit-inflow/tasks.md
-- Lines: 1-28
-- SHA256: 42edf4dc1e55f49cbe750a58397e2265d5d85f93db1402bff1f18b40cf85ad60
+- Lines: 1-50
+- SHA256: 9f8d8cf3bd569797fe9cc0aa375ee54e12917a177d244d4c94a674f6b7d99211
 
 ```md
 # Tasks: fix-lockscreen-limit-inflow
 
 ## 1. RED：先写失败测试
 
-- [x] 1.1 新增 `scripts/tests/test_thermal_lockscreen_hold.py`：断言 `desiredThermalSimulationModeForCurrentState` 不再调用 `isAdaptorConnect`、改用 `AdapterDetails` 判定、moderate/heavy 下 `chargeAllowed` 用 30mA 阈值、存在 sticky hold 分支（`g_thermalLimitActive`）。运行确认失败（当前代码无这些实现）。
-- [x] 1.2 更新 `scripts/tests/test_thermal_session_gate.py`：`test_charge_session_requires_adaptor` 断言改为要求 `AdapterDetails` 判定而非 `isAdaptorConnect`。
+- [ ] 1.1 新增 `scripts/tests/test_limit_inflow_atomic_config.py`：断言 daemon 含 `set_limit_inflow_config` handler、请求体校验 `enabled` 与 `mode` 五种合法值（off/nominal/light/moderate/heavy）、批量写两键成功后只调一次 `setThermalSimulationMode`、失败时整组回滚不写 thermal。
+- [ ] 1.2 新增 `scripts/tests/test_limit_inflow_command_driven.py`：断言集中决策函数只读 `g_chargeCommandEnabled` 和四个配置键（`adv_limit_inflow`/`adv_limit_inflow_mode`/`adv_def_thermal_mode`/`adv_thermal_mode_lock`），不读 `isAdaptorConnect`/`AdapterDetails`/`currentLooksCharging`/`IsCharging`/`ExternalChargeCapable`；`onBatteryEventEnd` 不调 `setThermalSimulationMode`。
+- [ ] 1.3 新增 `scripts/tests/test_limit_inflow_ui_atomic.py`：断言 `limitInflowModeTapped` 只调一次 `setLimitInflowEnabled:mode:completion:`，不再调两次 `setConfigWithKey`。
+- [ ] 1.4 新增 `scripts/tests/test_limit_inflow_store_batch.py`：断言 `CLSettingsStore` 含批量写入口（同一 `@synchronized` + 一次 `apply`），失败路径调 `reloadFromDisk`。
+- [ ] 1.5 确认 `test_thermal_mode_live_refresh.py` 仍通过（不受影响）。
 
-## 2. 实现修复（daemon.mm）
+## 2. 实现 daemon 命令驱动 + 原子配置
 
-- [x] 2.1 `desiredThermalSimulationModeForCurrentState`：`adaptorConnected` 改用 `AdapterDetails`（存在且 `Description != "batt"`）判定，移除 `isAdaptorConnect` 调用；未插电仍回退 defaultMode。
-- [x] 2.2 限流档为 moderate/heavy 时 `chargeAllowed` 的电流判定用 `kThermalLimitCurrentThresholdmA`（30）阈值。
-- [x] 2.3 新增 `g_thermalLimitActive` 粘滞兜底：会话判定瞬时塌掉但无明确退出信号（拔线 / `g_chargeCommandEnabled=NO` / `adv_limit_inflow` 关 / 等级改轻档）时维持限流档；退出信号清除标志；命中记 `thermal_session_sticky_hold` 事件。
-- [x] 2.4 `syncThermalSimulationModeForCurrentState`：desired 从限流档降为默认档时记 `thermal_desired_downgrade` 事件（带判定快照）。
+- [ ] 2.1 新增集中决策函数（daemon.mm）：输入 `g_chargeCommandEnabled` + 四个配置键，返回目标 thermal mode；不读电池/适配器/电流/锁屏。规则：lock=YES → 默认档；charging+limit=YES → 限流档；其他 → 默认档。
+- [ ] 2.2 `setBatteryStatus` 改为调用决策函数（替代当前内联逻辑）。
+- [ ] 2.3 新增 `set_limit_inflow_config` HTTP handler：校验 payload（`enabled` bool + `mode` ∈ {off,nominal,light,moderate,heavy}）；通过 `CLSettingsStore` 批量写入口一次提交 `adv_limit_inflow` + `adv_limit_inflow_mode`；写盘失败返回失败不写 thermal；成功后调一次决策函数更新 thermal mode。
+- [ ] 2.4 `set_conf` 的 `adv_def_thermal_mode` 分支：改为调决策函数决定是否写入 thermal mode，不再无条件 `setThermalSimulationMode(val)`。
+- [ ] 2.5 `set_conf` 的 `adv_thermal_mode_lock` 分支：改为调决策函数更新 thermal mode（当前 onBatteryEventEnd 中的 lock 写入逻辑移至此处）。
+- [ ] 2.6 `set_conf` 的 `adv_limit_inflow` 和 `adv_limit_inflow_mode` 分支保留兼容（旧客户端仍可工作），但写后也经决策函数更新 thermal。
+- [ ] 2.7 `onBatteryEventEnd` 清空 thermal 写入逻辑（不再调 `setThermalSimulationMode`），仅保留日志或移除。
+- [ ] 2.8 搜索确认无残留 desired/sync/sticky/self-heal/debounce 代码。
 
-## 3. 验证
+## 3. 实现 shared store 批量写
 
-- [x] 3.1 运行全部 thermal 相关源码扫描测试（test_thermal_lockscreen_hold / test_thermal_session_gate / test_thermal_sync_debounce / test_thermal_mode_live_refresh / test_charge_enable_verify）转绿。
-- [x] 3.2 三 scheme（rootful / rootless / roothide）编译通过。
-- [x] 3.3 根因消除检查：确认 desired 计算不再依赖 `ExternalChargeCapable`；搜索验证无遗漏调用点。
-- [x] 3.4 真机验收清单已写入 change 目录 acceptance.md（A1-A5）；真机验收执行与结果由用户后续反馈，验收通过是归档前置条件之一。
+- [ ] 3.1 `CLSettingsStore` 新增 `setValuesForKeys:apply:` 批量写入口：在同一 `@synchronized` 区域内逐个 `setValue:forKey:`，再调一次 `apply`；失败时 `reloadFromDisk` 回滚（已有逻辑）。
+- [ ] 3.2 新增 C bridge `setlocalKVBatch_C`（或等价），供客户端一次更新多个本地镜像键。
 
-## 4. 真机验收失败后改道：整体退回原版命令驱动语义（2026-08-19）
+## 4. 实现 client + UI
 
-- [x] 4.1 对照原版项目定位根因：原版 thermal 模式只在命令边沿写入，从不读电池读数推导期望模式；d8ad775 引入的 desired 闭环形成自反馈回路，锁屏期读数塌陷→desired=off→sync 自己取消限流；三版补丁（f03befb / 6a33876 / 8cb6e3c）均在回路内打转
-- [x] 4.2 删除 desired/sync 闭环、60s 自愈定时器、200ms 去抖、读回校验、粘滞兜底、阈值联动、降档事件；utils 移除 getThermalSimulationModePref
-- [x] 4.3 setBatteryStatus/onBatteryEventEnd/set_conf 恢复原版写法；保留 chargeEnableThresholdForCurrentThermalMode（另一 bug 修复）
-- [x] 4.4 删除 test_thermal_self_heal / sync_debounce / session_gate / lockscreen_hold 四个过时断言文件；保留 mode_live_refresh
-- [x] 4.5 全仓 168 项测试通过；三 scheme 编译通过；提交 b8c0764
+- [ ] 4.1 `CLAPIClient` 新增 `setLimitInflowEnabled:mode:completion:`：真机发一次 `set_limit_inflow_config` 请求；成功或 daemon 不可达时调批量 C bridge 一次更新两个本地镜像键；daemon 拒绝时不写本地镜像。
+- [ ] 4.2 mock 路径同步更新两个键并返回成功。
+- [ ] 4.3 `CLAdvancedSettingsViewController.m` 的 `limitInflowModeTapped` 改为调 `setLimitInflowEnabled:mode:completion:`，删除两次 `setConfigWithKey` 调用。
+
+## 5. 验证
+
+- [ ] 5.1 运行全部限流相关源码扫描测试转绿。
+- [ ] 5.2 全仓 Python 契约测试通过（含保留的 `test_thermal_mode_live_refresh`）。
+- [ ] 5.3 三 scheme（rootful / rootless / roothide）编译通过。
+- [ ] 5.4 真机验收清单（acceptance.md）已写入；真机验收执行与结果由用户后续反馈。
+
+## 6. 真机验收
+
+- [ ] 6.1 安装含本修复的 roothide 包（`./scripts/build_packages.sh`）
+- [ ] 6.2 限流等级设为 moderate 或 heavy，插电充电中
+- [ ] 6.3 锁屏 ≥30 分钟（最好跨一晚）
+- [ ] 6.4 逐条核对 acceptance.md A1-A6
+- [ ] 6.5 验收通过后归档
+
+## 已完成（历史阶段，仅记录）
+
+- [x] b8c0764 删除 desired/sync 闭环、60s 自愈、200ms 去抖、读回校验、粘滞兜底；退回原版命令驱动语义；168 项测试通过；三 scheme 编译通过。
 
 ```
