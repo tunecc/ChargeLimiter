@@ -1,0 +1,13 @@
+{
+  "change": "fix-lockscreen-limit-inflow",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "96fca46dcdee1e04c71d7246799c4a95fa71760e22ca80e05df26ef6d281b45f",
+  "files": [
+    { "path": "docs/openspec/changes/fix-lockscreen-limit-inflow/proposal.md", "sha256": "44649ab1761ff9e272b7eb72992ea846fc37149df0f2bc3399a1868cd74b2ab7" },
+    { "path": "docs/openspec/changes/fix-lockscreen-limit-inflow/design.md", "sha256": "22230fa5ece2656a66cba3261da41068ea91056047671092031c7a8595be1d01" },
+    { "path": "docs/openspec/changes/fix-lockscreen-limit-inflow/tasks.md", "sha256": "42edf4dc1e55f49cbe750a58397e2265d5d85f93db1402bff1f18b40cf85ad60" }
+  ]
+}
