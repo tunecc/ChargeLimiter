@@ -2,7 +2,8 @@
 comet_change: fix-lockscreen-limit-inflow
 role: technical-design
 canonical_spec: openspec
-status: design
+archived-with: 2026-08-28-fix-lockscreen-limit-inflow
+status: final
 ---
 
 # 限流控制：命令驱动 + 原子配置切换

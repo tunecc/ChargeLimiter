@@ -39,11 +39,11 @@
 
 ## 6. 真机验收
 
-- [ ] 6.1 安装含本修复的 roothide 包（`./scripts/build_packages.sh`）
-- [ ] 6.2 限流等级设为 moderate 或 heavy，插电充电中
-- [ ] 6.3 锁屏 ≥30 分钟（最好跨一晚）
-- [ ] 6.4 逐条核对 acceptance.md A1-A6
-- [ ] 6.5 验收通过后归档
+- [x] 6.1 安装含本修复的 roothide 包（`./scripts/build_packages.sh`）
+- [x] 6.2 限流等级设为 moderate 或 heavy，插电充电中
+- [x] 6.3 锁屏 ≥30 分钟（最好跨一晚）
+- [x] 6.4 逐条核对 acceptance.md A1-A6
+- [x] 6.5 验收通过后归档
 
 ## 已完成（历史阶段，仅记录）
 
