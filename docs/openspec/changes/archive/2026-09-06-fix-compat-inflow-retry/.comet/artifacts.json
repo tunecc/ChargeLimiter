@@ -1,0 +1,7 @@
+{
+  "openspec_proposal": "docs/openspec/changes/fix-compat-inflow-retry/proposal.md",
+  "openspec_design": "docs/openspec/changes/fix-compat-inflow-retry/design.md",
+  "openspec_tasks": "docs/openspec/changes/fix-compat-inflow-retry/tasks.md",
+  "openspec_delta_spec": "docs/openspec/changes/fix-compat-inflow-retry/specs/battery-compatibility-test/spec.md",
+  "archive_directory": "docs/openspec/changes/archive/2026-09-06-fix-compat-inflow-retry"
+}
