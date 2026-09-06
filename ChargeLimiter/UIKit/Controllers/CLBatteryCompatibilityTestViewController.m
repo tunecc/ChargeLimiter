@@ -287,11 +287,66 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
 
 @end
 
+#pragma mark - 测试引擎
+
+@interface CLBatteryCompatibilityEngine : NSObject
+@property (nonatomic, copy, nullable) void (^onEvent)(CLCompatTestEvent *event);
+- (void)startWithSelection:(NSArray<NSNumber *> *)selection;
+- (void)cancel;
++ (void)runPrecheckWithCompletion:(void(^)(NSDictionary<NSString *, NSNumber *> *results))completion;
++ (void)restoreSnapshot:(BOOL)alsoRestoreCharging completion:(nullable void(^)(BOOL ok))completion;
++ (BOOL)hasPendingSnapshot;
+@end
+
+@implementation CLBatteryCompatibilityEngine
+
+- (void)startWithSelection:(NSArray<NSNumber *> *)selection {
+    // 状态机在后续任务接入
+}
+
+- (void)cancel {
+    // 状态机在后续任务接入
+}
+
++ (void)runPrecheckWithCompletion:(void(^)(NSDictionary<NSString *, NSNumber *> *results))completion {
+    [[CLAPIClient shared] getBatteryInfoWithCompletion:^(NSDictionary * _Nullable resp, NSError * _Nullable error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSMutableDictionary<NSString *, NSNumber *> *r = [@{
+                @"daemon": @NO, @"plugged": @NO, @"charging": @NO, @"battery": @NO
+            } mutableCopy];
+            NSDictionary *data = nil;
+            if (error == nil && [resp isKindOfClass:[NSDictionary class]] && [resp[@"status"] integerValue] == 0) {
+                data = [resp[@"data"] isKindOfClass:[NSDictionary class]] ? resp[@"data"] : nil;
+            }
+            r[@"daemon"] = @(data != nil);
+            if (data) {
+                r[@"plugged"] = @([data[@"ExternalConnected"] boolValue]);
+                r[@"charging"] = @([data[@"IsCharging"] boolValue]);
+                NSInteger cap = [data[@"CurrentCapacity"] integerValue];
+                r[@"battery"] = @(cap >= 10 && cap <= 95);
+            }
+            if (completion) completion(r);
+        });
+    }];
+}
+
++ (void)restoreSnapshot:(BOOL)alsoRestoreCharging completion:(nullable void(^)(BOOL ok))completion {
+    // 快照恢复在后续任务接入
+    if (completion) completion(YES);
+}
+
++ (BOOL)hasPendingSnapshot {
+    return NO;
+}
+
+@end
+
 #pragma mark - 控制器
 
 @interface CLBatteryCompatibilityTestViewController ()
 
 @property (nonatomic, strong) UIStackView *mainStack;
+@property (nonatomic, strong) CLBatteryCompatibilityEngine *engine;
 @property (nonatomic, strong) CLCompatCard *precheckCard;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, UILabel *> *precheckRows;
 @property (nonatomic, strong) CLCompatCard *selectionCard;
@@ -321,6 +376,7 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
     [super viewDidLoad];
     self.view.backgroundColor = [UIColor systemGroupedBackgroundColor];
     self.title = CLL(@"电池兼容性测试");
+    self.engine = [[CLBatteryCompatibilityEngine alloc] init];
 
     self.precheckRows = [NSMutableDictionary dictionary];
     self.testSwitches = [NSMutableArray array];
@@ -499,10 +555,47 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
 
 - (void)startButtonTapped {
     if (self.engineRunning) {
-        // 取消路径由引擎接入后实现
+        [self.engine cancel];
         return;
     }
-    // 前置检查由引擎接入后实现
+    __weak typeof(self) weakSelf = self;
+    [self setPrecheckRowsPending];
+    [CLBatteryCompatibilityEngine runPrecheckWithCompletion:^(NSDictionary<NSString *, NSNumber *> *results) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        [strongSelf applyPrecheckResults:results];
+        BOOL allOK = results[@"daemon"].boolValue && results[@"plugged"].boolValue &&
+                     results[@"charging"].boolValue && results[@"battery"].boolValue;
+        if (!allOK) return;
+        // 快照与测试启动由后续任务接入
+    }];
+}
+
+- (void)setPrecheckRowsPending {
+    for (NSString *key in self.precheckRows) {
+        UILabel *label = self.precheckRows[key];
+        label.text = @"…";
+        label.textColor = [UIColor secondaryLabelColor];
+    }
+}
+
+- (void)applyPrecheckResults:(NSDictionary<NSString *, NSNumber *> *)results {
+    NSDictionary<NSString *, NSString *> *failMessages = @{
+        @"daemon": CLL(@"daemon 未运行"),
+        @"plugged": CLL(@"未插电，请插电后重试"),
+        @"charging": CLL(@"当前未在充电，无法测试"),
+        @"battery": CLL(@"电量需在 10%–95% 之间"),
+    };
+    for (NSString *key in self.precheckRows) {
+        UILabel *label = self.precheckRows[key];
+        BOOL ok = results[key].boolValue;
+        label.text = ok ? @"✓" : failMessages[key];
+        label.textColor = ok ? [UIColor systemGreenColor] : [UIColor systemRedColor];
+        // 失败文案较长，放宽右对齐截断
+        label.adjustsFontSizeToFitWidth = ok ? YES : NO;
+        label.minimumScaleFactor = ok ? 1.0 : 0.7;
+        label.numberOfLines = ok ? 1 : 2;
+    }
 }
 
 - (void)probeButtonTapped {
