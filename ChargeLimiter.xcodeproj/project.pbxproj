@@ -182,7 +182,7 @@
 		187BEA1F2B6A5F6100BD5C8F /* Package */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Package; sourceTree = "<group>"; };
 		18826C072BFCF00A00F7D88D /* Package_rootless */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Package_rootless; sourceTree = "<group>"; };
 		1899585D2B81A77800C93B46 /* MessageUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MessageUI.framework; path = System/Library/Frameworks/MessageUI.framework; sourceTree = SDKROOT; };
-		18B757232B57FDB2008A67D1 /* Readme.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = Readme.md; sourceTree = "<group>"; };
+		18B757232B57FDB2008A67D1 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		18C123C82C8C08B300FAAC6C /* ChargeLimiterDaemon.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ChargeLimiterDaemon.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		18C123E42C8C08CB00FAAC6C /* ChargeLimiterDaemon_rootless.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ChargeLimiterDaemon_rootless.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		18C123E92C8C135F00FAAC6C /* libMobileGestalt.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libMobileGestalt.tbd; path = usr/lib/libMobileGestalt.tbd; sourceTree = SDKROOT; };
@@ -321,7 +321,7 @@
 		187886242B51976A00E48B28 = {
 			isa = PBXGroup;
 			children = (
-				18B757232B57FDB2008A67D1 /* Readme.md */,
+				18B757232B57FDB2008A67D1 /* README.md */,
 				1867403A2BB6AC1E00BB3382 /* CHANGELOG.md */,
 				1839C1D72B8C655900FCFDEB /* Readme2.md */,
 				18497C5D2B541D6100A6C5E3 /* md-trollstore */,
