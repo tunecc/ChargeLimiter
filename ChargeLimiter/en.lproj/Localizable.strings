@@ -474,3 +474,9 @@
 "探针结论：控制面可生效（best_path: %@）" = "Probe: control plane works (best_path: %@)";
 "探针结论：未发现可生效写法（dominant_failure: %@）" = "Probe: no effective write found (dominant_failure: %@)";
 "已复制到剪贴板" = "Copied to clipboard";
+"未测试" = "Not tested";
+"测试项" = "Tests";
+"状态变化" = "State change";
+"关闭 CL 全局开关失败" = "Failed to turn off the CL master switch";
+"daemon 已离线，测试中止" = "daemon went offline; test aborted";
+"配置恢复失败，请重进本页恢复" = "Failed to restore settings; re-enter this page to restore";

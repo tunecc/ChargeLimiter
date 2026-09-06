@@ -294,6 +294,9 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
 - (void)startWithSelection:(NSArray<NSNumber *> *)selection;
 - (void)cancel;
 + (void)runPrecheckWithCompletion:(void(^)(NSDictionary<NSString *, NSNumber *> *results))completion;
++ (void)writeSnapshotWithCompletion:(void(^)(BOOL ok))completion;
++ (void)applySnapshotWithCompletion:(void(^)(BOOL ok))completion;
++ (void)clearSnapshot;
 + (void)restoreSnapshot:(BOOL)alsoRestoreCharging completion:(nullable void(^)(BOOL ok))completion;
 + (BOOL)hasPendingSnapshot;
 @end
@@ -301,6 +304,7 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
 @interface CLBatteryCompatibilityEngine ()
 @property (nonatomic, assign) BOOL running;
 @property (nonatomic, assign) BOOL cancelRequested;
+@property (nonatomic, assign) BOOL aborting;
 @property (nonatomic, strong) NSMutableArray<NSNumber *> *pendingKinds;
 @property (nonatomic, assign) CLCompatTestKind currentKind;
 @property (nonatomic, strong) dispatch_source_t timer;
@@ -324,6 +328,7 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
     if (self.running) return;
     self.running = YES;
     self.cancelRequested = NO;
+    self.aborting = NO;
     self.restoreWarningShown = NO;
     self.pendingKinds = [NSMutableArray array];
     for (NSInteger i = 0; i < selection.count && i < 3; i++) {
@@ -332,6 +337,10 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
     [self emitPhase:CLL(@"正在关闭 CL 全局开关…")];
     [[CLBatteryManager shared] saveConfigKey:@"enable" value:@NO completion:^(BOOL success) {
         dispatch_async(dispatch_get_main_queue(), ^{
+            if (!success) {
+                [self abortRestoreWithReason:CLL(@"关闭 CL 全局开关失败")];
+                return;
+            }
             [self runNextTest];
         });
     }];
@@ -340,17 +349,16 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
 - (void)cancel {
     if (!self.running || self.cancelRequested) return;
     self.cancelRequested = YES;
-    if (self.timer) {
-        [self stopTimer];
-        [self abortRestoreWithReason:CLL(@"已取消并恢复配置")];
-    }
+    [self stopTimer];
+    [self abortRestoreWithReason:CLL(@"已取消并恢复配置")];
 }
 
 #pragma mark - 编排
 
 - (void)runNextTest {
     if (self.cancelRequested) {
-        [self abortRestoreWithReason:CLL(@"已取消并恢复配置")];
+        // cancel 已触发幂等 abort；此处仅在异常遗漏时兜底
+        if (!self.aborting) [self abortRestoreWithReason:CLL(@"已取消并恢复配置")];
         return;
     }
     if (self.pendingKinds.count == 0) {
@@ -359,13 +367,19 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
     }
     self.currentKind = (CLCompatTestKind)self.pendingKinds.firstObject.integerValue;
     [self.pendingKinds removeObjectAtIndex:0];
+    __weak typeof(self) weakSelf = self;
+    self.testDone = ^{ [weakSelf runNextTest]; };
     // 每项开始前复核全局开关未被外部改回
     [[CLAPIClient shared] getConfigWithKey:nil completion:^(NSDictionary * _Nullable resp, NSError * _Nullable error) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if (self.cancelRequested) return;
             NSDictionary *data = (error == nil && [resp isKindOfClass:[NSDictionary class]] && [resp[@"status"] integerValue] == 0)
                 ? resp[@"data"] : nil;
-            if (data && [data[@"enable"] boolValue]) {
+            if (!data) {
+                [self abortRestoreWithReason:CLL(@"daemon 已离线，测试中止")];
+                return;
+            }
+            if ([data[@"enable"] boolValue]) {
                 [self abortRestoreWithReason:CLL(@"CL 已被重新启用，测试中止")];
                 return;
             }
@@ -386,10 +400,14 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
     self.samples = [NSMutableArray array];
     [self emitPhase:[self nameForKind:kind]];
 
-    // 基线复核：非充电态无法判定状态变化
+    // 基线复核：读不到数据视为 daemon 离线；非充电态无法判定状态变化
     [self fetchBatteryData:^(NSDictionary * _Nullable data) {
         if (self.cancelRequested) return;
-        if (!data || ![data[@"IsCharging"] boolValue]) {
+        if (!data) {
+            [self abortRestoreWithReason:CLL(@"daemon 已离线，测试中止")];
+            return;
+        }
+        if (![data[@"IsCharging"] boolValue]) {
             [self finishTestWithVerdict:CLCompatTestVerdictError
                                 message:CLL(@"基线异常：当前未在充电")];
             return;
@@ -424,8 +442,16 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
     }
     // 停充测传统 IsCharging 写法，智能停充测 PredictiveChargingInhibit 写法
     BOOL predictive = (kind == CLCompatTestKindSmartStopCharge);
+    __weak typeof(self) weakSelf = self;
     [[CLBatteryManager shared] saveConfigKey:@"adv_predictive_inhibit_charge" value:@(predictive) completion:^(BOOL success) {
-        dispatch_async(dispatch_get_main_queue(), completion);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            // 取消竞态：本写可能落在快照恢复之后，幂等补救一次
+            if (weakSelf.cancelRequested) {
+                [CLBatteryCompatibilityEngine applySnapshotWithCompletion:nil];
+                return;
+            }
+            completion();
+        });
     }];
 }
 
@@ -640,14 +666,21 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
 - (void)finishAll {
     self.running = NO;
     [CLBatteryCompatibilityEngine applySnapshotWithCompletion:^(BOOL ok) {
+        NSString *message = self.restoreWarningShown ? CLL(@"测试后充电恢复异常，请手动检查") : nil;
+        if (!ok) {
+            NSString *restoreFail = CLL(@"配置恢复失败，请重进本页恢复");
+            message = message ? [NSString stringWithFormat:@"%@\n%@", message, restoreFail] : restoreFail;
+        }
         CLCompatTestEvent *event = [[CLCompatTestEvent alloc] init];
         event.kind = CLCompatEventKindFinished;
-        event.message = self.restoreWarningShown ? CLL(@"测试后充电恢复异常，请手动检查") : nil;
+        event.message = message;
         [self emitEvent:event];
     }];
 }
 
 - (void)abortRestoreWithReason:(NSString *)reason {
+    if (self.aborting) return;
+    self.aborting = YES;
     [self stopTimer];
     [[CLAPIClient shared] setInflowStatus:YES completion:^(NSDictionary * _Nullable r1, NSError * _Nullable e1) {
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -655,9 +688,14 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
                 dispatch_async(dispatch_get_main_queue(), ^{
                     [CLBatteryCompatibilityEngine applySnapshotWithCompletion:^(BOOL ok) {
                         self.running = NO;
+                        NSString *message = reason;
+                        if (!ok) {
+                            message = [NSString stringWithFormat:@"%@\n%@", reason,
+                                       CLL(@"配置恢复失败，请重进本页恢复")];
+                        }
                         CLCompatTestEvent *event = [[CLCompatTestEvent alloc] init];
                         event.kind = CLCompatEventKindAborted;
-                        event.message = reason;
+                        event.message = message;
                         [self emitEvent:event];
                     }];
                 });
@@ -744,7 +782,8 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
         dispatch_group_leave(group);
     }];
     dispatch_group_notify(group, dispatch_get_main_queue(), ^{
-        [NSUserDefaults.standardUserDefaults removeObjectForKey:CLCompatSnapshotKey];
+        // 仅全部恢复成功才清快照；失败保留以便下次进入补救
+        if (ok) [NSUserDefaults.standardUserDefaults removeObjectForKey:CLCompatSnapshotKey];
         if (completion) completion(ok);
     });
 }
@@ -758,9 +797,14 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
         [self applySnapshotWithCompletion:completion];
         return;
     }
-    [[CLAPIClient shared] setChargeStatus:YES completion:^(NSDictionary * _Nullable resp, NSError * _Nullable error) {
+    // 残留快照场景无法得知上次停在哪一步，禁流与停充都显式恢复
+    [[CLAPIClient shared] setInflowStatus:YES completion:^(NSDictionary * _Nullable r1, NSError * _Nullable e1) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            [self applySnapshotWithCompletion:completion];
+            [[CLAPIClient shared] setChargeStatus:YES completion:^(NSDictionary * _Nullable r2, NSError * _Nullable e2) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self applySnapshotWithCompletion:completion];
+                });
+            }];
         });
     }];
 }
@@ -797,6 +841,7 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
 @property (nonatomic, strong) UILabel *probeResultLabel;
 @property (nonatomic, assign) BOOL engineRunning;
 @property (nonatomic, assign) BOOL probeRunning;
+@property (nonatomic, assign) BOOL starting;
 @property (nonatomic, strong, nullable) NSDictionary *lastProbePayload;
 @property (nonatomic, strong) NSMutableArray<NSNumber *> *verdicts;
 
@@ -880,12 +925,10 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
     [self.selectionCard addSwitchRowWithTitle:CLL(@"禁流测试") isOn:YES onChange:nil];
 
     // 记录 switch 引用（按 CLCompatTestKind 下标）
-    __block NSInteger index = 0;
     for (UIView *row in self.selectionCard.contentStack.arrangedSubviews) {
         for (UIView *sub in row.subviews) {
             if ([sub isKindOfClass:[UISwitch class]]) {
                 [self.testSwitches addObject:sub];
-                index++;
             }
         }
     }
@@ -1011,6 +1054,9 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
     self.engineRunning = running;
     [self.startButton setTitle:running ? CLL(@"取消测试") : CLL(@"开始测试") forState:UIControlStateNormal];
     self.startButton.backgroundColor = running ? [UIColor systemRedColor] : [UIColor systemIndigoColor];
+    // 测试与探针互斥：探针运行期间控制写会被 daemon 假成功，禁止开始测试
+    self.startButton.enabled = running ? YES : !self.probeRunning;
+    self.startButton.alpha = self.startButton.enabled ? 1.0 : 0.4;
     for (UISwitch *sw in self.testSwitches) {
         sw.enabled = !running;
     }
@@ -1025,6 +1071,10 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
         [self.engine cancel];
         return;
     }
+    if (self.probeRunning || self.starting) return;
+    self.starting = YES;
+    self.startButton.enabled = NO;
+    self.startButton.alpha = 0.4;
     __weak typeof(self) weakSelf = self;
     [self setPrecheckRowsPending];
     [CLBatteryCompatibilityEngine runPrecheckWithCompletion:^(NSDictionary<NSString *, NSNumber *> *results) {
@@ -1033,11 +1083,19 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
         [strongSelf applyPrecheckResults:results];
         BOOL allOK = results[@"daemon"].boolValue && results[@"plugged"].boolValue &&
                      results[@"charging"].boolValue && results[@"battery"].boolValue;
-        if (!allOK) return;
+        if (!allOK) {
+            strongSelf.starting = NO;
+            strongSelf.startButton.enabled = !strongSelf.probeRunning;
+            strongSelf.startButton.alpha = strongSelf.startButton.enabled ? 1.0 : 0.4;
+            return;
+        }
         [CLBatteryCompatibilityEngine writeSnapshotWithCompletion:^(BOOL ok) {
             __strong typeof(weakSelf) strongSelf3 = weakSelf;
             if (!strongSelf3) return;
             if (!ok) {
+                strongSelf3.starting = NO;
+                strongSelf3.startButton.enabled = !strongSelf3.probeRunning;
+                strongSelf3.startButton.alpha = strongSelf3.startButton.enabled ? 1.0 : 0.4;
                 UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"无法读取当前配置")
                                                                                message:CLL(@"daemon 未响应，请重试。")
                                                                         preferredStyle:UIAlertControllerStyleAlert];
@@ -1045,6 +1103,7 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
                 [strongSelf3 presentViewController:alert animated:YES completion:nil];
                 return;
             }
+            strongSelf3.starting = NO;
             [strongSelf3 beginTestFlow];
         }];
     }];
@@ -1114,6 +1173,7 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
             break;
         case CLCompatEventKindVerdict:
             [self applyVerdictEvent:event];
+            self.progressView.progress = 0.0;
             break;
         case CLCompatEventKindFinished:
             self.currentTestLabel.text = CLL(@"测试完成");
@@ -1185,6 +1245,10 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
     BOOL inflowOK = self.verdicts[2].integerValue == CLCompatTestVerdictSupported;
     BOOL smartOnly = self.verdicts[1].integerValue == CLCompatTestVerdictSupported &&
                      self.verdicts[0].integerValue == CLCompatTestVerdictUnsupported;
+    // Error 是"测不了"而非"不支持"，只有明确 Unsupported 才能给出不被支持的结论
+    BOOL stopUnsupported = self.verdicts[0].integerValue == CLCompatTestVerdictUnsupported ||
+                           self.verdicts[1].integerValue == CLCompatTestVerdictUnsupported;
+    BOOL inflowUnsupported = self.verdicts[2].integerValue == CLCompatTestVerdictUnsupported;
 
     NSString *text;
     UIColor *color;
@@ -1194,7 +1258,7 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
     } else if (smartOnly) {
         text = CLL(@"仅智能停充可用，建议开启充电高级-智能停充");
         color = [UIColor systemOrangeColor];
-    } else if ((stopTested || smartTested) && !stopOK && inflowTested && !inflowOK) {
+    } else if ((stopTested || smartTested) && stopUnsupported && inflowTested && inflowUnsupported) {
         text = CLL(@"既不支持停充也不支持禁流，设备不被 CL 支持");
         color = [UIColor systemRedColor];
     } else {
@@ -1259,6 +1323,7 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
             [strongSelf updateControlsForRunning:strongSelf.engineRunning];
             if (error || resp == nil || [resp[@"status"] integerValue] != 0) {
                 NSInteger status = resp ? [resp[@"status"] integerValue] : -999;
+                strongSelf.lastProbePayload = nil;
                 NSString *msg;
                 if (status == -12) {
                     msg = CLL(@"探针正在运行，请稍候");
