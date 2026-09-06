@@ -44,6 +44,7 @@ static const NSTimeInterval CLCompatConfirmWindowMax   = 30.0;
 static const NSInteger      CLCompatCurrentThresholdmA = 5;
 static const NSTimeInterval CLCompatSettleLimit        = 15.0;
 static const NSTimeInterval CLCompatBaselineResumeLimit = 20.0;
+static const NSInteger      CLCompatInflowMaxRetries   = 3;
 static NSString * const CLCompatSnapshotKey = @"cl_compat_test_snapshot";
 
 #pragma mark - 事件模型
@@ -322,6 +323,12 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
 @property (nonatomic, assign) NSTimeInterval changeElapsed;
 @property (nonatomic, assign) NSInteger maxA;
 @property (nonatomic, assign) NSInteger minA;
+// 判定窗口（状态变化后）统计：与 5mA 阈值比较的数据口径
+@property (nonatomic, assign) NSInteger confirmMaxA;
+@property (nonatomic, assign) NSInteger confirmMinA;
+// 禁流系统对抗重试
+@property (nonatomic, assign) NSInteger inflowRetries;
+@property (nonatomic, assign) BOOL inflowRetryInFlight;
 @property (nonatomic, assign) NSInteger failStreak;
 @property (nonatomic, assign) BOOL restoreWarningShown;
 @property (nonatomic, copy, nullable) void (^testDone)(void);
@@ -424,6 +431,10 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
     self.changeElapsed = -1;
     self.maxA = NSIntegerMin;
     self.minA = NSIntegerMax;
+    self.confirmMaxA = NSIntegerMin;
+    self.confirmMinA = NSIntegerMax;
+    self.inflowRetries = 0;
+    self.inflowRetryInFlight = NO;
     self.failStreak = 0;
     self.pollInFlight = NO;
     self.confirmStartIndex = 0;
@@ -648,12 +659,13 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
 
     if (self.phase == 0) {
         // 等待状态变化：一律相对基线判定。
-        // 禁流以「电源已连接」翻转为主动作信号（充电线保持连接的前提下），
-        // 电流转放电为辅；IsCharging/ExternalChargeCapable 满电自行停充时天然为假，
-        // 不能作为禁流独立判据（真机误判"未生效"的根因）。
+        // 禁流三信号并列：IsCharging 翻转、ExternalConnected 翻转（充电线保持连接的
+        // 前提下）、电流转放电。基线由恢复充电步骤锚定为充电中，满电自行停充的污染
+        // 已被排除，IsCharging 翻转即真实生效信号（真机实测电流不转负时的唯一信号）。
         BOOL changed;
         if (self.currentKind == CLCompatTestKindInflow) {
-            changed = (self.bExtConnected && !extConnected) ||
+            changed = (self.bCharging && !isCharging) ||
+                      (self.bExtConnected && !extConnected) ||
                       (self.bCurrent >= 0 && current < 0);
         } else {
             changed = (self.bCharging && !isCharging);
@@ -662,6 +674,9 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
             self.phase = 1;
             self.changeElapsed = self.elapsed;
             self.confirmStartIndex = self.samples.count - 1;
+            // 判定窗口统计以状态变化样本起算
+            self.confirmMaxA = current;
+            self.confirmMinA = current;
             CLCompatTestEvent *changeEvent = [[CLCompatTestEvent alloc] init];
             changeEvent.kind = CLCompatEventKindStateChange;
             changeEvent.testKind = self.currentKind;
@@ -675,6 +690,41 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
     }
 
     // 确认窗口
+    if (current > self.confirmMaxA) self.confirmMaxA = current;
+    if (current < self.confirmMinA) self.confirmMinA = current;
+
+    // 仅禁流：确认窗口内充电被系统恢复（iOS 对抗单次禁流写）→ 重新下发禁流并
+    // 重置确认窗口继续监测；重试耗尽仍被恢复判"禁流无法维持"。停充类不加重试。
+    if (self.currentKind == CLCompatTestKindInflow && isCharging && current >= CLCompatCurrentThresholdmA) {
+        // 重试写在途时不重复计为恢复事件（防重入），等写落定后窗口重开
+        if (self.inflowRetryInFlight) return;
+        if (self.inflowRetries >= CLCompatInflowMaxRetries) {
+            [self finishTestWithVerdict:CLCompatTestVerdictUnsupported
+                                message:CLL(@"禁流无法维持：充电被系统恢复且重试已耗尽")];
+            return;
+        }
+        self.inflowRetries++;
+        [self emitPhase:[NSString stringWithFormat:CLL(@"禁流被系统恢复，正在重新下发禁流（第 %d 次）"), (int)self.inflowRetries]];
+        self.inflowRetryInFlight = YES;
+        __weak typeof(self) weakSelf = self;
+        [self beginWrite];
+        [[CLAPIClient shared] setInflowStatus:NO completion:^(NSDictionary * _Nullable resp, NSError * _Nullable error) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [weakSelf endWrite];
+                if (!weakSelf || weakSelf.cancelRequested) return;
+                weakSelf.inflowRetryInFlight = NO;
+                // 确认窗口重开：从下一采样起重新累计，判定窗口统计同步重置
+                weakSelf.confirmStartIndex = weakSelf.samples.count;
+                weakSelf.confirmMaxA = NSIntegerMin;
+                weakSelf.confirmMinA = NSIntegerMax;
+            });
+        }];
+        return;
+    }
+
+    // 重试写在途时窗口即将重开，跳过基于旧窗口的判定
+    if (self.inflowRetryInFlight) return;
+
     NSInteger confirmCount = (NSInteger)(self.samples.count - (NSUInteger)self.confirmStartIndex);
     if (confirmCount < (NSInteger)CLCompatConfirmWindow) return;
     NSUInteger start = (NSUInteger)self.confirmStartIndex;
@@ -710,8 +760,9 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
     event.testKind = self.currentKind;
     event.verdict = verdict;
     event.message = message;
-    event.maxCurrentmA = self.maxA;
-    event.minCurrentmA = self.minA;
+    // 有状态变化时用判定窗口（状态变化后确认窗口）口径；无变化（120s 超时）用全程口径
+    event.maxCurrentmA = (self.changeElapsed >= 0) ? self.confirmMaxA : self.maxA;
+    event.minCurrentmA = (self.changeElapsed >= 0) ? self.confirmMinA : self.minA;
     event.elapsed = self.changeElapsed;
     [self emitEvent:event];
 
@@ -1043,6 +1094,7 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
     [card addTipRow:CLL(@"请在插电且正在充电时运行；既不支持停充也不支持禁流的设备不被 CL 支持。")];
     [card addTipRow:CLL(@"测试期间请勿拔掉充电线：禁流生效的判定依赖「电源已连接」状态的切换，拔线会造成误判。")];
     [card addTipRow:CLL(@"开始测试时会自动恢复充电基线；电量接近满电可能无法恢复，请在电量较低时重试。")];
+    [card addTipRow:CLL(@"前置检查显示的是点击开始时的状态；测试过程中充电状态会按测试需要自动切换。")];
     [self.mainStack addArrangedSubview:card];
 }
 
@@ -1126,8 +1178,8 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
         [card addSectionHeader:names[i]];
         NSMutableDictionary<NSString *, UILabel *> *rows = [NSMutableDictionary dictionary];
         rows[@"verdict"] = [card addValueRowWithTitle:CLL(@"结论") value:CLL(@"未测试")];
-        rows[@"maxCurrent"] = [card addValueRowWithTitle:CLL(@"最大电流") value:@"—"];
-        rows[@"minCurrent"] = [card addValueRowWithTitle:CLL(@"最低电流") value:@"—"];
+        rows[@"maxCurrent"] = [card addValueRowWithTitle:CLL(@"判定窗口最大电流") value:@"—"];
+        rows[@"minCurrent"] = [card addValueRowWithTitle:CLL(@"判定窗口最低电流") value:@"—"];
         rows[@"elapsed"] = [card addValueRowWithTitle:CLL(@"状态变化") value:@"—"];
         [self.resultCards addObject:card];
         [self.resultRows addObject:rows];
