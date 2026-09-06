@@ -320,6 +320,10 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
 @property (nonatomic, assign) NSInteger failStreak;
 @property (nonatomic, assign) BOOL restoreWarningShown;
 @property (nonatomic, copy, nullable) void (^testDone)(void);
+// 写序列化：abort 恢复前等待在途写落定，避免恢复写被迟到的测试写覆盖
+@property (nonatomic, assign) NSInteger inFlightWrites;
+@property (nonatomic, assign) NSInteger drainTries;
+@property (nonatomic, copy, nullable) NSString *abortReason;
 @end
 
 @implementation CLBatteryCompatibilityEngine
@@ -330,13 +334,17 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
     self.cancelRequested = NO;
     self.aborting = NO;
     self.restoreWarningShown = NO;
+    self.inFlightWrites = 0;
+    self.drainTries = 0;
     self.pendingKinds = [NSMutableArray array];
     for (NSInteger i = 0; i < selection.count && i < 3; i++) {
         if (selection[i].boolValue) [self.pendingKinds addObject:@(i)];
     }
     [self emitPhase:CLL(@"正在关闭 CL 全局开关…")];
+    [self beginWrite];
     [[CLBatteryManager shared] saveConfigKey:@"enable" value:@NO completion:^(BOOL success) {
         dispatch_async(dispatch_get_main_queue(), ^{
+            [self endWrite];
             if (!success) {
                 [self abortRestoreWithReason:CLL(@"关闭 CL 全局开关失败")];
                 return;
@@ -443,8 +451,10 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
     // 停充测传统 IsCharging 写法，智能停充测 PredictiveChargingInhibit 写法
     BOOL predictive = (kind == CLCompatTestKindSmartStopCharge);
     __weak typeof(self) weakSelf = self;
+    [self beginWrite];
     [[CLBatteryManager shared] saveConfigKey:@"adv_predictive_inhibit_charge" value:@(predictive) completion:^(BOOL success) {
         dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf endWrite];
             // 取消竞态：本写可能落在快照恢复之后，幂等补救一次
             if (weakSelf.cancelRequested) {
                 [CLBatteryCompatibilityEngine applySnapshotWithCompletion:nil];
@@ -456,17 +466,30 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
 }
 
 - (void)sendCommandForKind:(CLCompatTestKind)kind completion:(void(^)(BOOL ok))completion {
+    __weak typeof(self) weakSelf = self;
     CLAPICallback handler = ^(NSDictionary * _Nullable resp, NSError * _Nullable error) {
         dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf endWrite];
             BOOL ok = (error == nil && [resp isKindOfClass:[NSDictionary class]] && [resp[@"status"] integerValue] == 0);
             completion(ok);
         });
     };
+    [self beginWrite];
     if (kind == CLCompatTestKindInflow) {
         [[CLAPIClient shared] setInflowStatus:NO completion:handler];
     } else {
         [[CLAPIClient shared] setChargeStatus:NO completion:handler];
     }
+}
+
+#pragma mark - 写序列化
+
+- (void)beginWrite {
+    dispatch_async(dispatch_get_main_queue(), ^{ self.inFlightWrites++; });
+}
+
+- (void)endWrite {
+    self.inFlightWrites = MAX(0, self.inFlightWrites - 1);
 }
 
 #pragma mark - 采样与判定
@@ -646,17 +669,28 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
         };
         poll();
     };
+    __weak typeof(self) weakSelf = self;
     if (kind == CLCompatTestKindInflow) {
+        [self beginWrite];
         [[CLAPIClient shared] setInflowStatus:YES completion:^(NSDictionary * _Nullable resp, NSError * _Nullable error) {
             dispatch_async(dispatch_get_main_queue(), ^{
+                [weakSelf endWrite];
+                [weakSelf beginWrite];
                 [[CLAPIClient shared] setChargeStatus:YES completion:^(NSDictionary * _Nullable r2, NSError * _Nullable e2) {
-                    dispatch_async(dispatch_get_main_queue(), startSettle);
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        [weakSelf endWrite];
+                        startSettle();
+                    });
                 }];
             });
         }];
     } else {
+        [self beginWrite];
         [[CLAPIClient shared] setChargeStatus:YES completion:^(NSDictionary * _Nullable resp, NSError * _Nullable error) {
-            dispatch_async(dispatch_get_main_queue(), startSettle);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [weakSelf endWrite];
+                startSettle();
+            });
         }];
     }
 }
@@ -665,6 +699,7 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
 
 - (void)finishAll {
     self.running = NO;
+    self.testDone = nil;
     [CLBatteryCompatibilityEngine applySnapshotWithCompletion:^(BOOL ok) {
         NSString *message = self.restoreWarningShown ? CLL(@"测试后充电恢复异常，请手动检查") : nil;
         if (!ok) {
@@ -681,16 +716,35 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
 - (void)abortRestoreWithReason:(NSString *)reason {
     if (self.aborting) return;
     self.aborting = YES;
+    self.abortReason = reason;
+    self.testDone = nil;
     [self stopTimer];
+    [self drainWritesThenRestore];
+}
+
+// 等待在途写落定再恢复，防止恢复写被迟到的测试写覆盖（上限 5 秒）
+- (void)drainWritesThenRestore {
+    if (self.inFlightWrites > 0 && self.drainTries < 50) {
+        self.drainTries++;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+                           [self drainWritesThenRestore];
+                       });
+        return;
+    }
+    [self performRestoreAndFinish];
+}
+
+- (void)performRestoreAndFinish {
     [[CLAPIClient shared] setInflowStatus:YES completion:^(NSDictionary * _Nullable r1, NSError * _Nullable e1) {
         dispatch_async(dispatch_get_main_queue(), ^{
             [[CLAPIClient shared] setChargeStatus:YES completion:^(NSDictionary * _Nullable r2, NSError * _Nullable e2) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     [CLBatteryCompatibilityEngine applySnapshotWithCompletion:^(BOOL ok) {
                         self.running = NO;
-                        NSString *message = reason;
+                        NSString *message = self.abortReason ?: CLL(@"已取消并恢复配置");
                         if (!ok) {
-                            message = [NSString stringWithFormat:@"%@\n%@", reason,
+                            message = [NSString stringWithFormat:@"%@\n%@", message,
                                        CLL(@"配置恢复失败，请重进本页恢复")];
                         }
                         CLCompatTestEvent *event = [[CLCompatTestEvent alloc] init];
@@ -749,6 +803,11 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
                 data = [resp[@"data"] isKindOfClass:[NSDictionary class]] ? resp[@"data"] : nil;
             }
             if (!data) {
+                if (completion) completion(NO);
+                return;
+            }
+            // 脏快照守卫：存在未恢复的快照时不得覆盖（可能把测试态当成原始配置）
+            if ([NSUserDefaults.standardUserDefaults dictionaryForKey:CLCompatSnapshotKey].count > 0) {
                 if (completion) completion(NO);
                 return;
             }
@@ -1022,25 +1081,30 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    if ([CLBatteryCompatibilityEngine hasPendingSnapshot]) {
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"检测到未完成的测试")
-                                                                       message:CLL(@"上次测试未正常结束，是否恢复配置？")
-                                                                preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:CLL(@"恢复") style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-            [CLBatteryCompatibilityEngine restoreSnapshot:YES completion:^(BOOL ok) {
-                NSString *msg = ok ? CLL(@"配置已恢复") : CLL(@"恢复失败，请检查 daemon 状态");
-                UIAlertController *done = [UIAlertController alertControllerWithTitle:nil
-                                                                              message:msg
-                                                                       preferredStyle:UIAlertControllerStyleAlert];
-                [done addAction:[UIAlertAction actionWithTitle:CLL(@"确定") style:UIAlertActionStyleDefault handler:nil]];
-                [self presentViewController:done animated:YES completion:nil];
-            }];
-        }]];
-        [alert addAction:[UIAlertAction actionWithTitle:CLL(@"丢弃") style:UIAlertActionStyleDestructive handler:^(UIAlertAction * _Nonnull action) {
-            [CLBatteryCompatibilityEngine clearSnapshot];
-        }]];
-        [self presentViewController:alert animated:YES completion:nil];
-    }
+    [self promptPendingSnapshotRestore];
+}
+
+// 返回 YES 表示已弹出恢复提示（调用方应终止后续流程）
+- (BOOL)promptPendingSnapshotRestore {
+    if (![CLBatteryCompatibilityEngine hasPendingSnapshot]) return NO;
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"检测到未完成的测试")
+                                                                   message:CLL(@"上次测试未正常结束，是否恢复配置？")
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"恢复") style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        [CLBatteryCompatibilityEngine restoreSnapshot:YES completion:^(BOOL ok) {
+            NSString *msg = ok ? CLL(@"配置已恢复") : CLL(@"恢复失败，请检查 daemon 状态");
+            UIAlertController *done = [UIAlertController alertControllerWithTitle:nil
+                                                                          message:msg
+                                                                   preferredStyle:UIAlertControllerStyleAlert];
+            [done addAction:[UIAlertAction actionWithTitle:CLL(@"确定") style:UIAlertActionStyleDefault handler:nil]];
+            [self presentViewController:done animated:YES completion:nil];
+        }];
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"丢弃") style:UIAlertActionStyleDestructive handler:^(UIAlertAction * _Nonnull action) {
+        [CLBatteryCompatibilityEngine clearSnapshot];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+    return YES;
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
@@ -1072,6 +1136,8 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
         return;
     }
     if (self.probeRunning || self.starting) return;
+    // 脏快照未处理前禁止开新测试，防止把测试态覆盖成"原始配置"
+    if ([self promptPendingSnapshotRestore]) return;
     self.starting = YES;
     self.startButton.enabled = NO;
     self.startButton.alpha = 0.4;
