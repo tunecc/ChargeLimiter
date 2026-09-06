@@ -180,7 +180,7 @@ CL 可以和充电宝配合使用：停充模式下充电宝优先为手机供�
 
 ### 阈值设定说明
 
-* CL 默认阈值为：开始充电 20% / 停止充电 80% / 降温恢复 35°C / 高温停充 40°C。你需要根据实际情况调整，否则可能无法正常工作。
+* CL 默认阈值为：开始充电 20% / 停止充电 80% / 降温恢复 35°C / 高温停充 40°C。停止充电与温度阈值可在界面调整；`开始充电`下限当前版本不在界面暴露，默认 20% 仍作为低电量强充触发参与策略。你需要根据实际情况调整，否则可能无法正常工作。
 * 温度阈值可结合`历史统计-小时`的温度数据设置。
 * 设定值与实际触发值不一定完全相同：设定 80% 上限实际 81% 才停充是正常的，大部分手机偏差 0–1%，极少数 3–5%。偏差与 120 秒延迟、充电速度、电池质量有关；停充后存在微弱电流、健康度突变、新电池未激活也会造成偏差。
 * 电量上限若用于 iPad 长年连电，可设为"最佳停充电量"：将电量充满、关闭所有耗电 App 后静置，一天后稳定下来的电量即最佳停充电量。
@@ -192,7 +192,7 @@ CL 可以和充电宝配合使用：停充模式下充电宝优先为手机供�
 
 主页面聚焦"当前状态 + 快速调节 + 供电环境"：
 
-* `停止充电 (电量 ≥)` 主滑块（15–100）与 `开始充电 (电量 ≤)` 滑块（10–95）
+* `停止充电 (电量 ≥)` 主滑块（15–100）；旧版的`开始充电 (电量 ≤)`行在当前版本固定隐藏，不再作为界面入口（见[阈值设定说明](#阈值设定说明)）
 * `停充预设`：设置常用电量，主页一键应用，支持`设为当前`与`清除预设`
 * `温度控制`开关与`高温停充 (温度 ≥)`（30–50°C）/`降温恢复 (温度 ≤)`（25–49°C）滑块
 * `高温模拟`卡片（随电池轮询实时刷新）
@@ -274,7 +274,7 @@ CL 可以和充电宝配合使用：停充模式下充电宝优先为手机供�
 
 ### 软件设置
 
-* `刷新频率`：主页面电池/适配器/电池信息的刷新频率（1 秒 / 20 秒 / 1 分钟 / 3 分钟 / 5 分钟 / 10 分钟），不影响后台守护策略
+* `刷新频率`：主页面电池/适配器/电池信息的刷新频率（1 秒 / 20 秒 / 1 分钟 / 10 分钟），不影响后台守护策略
 * `语言`：跟随系统 / English / 简体中文（内置字符串含 en / 简繁中文 / 阿拉伯语 / 越南语）
 * `深色模式`：跟随系统 / 浅色 / 深色（iOS 13+）
 * `日志级别`：标准 / 仅错误；仅过滤应用数据目录下 `aldente.log` 的文件输出，系统日志与完整诊断不受影响
@@ -355,7 +355,7 @@ curl http://127.0.0.1:1230 -d '{"api":"get_conf","key":"enable"}' -H "content-ty
 | --- | --- | --- | --- |
 | `enable` | bool | `true` | 全局开关；关闭后为观察者模式 |
 | `charge_above` | int | `80` | 停止充电（电量 ≥，15–100） |
-| `charge_below` | int | `20` | 开始充电（电量 ≤，10–95） |
+| `charge_below` | int | `20` | 开始充电下限（低电量强充触发；当前版本界面不暴露，主页面该行固定隐藏） |
 | `enable_temp` | bool | `false` | 温度控制开关 |
 | `charge_temp_above` | 数值 | `40` | 高温停充（温度 ≥，°C） |
 | `charge_temp_below` | 数值 | `35` | 降温恢复（温度 ≤，°C） |
@@ -385,7 +385,9 @@ curl http://127.0.0.1:1230 -d '{"api":"get_conf","key":"enable"}' -H "content-ty
 | `adv_prefer_smart` | bool | `false` | SmartBattery（改动后 daemon 重启生效） |
 | `mode` | string | `charge_on_plug` | 模式；当前版本固定为插电即充，写其他值会被强制回写 |
 
-只读键（`get_conf` 全量返回时附加）：`sysver`、`devmodel`、`ver`、`serv_boot`、`sys_boot`、`thermal_simulate_mode`、`ppm_simulate_mode`、`use_smart`、`smart_charge_status`、`smart_charge_managed_by_daemon`、`adv_thermal_avail`。
+只读键（`get_conf` 全量返回时附加）：`sysver`、`devmodel`、`ver`、`serv_boot`、`sys_boot`、`thermal_simulate_mode`、`ppm_simulate_mode`、`use_smart`、`smart_charge_status`、`smart_charge_managed_by_daemon`、`adv_thermal_avail`（由 daemon 按设备热模拟能力计算写入）。
+
+另有若干无 UI 暴露的内部/簿记键不在此列出：`temp_mode`、`lang`、`adv_hold_behavior`（固定 `balanced`）、`full_charge_sched_anchor_date` / `full_charge_sched_next_ts`。
 
 > 关于悬浮窗：`floatwnd` 为上游遗留的 Web 悬浮窗入口。本分支已改为原生 UIKit 界面，daemon 的 HTTP 服务只接受 JSON `POST`、不再提供悬浮窗网页，开启 `floatwnd` 不会得到可用界面，不建议开启。
 
@@ -657,7 +659,7 @@ CL works with power banks: in charge-inhibit mode the bank powers the phone firs
 
 ### Thresholds
 
-* Defaults: start charging 20% / stop charging 80% / cool-down resume 35°C / over-temp stop 40°C. Adjust them to your situation or CL may not work as expected.
+* Defaults: start charging 20% / stop charging 80% / cool-down resume 35°C / over-temp stop 40°C. The stop and temperature thresholds are adjustable in the UI; the `charge_below` lower bound has no UI entry in the current version — the default 20% remains active as the low-battery forced-charge trigger. Adjust the rest to your situation or CL may not work as expected.
 * Set temperature thresholds using the hourly data in `History`.
 * The actual trigger may differ from the setpoint: stopping at 81% with an 80% target is normal. Most devices deviate 0–1%, a few 3–5%, due to the 120-second delay, charging speed and battery quality; weak current after inhibit, sudden health changes and unactivated new cells also contribute.
 * For an iPad that stays plugged in forever, set the cap to the "optimal inhibit capacity": fully charge, close everything, let it rest; the stable level after one day is the value to use.
@@ -669,7 +671,7 @@ CL works with power banks: in charge-inhibit mode the bank powers the phone firs
 
 The main page focuses on "current state + quick tuning + power environment":
 
-* `Stop charging (capacity ≥)` main slider (15–100) and `Start charging (capacity ≤)` slider (10–95)
+* `Stop charging (capacity ≥)` main slider (15–100); the legacy `Start charging (capacity ≤)` row is always hidden in the current version and no longer exposed in the UI (see [Thresholds](#thresholds))
 * `Stop presets`: store a preferred capacity, apply with one tap, plus `Use current` and `Clear presets`
 * `Temperature control` switch with `Over-temp stop (temp ≥)` (30–50°C) and `Cool-down resume (temp ≤)` (25–49°C) sliders
 * `Thermal simulation` card (refreshed live with the battery polling)
@@ -751,7 +753,7 @@ For people who avoid full charges daily but occasionally want one:
 
 ### Settings
 
-* `Refresh rate`: main-page data refresh (1 s / 20 s / 1 min / 3 min / 5 min / 10 min); does not affect the daemon
+* `Refresh rate`: main-page data refresh (1 s / 20 s / 1 min / 10 min); does not affect the daemon
 * `Language`: Follow system / English / 简体中文 (built-in strings: en, zh-Hans/zh-Hant, Arabic, Vietnamese)
 * `Dark mode`: Follow system / Light / Dark (iOS 13+)
 * `Log level`: Standard / Errors only; filters only the `aldente.log` file output, not system logs or diagnostics
@@ -832,7 +834,7 @@ curl http://127.0.0.1:1230 -d '{"api":"get_conf","key":"enable"}' -H "content-ty
 | --- | --- | --- | --- |
 | `enable` | bool | `true` | Global switch; off = read-only observer |
 | `charge_above` | int | `80` | Stop charging (capacity ≥, 15–100) |
-| `charge_below` | int | `20` | Start charging (capacity ≤, 10–95) |
+| `charge_below` | int | `20` | Start-charging lower bound (low-battery forced-charge trigger; no UI entry in the current version, main-page row is always hidden) |
 | `enable_temp` | bool | `false` | Temperature control |
 | `charge_temp_above` | number | `40` | Over-temp stop (°C) |
 | `charge_temp_below` | number | `35` | Cool-down resume (°C) |
@@ -862,7 +864,9 @@ curl http://127.0.0.1:1230 -d '{"api":"get_conf","key":"enable"}' -H "content-ty
 | `adv_prefer_smart` | bool | `false` | SmartBattery (daemon restarts to apply) |
 | `mode` | string | `charge_on_plug` | Mode; fixed to plug-and-charge in this version — other values are rewritten |
 
-Read-only keys (returned by `get_conf` without `key`): `sysver`, `devmodel`, `ver`, `serv_boot`, `sys_boot`, `thermal_simulate_mode`, `ppm_simulate_mode`, `use_smart`, `smart_charge_status`, `smart_charge_managed_by_daemon`, `adv_thermal_avail`.
+Read-only keys (returned by `get_conf` without `key`): `sysver`, `devmodel`, `ver`, `serv_boot`, `sys_boot`, `thermal_simulate_mode`, `ppm_simulate_mode`, `use_smart`, `smart_charge_status`, `smart_charge_managed_by_daemon`, `adv_thermal_avail` (computed by the daemon from the device's thermal-simulation capability).
+
+A few internal/bookkeeping keys with no UI exposure are omitted here: `temp_mode`, `lang`, `adv_hold_behavior` (fixed to `balanced`), `full_charge_sched_anchor_date` / `full_charge_sched_next_ts`.
 
 > About the floating window: `floatwnd` is a legacy upstream entry point. This fork moved to a native UIKit UI and the daemon's HTTP service accepts JSON `POST` only — the floating-window web page is no longer served, so enabling `floatwnd` will not produce a usable UI.
 
