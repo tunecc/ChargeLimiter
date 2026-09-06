@@ -308,8 +308,7 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
     // 状态机在后续任务接入
 }
 
-+ (void)runPrecheckWithCompletion:(void(^)(NSDictionary<NSString *, NSNumber *> *results))completion {
-    [[CLAPIClient shared] getBatteryInfoWithCompletion:^(NSDictionary * _Nullable resp, NSError * _Nullable error) {
++ (void)runPrecheckWithCompletion:(void(^)(NSDictionary<NSString *, NSNumber *> *results))completion {    [[CLAPIClient shared] getBatteryInfoWithCompletion:^(NSDictionary * _Nullable resp, NSError * _Nullable error) {
         dispatch_async(dispatch_get_main_queue(), ^{
             NSMutableDictionary<NSString *, NSNumber *> *r = [@{
                 @"daemon": @NO, @"plugged": @NO, @"charging": @NO, @"battery": @NO
@@ -330,13 +329,70 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
     }];
 }
 
++ (void)writeSnapshotWithCompletion:(void(^)(BOOL ok))completion {
+    [[CLAPIClient shared] getConfigWithKey:nil completion:^(NSDictionary * _Nullable resp, NSError * _Nullable error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSDictionary *data = nil;
+            if (error == nil && [resp isKindOfClass:[NSDictionary class]] && [resp[@"status"] integerValue] == 0) {
+                data = [resp[@"data"] isKindOfClass:[NSDictionary class]] ? resp[@"data"] : nil;
+            }
+            if (!data) {
+                if (completion) completion(NO);
+                return;
+            }
+            NSDictionary *snap = @{
+                @"enable": @([data[@"enable"] boolValue]),
+                @"adv_predictive_inhibit_charge": data[@"adv_predictive_inhibit_charge"] == nil
+                    ? @YES : @([data[@"adv_predictive_inhibit_charge"] boolValue]),
+            };
+            [NSUserDefaults.standardUserDefaults setObject:snap forKey:CLCompatSnapshotKey];
+            if (completion) completion(YES);
+        });
+    }];
+}
+
++ (void)applySnapshotWithCompletion:(void(^)(BOOL ok))completion {
+    NSDictionary *snap = [NSUserDefaults.standardUserDefaults dictionaryForKey:CLCompatSnapshotKey];
+    if (snap.count == 0) {
+        if (completion) completion(YES);
+        return;
+    }
+    dispatch_group_t group = dispatch_group_create();
+    __block BOOL ok = YES;
+    dispatch_group_enter(group);
+    [[CLBatteryManager shared] saveConfigKey:@"enable" value:snap[@"enable"] ?: @YES completion:^(BOOL success) {
+        if (!success) ok = NO;
+        dispatch_group_leave(group);
+    }];
+    dispatch_group_enter(group);
+    [[CLBatteryManager shared] saveConfigKey:@"adv_predictive_inhibit_charge" value:snap[@"adv_predictive_inhibit_charge"] ?: @YES completion:^(BOOL success) {
+        if (!success) ok = NO;
+        dispatch_group_leave(group);
+    }];
+    dispatch_group_notify(group, dispatch_get_main_queue(), ^{
+        [NSUserDefaults.standardUserDefaults removeObjectForKey:CLCompatSnapshotKey];
+        if (completion) completion(ok);
+    });
+}
+
++ (void)clearSnapshot {
+    [NSUserDefaults.standardUserDefaults removeObjectForKey:CLCompatSnapshotKey];
+}
+
 + (void)restoreSnapshot:(BOOL)alsoRestoreCharging completion:(nullable void(^)(BOOL ok))completion {
-    // 快照恢复在后续任务接入
-    if (completion) completion(YES);
+    if (!alsoRestoreCharging) {
+        [self applySnapshotWithCompletion:completion];
+        return;
+    }
+    [[CLAPIClient shared] setChargeStatus:YES completion:^(NSDictionary * _Nullable resp, NSError * _Nullable error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self applySnapshotWithCompletion:completion];
+        });
+    }];
 }
 
 + (BOOL)hasPendingSnapshot {
-    return NO;
+    return [NSUserDefaults.standardUserDefaults dictionaryForKey:CLCompatSnapshotKey].count > 0;
 }
 
 @end
@@ -540,6 +596,36 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
 
 #pragma mark - 状态
 
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    if ([CLBatteryCompatibilityEngine hasPendingSnapshot]) {
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"检测到未完成的测试")
+                                                                       message:CLL(@"上次测试未正常结束，是否恢复配置？")
+                                                                preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:CLL(@"恢复") style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+            [CLBatteryCompatibilityEngine restoreSnapshot:YES completion:^(BOOL ok) {
+                NSString *msg = ok ? CLL(@"配置已恢复") : CLL(@"恢复失败，请检查 daemon 状态");
+                UIAlertController *done = [UIAlertController alertControllerWithTitle:nil
+                                                                              message:msg
+                                                                       preferredStyle:UIAlertControllerStyleAlert];
+                [done addAction:[UIAlertAction actionWithTitle:CLL(@"确定") style:UIAlertActionStyleDefault handler:nil]];
+                [self presentViewController:done animated:YES completion:nil];
+            }];
+        }]];
+        [alert addAction:[UIAlertAction actionWithTitle:CLL(@"丢弃") style:UIAlertActionStyleDestructive handler:^(UIAlertAction * _Nonnull action) {
+            [CLBatteryCompatibilityEngine clearSnapshot];
+        }]];
+        [self presentViewController:alert animated:YES completion:nil];
+    }
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    if (self.engineRunning) {
+        [self.engine cancel];
+    }
+}
+
 - (void)updateControlsForRunning:(BOOL)running {
     self.engineRunning = running;
     [self.startButton setTitle:running ? CLL(@"取消测试") : CLL(@"开始测试") forState:UIControlStateNormal];
@@ -567,7 +653,19 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
         BOOL allOK = results[@"daemon"].boolValue && results[@"plugged"].boolValue &&
                      results[@"charging"].boolValue && results[@"battery"].boolValue;
         if (!allOK) return;
-        // 快照与测试启动由后续任务接入
+        [CLBatteryCompatibilityEngine writeSnapshotWithCompletion:^(BOOL ok) {
+            __strong typeof(weakSelf) strongSelf3 = weakSelf;
+            if (!strongSelf3) return;
+            if (!ok) {
+                UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"无法读取当前配置")
+                                                                               message:CLL(@"daemon 未响应，请重试。")
+                                                                        preferredStyle:UIAlertControllerStyleAlert];
+                [alert addAction:[UIAlertAction actionWithTitle:CLL(@"确定") style:UIAlertActionStyleDefault handler:nil]];
+                [strongSelf3 presentViewController:alert animated:YES completion:nil];
+                return;
+            }
+            // 测试启动由后续任务接入
+        }];
     }];
 }
 
