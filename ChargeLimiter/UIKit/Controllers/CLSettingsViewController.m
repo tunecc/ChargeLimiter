@@ -5102,6 +5102,7 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
 @property (nonatomic, strong) CLGlassCard *infoCard;
 @property (nonatomic, strong) CLGlassCard *softwareSettingsEntryCard;
 @property (nonatomic, strong) CLGlassCard *historyEntryCard;
+@property (nonatomic, strong) CLGlassCard *compatTestEntryCard;
 @property (nonatomic, strong) CLGlassCard *moreCard;
 @property (nonatomic, strong) UIButton *refreshButton;
 @property (nonatomic, strong) UILabel *softwareSettingsSubtitleLabel;
@@ -5488,7 +5489,10 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     
     // 历史统计入口
     [self setupHistoryEntryCard];
-    
+
+    // 电池兼容性测试入口（历史统计下方）
+    [self setupCompatTestEntryCard];
+
     // 充电高级入口
     [self setupMoreCard];
     
@@ -6148,6 +6152,90 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     
     [self.historyEntryCard.contentStack addArrangedSubview:entry];
     [self.mainStack addArrangedSubview:self.historyEntryCard];
+}
+
+- (void)setupCompatTestEntryCard {
+    self.compatTestEntryCard = [[CLGlassCard alloc] init];
+
+    UIControl *entry = [[UIControl alloc] init];
+    entry.translatesAutoresizingMaskIntoConstraints = NO;
+    entry.layer.cornerRadius = 12;
+    entry.clipsToBounds = YES;
+    entry.userInteractionEnabled = YES;
+    entry.accessibilityTraits = UIAccessibilityTraitButton;
+    [entry addTarget:self action:@selector(compatTestTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self applyPressEffectToControl:entry];
+
+    UIView *iconWrap = [[UIView alloc] init];
+    iconWrap.translatesAutoresizingMaskIntoConstraints = NO;
+    iconWrap.userInteractionEnabled = NO;
+    iconWrap.backgroundColor = [[UIColor systemIndigoColor] colorWithAlphaComponent:0.15];
+    iconWrap.layer.cornerRadius = 18;
+    [entry addSubview:iconWrap];
+
+    UIImageView *iconView = [[UIImageView alloc] init];
+    iconView.translatesAutoresizingMaskIntoConstraints = NO;
+    iconView.userInteractionEnabled = NO;
+    UIImageSymbolConfiguration *iconConfig = [UIImageSymbolConfiguration configurationWithPointSize:18 weight:UIImageSymbolWeightSemibold];
+    iconView.image = CLSymbolImage(@"stethoscope", iconConfig);
+    iconView.tintColor = [UIColor systemIndigoColor];
+    [iconWrap addSubview:iconView];
+
+    UILabel *titleLabel = [[UILabel alloc] init];
+    titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    titleLabel.userInteractionEnabled = NO;
+    titleLabel.text = CLL(@"电池兼容性测试");
+    titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
+    titleLabel.textColor = [UIColor labelColor];
+
+    UILabel *subtitleLabel = [[UILabel alloc] init];
+    subtitleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    subtitleLabel.userInteractionEnabled = NO;
+    subtitleLabel.text = CLL(@"一键检测停充 / 智能停充 / 禁流支持");
+    subtitleLabel.font = [UIFont systemFontOfSize:12];
+    subtitleLabel.textColor = [UIColor secondaryLabelColor];
+    subtitleLabel.numberOfLines = 2;
+
+    UIStackView *textStack = [[UIStackView alloc] initWithArrangedSubviews:@[titleLabel, subtitleLabel]];
+    textStack.translatesAutoresizingMaskIntoConstraints = NO;
+    textStack.userInteractionEnabled = NO;
+    textStack.axis = UILayoutConstraintAxisVertical;
+    textStack.spacing = 3;
+    [entry addSubview:textStack];
+
+    UIImageView *chevron = [[UIImageView alloc] init];
+    chevron.translatesAutoresizingMaskIntoConstraints = NO;
+    chevron.userInteractionEnabled = NO;
+    UIImageSymbolConfiguration *chevConfig = [UIImageSymbolConfiguration configurationWithPointSize:14 weight:UIImageSymbolWeightSemibold];
+    chevron.image = CLSymbolImage(@"chevron.right", chevConfig);
+    chevron.tintColor = [UIColor tertiaryLabelColor];
+    [entry addSubview:chevron];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [entry.heightAnchor constraintEqualToConstant:76],
+        [iconWrap.leadingAnchor constraintEqualToAnchor:entry.leadingAnchor constant:16],
+        [iconWrap.centerYAnchor constraintEqualToAnchor:entry.centerYAnchor],
+        [iconWrap.widthAnchor constraintEqualToConstant:36],
+        [iconWrap.heightAnchor constraintEqualToConstant:36],
+        [iconView.centerXAnchor constraintEqualToAnchor:iconWrap.centerXAnchor],
+        [iconView.centerYAnchor constraintEqualToAnchor:iconWrap.centerYAnchor],
+        [textStack.leadingAnchor constraintEqualToAnchor:iconWrap.trailingAnchor constant:12],
+        [textStack.centerYAnchor constraintEqualToAnchor:entry.centerYAnchor],
+        [textStack.trailingAnchor constraintLessThanOrEqualToAnchor:chevron.leadingAnchor constant:-12],
+        [chevron.trailingAnchor constraintEqualToAnchor:entry.trailingAnchor constant:-16],
+        [chevron.centerYAnchor constraintEqualToAnchor:entry.centerYAnchor]
+    ]];
+
+    [self.compatTestEntryCard.contentStack addArrangedSubview:entry];
+    [self.mainStack addArrangedSubview:self.compatTestEntryCard];
+}
+
+- (void)compatTestTapped {
+    Class vcClass = NSClassFromString(@"CLBatteryCompatibilityTestViewController");
+    if (vcClass) {
+        UIViewController *vc = [[vcClass alloc] init];
+        [self.navigationController pushViewController:vc animated:YES];
+    }
 }
 
 - (NSString *)frequencyString:(NSInteger)freq {
