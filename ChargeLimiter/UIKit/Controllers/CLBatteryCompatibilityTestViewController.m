@@ -797,6 +797,7 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
 @property (nonatomic, strong) UILabel *probeResultLabel;
 @property (nonatomic, assign) BOOL engineRunning;
 @property (nonatomic, assign) BOOL probeRunning;
+@property (nonatomic, strong) NSMutableArray<NSNumber *> *verdicts;
 
 @end
 
@@ -812,6 +813,7 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
     self.testSwitches = [NSMutableArray array];
     self.resultCards = [NSMutableArray array];
     self.resultRows = [NSMutableArray array];
+    self.verdicts = [NSMutableArray arrayWithArray:@[@(CLCompatTestVerdictPending), @(CLCompatTestVerdictPending), @(CLCompatTestVerdictPending)]];
 
     UIScrollView *scrollView = [[UIScrollView alloc] init];
     scrollView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -939,7 +941,8 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
         [card addSectionHeader:names[i]];
         NSMutableDictionary<NSString *, UILabel *> *rows = [NSMutableDictionary dictionary];
         rows[@"verdict"] = [card addValueRowWithTitle:CLL(@"结论") value:CLL(@"未测试")];
-        rows[@"current"] = [card addValueRowWithTitle:CLL(@"最大电流") value:@"—"];
+        rows[@"maxCurrent"] = [card addValueRowWithTitle:CLL(@"最大电流") value:@"—"];
+        rows[@"minCurrent"] = [card addValueRowWithTitle:CLL(@"最低电流") value:@"—"];
         rows[@"elapsed"] = [card addValueRowWithTitle:CLL(@"状态变化") value:@"—"];
         [self.resultCards addObject:card];
         [self.resultRows addObject:rows];
@@ -1053,12 +1056,32 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
         return;
     }
     NSArray<NSNumber *> *selection = @[@(stopOn), @(smartOn), @(inflowOn)];
+    [self resetUIForNewRun];
     __weak typeof(self) weakSelf = self;
     self.engine.onEvent = ^(CLCompatTestEvent *event) {
         [weakSelf handleEngineEvent:event];
     };
     [self updateControlsForRunning:YES];
     [self.engine startWithSelection:selection];
+}
+
+- (void)resetUIForNewRun {
+    for (NSInteger i = 0; i < 3; i++) self.verdicts[i] = @(CLCompatTestVerdictPending);
+    for (NSDictionary<NSString *, UILabel *> *rows in self.resultRows) {
+        rows[@"verdict"].text = CLL(@"未测试");
+        rows[@"verdict"].textColor = [UIColor secondaryLabelColor];
+        rows[@"maxCurrent"].text = @"—";
+        rows[@"minCurrent"].text = @"—";
+        rows[@"elapsed"].text = @"—";
+    }
+    self.overallLabel.text = CLL(@"待测试");
+    self.overallLabel.textColor = [UIColor secondaryLabelColor];
+    self.overallWarningLabel.hidden = YES;
+    self.eventLabel.text = @"—";
+    self.liveCurrentLabel.text = @"— mA";
+    self.elapsedLabel.text = @"0s";
+    self.progressView.progress = 0.0;
+    self.currentTestLabel.text = @"—";
 }
 
 - (void)showSimpleAlert:(NSString *)message {
@@ -1073,15 +1096,109 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
     switch (event.kind) {
         case CLCompatEventKindPhaseChanged:
             self.currentTestLabel.text = event.message ?: @"—";
+            self.progressView.progress = 0;
+            break;
+        case CLCompatEventKindSample:
+            self.liveCurrentLabel.text = [NSString stringWithFormat:@"%ld mA", (long)event.currentmA];
+            self.elapsedLabel.text = [NSString stringWithFormat:@"%lds / 剩余约 %lds",
+                                      (long)event.elapsed,
+                                      (long)MAX(0, (NSTimeInterval)(CLCompatMonitorLimit - event.elapsed))];
+            self.progressView.progress = (float)event.progress;
+            break;
+        case CLCompatEventKindStateChange:
+            self.eventLabel.text = [NSString stringWithFormat:CLL(@"检测到状态变化（%ds）"), (long)event.elapsed];
+            break;
+        case CLCompatEventKindVerdict:
+            [self applyVerdictEvent:event];
             break;
         case CLCompatEventKindFinished:
+            self.currentTestLabel.text = CLL(@"测试完成");
+            self.progressView.progress = 1.0;
+            [self updateOverallVerdict];
+            if (event.message.length > 0) {
+                self.overallWarningLabel.text = event.message;
+                self.overallWarningLabel.hidden = NO;
+                self.overallWarningLabel.textColor = [UIColor systemOrangeColor];
+            }
+            [self updateControlsForRunning:NO];
+            break;
         case CLCompatEventKindAborted:
+            self.currentTestLabel.text = CLL(@"已中止");
             if (event.message.length > 0) self.eventLabel.text = event.message;
             [self updateControlsForRunning:NO];
             break;
+    }
+}
+
+- (void)applyVerdictEvent:(CLCompatTestEvent *)event {
+    NSInteger kind = (NSInteger)event.testKind;
+    if (kind < 0 || kind > 2) return;
+    self.verdicts[kind] = @(event.verdict);
+    NSMutableDictionary<NSString *, UILabel *> *rows = self.resultRows[kind];
+
+    NSString *verdictText;
+    UIColor *verdictColor;
+    switch (event.verdict) {
+        case CLCompatTestVerdictSupported:
+            verdictText = CLL(@"支持");
+            verdictColor = [UIColor systemGreenColor];
+            break;
+        case CLCompatTestVerdictUnsupported:
+            verdictText = CLL(@"无法支持");
+            verdictColor = [UIColor systemRedColor];
+            break;
+        case CLCompatTestVerdictError:
+            verdictText = CLL(@"异常");
+            verdictColor = [UIColor systemOrangeColor];
+            break;
         default:
+            verdictText = CLL(@"未测试");
+            verdictColor = [UIColor secondaryLabelColor];
             break;
     }
+    rows[@"verdict"].text = verdictText;
+    rows[@"verdict"].textColor = verdictColor;
+    rows[@"maxCurrent"].text = event.maxCurrentmA == NSIntegerMin
+        ? @"—" : [NSString stringWithFormat:@"%ld mA", (long)event.maxCurrentmA];
+    rows[@"minCurrent"].text = event.minCurrentmA == NSIntegerMax
+        ? @"—" : [NSString stringWithFormat:@"%ld mA", (long)event.minCurrentmA];
+    rows[@"elapsed"].text = event.elapsed >= 0
+        ? [NSString stringWithFormat:CLL(@"状态变化耗时 %ds"), (long)event.elapsed]
+        : @"—";
+}
+
+- (void)updateOverallVerdict {
+    BOOL stopTested = self.verdicts[0].integerValue != CLCompatTestVerdictPending;
+    BOOL smartTested = self.verdicts[1].integerValue != CLCompatTestVerdictPending;
+    BOOL inflowTested = self.verdicts[2].integerValue != CLCompatTestVerdictPending;
+    if (!stopTested && !smartTested && !inflowTested) {
+        self.overallLabel.text = CLL(@"待测试");
+        self.overallLabel.textColor = [UIColor secondaryLabelColor];
+        return;
+    }
+    BOOL stopOK = (self.verdicts[0].integerValue == CLCompatTestVerdictSupported) ||
+                  (self.verdicts[1].integerValue == CLCompatTestVerdictSupported);
+    BOOL inflowOK = self.verdicts[2].integerValue == CLCompatTestVerdictSupported;
+    BOOL smartOnly = self.verdicts[1].integerValue == CLCompatTestVerdictSupported &&
+                     self.verdicts[0].integerValue == CLCompatTestVerdictUnsupported;
+
+    NSString *text;
+    UIColor *color;
+    if (stopOK && inflowOK) {
+        text = CLL(@"设备支持 CL 充电控制");
+        color = [UIColor systemGreenColor];
+    } else if (smartOnly) {
+        text = CLL(@"仅智能停充可用，建议开启充电高级-智能停充");
+        color = [UIColor systemOrangeColor];
+    } else if ((stopTested || smartTested) && !stopOK && inflowTested && !inflowOK) {
+        text = CLL(@"既不支持停充也不支持禁流，设备不被 CL 支持");
+        color = [UIColor systemRedColor];
+    } else {
+        text = CLL(@"部分能力可用，建议结合探针结果判断");
+        color = [UIColor systemOrangeColor];
+    }
+    self.overallLabel.text = text;
+    self.overallLabel.textColor = color;
 }
 
 - (void)setPrecheckRowsPending {    for (NSString *key in self.precheckRows) {
