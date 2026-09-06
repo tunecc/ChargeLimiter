@@ -610,7 +610,7 @@ Run: Global Constraints rootless 命令；Expected: `** BUILD SUCCEEDED **`
 Run: `./scripts/build_packages.sh`
 Expected: 四类包（TrollStore/rootful/rootless/roothide）产出成功，退出码 0。
 
-- [ ] **Step 4: 真机冒烟（手动，记录结果到 tasks.md 5.2 勾选项说明）**
+- [x] **Step 4: 真机冒烟（手动，记录结果到 tasks.md 5.2 勾选项说明）**——已执行部分：无（用户暂不可用）。处置：显式记录为延期开放项移交验证/归档阶段，见 tasks.md"开放验证项"
 
 清单：安装 → 主页入口位于历史统计下方 → 进入页面 → 完整一键测试（三项依次、结果与 README 手动判定一致、配置恢复）→ 早停生效 → 单项重测（只勾禁流）→ 取消/返回恢复 → 探针按钮 → 切英文 → 测试中强杀 App 后重进触发残留快照恢复提示。
 
