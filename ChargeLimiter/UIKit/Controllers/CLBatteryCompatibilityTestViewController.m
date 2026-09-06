@@ -1104,7 +1104,7 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
             break;
         case CLCompatEventKindSample:
             self.liveCurrentLabel.text = [NSString stringWithFormat:@"%ld mA", (long)event.currentmA];
-            self.elapsedLabel.text = [NSString stringWithFormat:@"%lds / 剩余约 %lds",
+            self.elapsedLabel.text = [NSString stringWithFormat:CLL(@"%lds / 剩余约 %lds"),
                                       (long)event.elapsed,
                                       (long)MAX(0, (NSTimeInterval)(CLCompatMonitorLimit - event.elapsed))];
             self.progressView.progress = (float)event.progress;
