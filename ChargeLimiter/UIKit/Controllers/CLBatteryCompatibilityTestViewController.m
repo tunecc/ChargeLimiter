@@ -43,6 +43,7 @@ static const NSTimeInterval CLCompatConfirmWindow      = 10.0;
 static const NSTimeInterval CLCompatConfirmWindowMax   = 30.0;
 static const NSInteger      CLCompatCurrentThresholdmA = 5;
 static const NSTimeInterval CLCompatSettleLimit        = 15.0;
+static const NSTimeInterval CLCompatBaselineResumeLimit = 20.0;
 static NSString * const CLCompatSnapshotKey = @"cl_compat_test_snapshot";
 
 #pragma mark - 事件模型
@@ -313,6 +314,10 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
 @property (nonatomic, strong) NSMutableArray<NSNumber *> *samples;
 @property (nonatomic, assign) NSInteger phase; // 0=等待状态变化 1=确认窗口
 @property (nonatomic, assign) NSInteger confirmStartIndex;
+// 基线快照（发送指令前采样）：判定一律相对基线，避免满电自行停充等无关变化污染
+@property (nonatomic, assign) BOOL bCharging;
+@property (nonatomic, assign) BOOL bExtConnected;
+@property (nonatomic, assign) NSInteger bCurrent;
 @property (nonatomic, assign) NSTimeInterval elapsed;
 @property (nonatomic, assign) NSTimeInterval changeElapsed;
 @property (nonatomic, assign) NSInteger maxA;
@@ -349,7 +354,24 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
                 [self abortRestoreWithReason:CLL(@"关闭 CL 全局开关失败")];
                 return;
             }
-            [self runNextTest];
+            // 恢复充电基线：daemon 在 enable=false 时通常已自动恢复，这里显式兜底，
+            // 解决"进入测试前已处于停充状态"时基线缺失的问题
+            [self emitPhase:CLL(@"正在恢复充电基线…")];
+            __weak typeof(self) weakSelf = self;
+            [self beginWrite];
+            [[CLAPIClient shared] setChargeStatus:YES completion:^(NSDictionary * _Nullable r, NSError * _Nullable e) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [weakSelf endWrite];
+                    [weakSelf waitChargingBaseline:CLCompatBaselineResumeLimit completion:^(BOOL ok) {
+                        if (self.cancelRequested) return;
+                        if (!ok) {
+                            [self abortRestoreWithReason:CLL(@"无法恢复充电（可能已接近满电），请在电量较低时重试")];
+                            return;
+                        }
+                        [self runNextTest];
+                    }];
+                });
+            }];
         });
     }];
 }
@@ -407,8 +429,11 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
     self.confirmStartIndex = 0;
     self.samples = [NSMutableArray array];
     [self emitPhase:[self nameForKind:kind]];
+    [self acquireBaselineThenArm:kind];
+}
 
-    // 基线复核：读不到数据视为 daemon 离线；非充电态无法判定状态变化
+// 建立充电基线：非充电态先尝试恢复充电再复查（基线自愈）
+- (void)acquireBaselineThenArm:(CLCompatTestKind)kind {
     [self fetchBatteryData:^(NSDictionary * _Nullable data) {
         if (self.cancelRequested) return;
         if (!data) {
@@ -416,23 +441,75 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
             return;
         }
         if (![data[@"IsCharging"] boolValue]) {
-            [self finishTestWithVerdict:CLCompatTestVerdictError
-                                message:CLL(@"基线异常：当前未在充电")];
+            __weak typeof(self) weakSelf = self;
+            [self beginWrite];
+            [[CLAPIClient shared] setChargeStatus:YES completion:^(NSDictionary * _Nullable r, NSError * _Nullable e) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [weakSelf endWrite];
+                    [weakSelf waitChargingBaseline:CLCompatBaselineResumeLimit completion:^(BOOL ok) {
+                        if (self.cancelRequested) return;
+                        if (!ok) {
+                            [self finishTestWithVerdict:CLCompatTestVerdictError
+                                                message:CLL(@"基线异常：无法恢复充电")];
+                            return;
+                        }
+                        [weakSelf fetchBatteryData:^(NSDictionary * _Nullable d2) {
+                            if (self.cancelRequested) return;
+                            if (!d2) {
+                                [self abortRestoreWithReason:CLL(@"daemon 已离线，测试中止")];
+                                return;
+                            }
+                            [self armTest:kind battery:d2];
+                        }];
+                    }];
+                });
+            }];
             return;
         }
-        [self applyPathConfigForKind:kind completion:^{
+        [self armTest:kind battery:data];
+    }];
+}
+
+// 记录基线快照并武装单项测试（切路径配置 → 发送指令 → 开始监测）
+- (void)armTest:(CLCompatTestKind)kind battery:(NSDictionary *)data {
+    self.bCharging = [data[@"IsCharging"] boolValue];
+    self.bExtConnected = [data[@"ExternalConnected"] boolValue];
+    self.bCurrent = [self effectiveCurrentmA:data];
+    [self applyPathConfigForKind:kind completion:^{
+        if (self.cancelRequested) return;
+        [self sendCommandForKind:kind completion:^(BOOL ok) {
             if (self.cancelRequested) return;
-            [self sendCommandForKind:kind completion:^(BOOL ok) {
-                if (self.cancelRequested) return;
-                if (!ok) {
-                    [self finishTestWithVerdict:CLCompatTestVerdictError
-                                        message:CLL(@"控制面写入失败")];
-                    return;
-                }
-                [self startMonitoring];
-            }];
+            if (!ok) {
+                [self finishTestWithVerdict:CLCompatTestVerdictError
+                                    message:CLL(@"控制面写入失败")];
+                return;
+            }
+            [self startMonitoring];
         }];
     }];
+}
+
+// 等待充电基线建立：IsCharging==YES 且电流>0，上限 limit 秒
+- (void)waitChargingBaseline:(NSTimeInterval)limit completion:(void(^)(BOOL ok))completion {
+    __block NSInteger tries = 0;
+    __block void (^poll)(void);
+    poll = ^{
+        if (self.cancelRequested) { poll = nil; completion(NO); return; }
+        if (tries >= (NSInteger)limit) { poll = nil; completion(NO); return; }
+        tries++;
+        [self fetchBatteryData:^(NSDictionary * _Nullable data) {
+            BOOL charging = [data[@"IsCharging"] boolValue];
+            NSInteger current = data ? [self effectiveCurrentmA:data] : 0;
+            if (charging && current > 0) {
+                poll = nil;
+                completion(YES);
+            } else {
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(CLCompatSampleInterval * NSEC_PER_SEC)),
+                               dispatch_get_main_queue(), poll);
+            }
+        }];
+    };
+    poll();
 }
 
 - (NSString *)nameForKind:(CLCompatTestKind)kind {
@@ -567,16 +644,19 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
     [self emitEvent:event];
 
     BOOL isCharging = [data[@"IsCharging"] boolValue];
-    BOOL extCapable = [data[@"ExternalChargeCapable"] boolValue];
     BOOL extConnected = [data[@"ExternalConnected"] boolValue];
 
     if (self.phase == 0) {
-        // 等待状态变化：禁流以电流特征为主（iOS17+ External* 派生值会抖动）
+        // 等待状态变化：一律相对基线判定。
+        // 禁流以「电源已连接」翻转为主动作信号（充电线保持连接的前提下），
+        // 电流转放电为辅；IsCharging/ExternalChargeCapable 满电自行停充时天然为假，
+        // 不能作为禁流独立判据（真机误判"未生效"的根因）。
         BOOL changed;
         if (self.currentKind == CLCompatTestKindInflow) {
-            changed = (!extCapable || !extConnected || !isCharging || current < 0);
+            changed = (self.bExtConnected && !extConnected) ||
+                      (self.bCurrent >= 0 && current < 0);
         } else {
-            changed = !isCharging;
+            changed = (self.bCharging && !isCharging);
         }
         if (changed) {
             self.phase = 1;
@@ -961,6 +1041,8 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
     [card addSectionHeader:CLL(@"说明")];
     [card addTipRow:CLL(@"一键检测本机是否支持 CL 的停充与禁流控制。测试会短暂停充或禁流（每项最长 2 分钟），结束后自动恢复配置。")];
     [card addTipRow:CLL(@"请在插电且正在充电时运行；既不支持停充也不支持禁流的设备不被 CL 支持。")];
+    [card addTipRow:CLL(@"测试期间请勿拔掉充电线：禁流生效的判定依赖「电源已连接」状态的切换，拔线会造成误判。")];
+    [card addTipRow:CLL(@"开始测试时会自动恢复充电基线；电量接近满电可能无法恢复，请在电量较低时重试。")];
     [self.mainStack addArrangedSubview:card];
 }
 
@@ -1148,7 +1230,7 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
         if (!strongSelf) return;
         [strongSelf applyPrecheckResults:results];
         BOOL allOK = results[@"daemon"].boolValue && results[@"plugged"].boolValue &&
-                     results[@"charging"].boolValue && results[@"battery"].boolValue;
+                     results[@"battery"].boolValue;
         if (!allOK) {
             strongSelf.starting = NO;
             strongSelf.startButton.enabled = !strongSelf.probeRunning;
@@ -1346,14 +1428,19 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
     NSDictionary<NSString *, NSString *> *failMessages = @{
         @"daemon": CLL(@"daemon 未运行"),
         @"plugged": CLL(@"未插电，请插电后重试"),
-        @"charging": CLL(@"当前未在充电，无法测试"),
+        @"charging": CLL(@"未在充电，开始时将自动恢复"),
         @"battery": CLL(@"电量需在 10%–95% 之间"),
     };
     for (NSString *key in self.precheckRows) {
         UILabel *label = self.precheckRows[key];
         BOOL ok = results[key].boolValue;
         label.text = ok ? @"✓" : failMessages[key];
-        label.textColor = ok ? [UIColor systemGreenColor] : [UIColor systemRedColor];
+        // charging 不再硬阻断：未充电时以橙色提示"将自动恢复"
+        if ([key isEqualToString:@"charging"]) {
+            label.textColor = ok ? [UIColor systemGreenColor] : [UIColor systemOrangeColor];
+        } else {
+            label.textColor = ok ? [UIColor systemGreenColor] : [UIColor systemRedColor];
+        }
         // 失败文案较长，放宽右对齐截断
         label.adjustsFontSizeToFitWidth = ok ? YES : NO;
         label.minimumScaleFactor = ok ? 1.0 : 0.7;
