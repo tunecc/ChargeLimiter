@@ -298,14 +298,388 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
 + (BOOL)hasPendingSnapshot;
 @end
 
+@interface CLBatteryCompatibilityEngine ()
+@property (nonatomic, assign) BOOL running;
+@property (nonatomic, assign) BOOL cancelRequested;
+@property (nonatomic, strong) NSMutableArray<NSNumber *> *pendingKinds;
+@property (nonatomic, assign) CLCompatTestKind currentKind;
+@property (nonatomic, strong) dispatch_source_t timer;
+@property (nonatomic, assign) BOOL pollInFlight;
+// 单项测试状态
+@property (nonatomic, strong) NSMutableArray<NSNumber *> *samples;
+@property (nonatomic, assign) NSInteger phase; // 0=等待状态变化 1=确认窗口
+@property (nonatomic, assign) NSInteger confirmStartIndex;
+@property (nonatomic, assign) NSTimeInterval elapsed;
+@property (nonatomic, assign) NSTimeInterval changeElapsed;
+@property (nonatomic, assign) NSInteger maxA;
+@property (nonatomic, assign) NSInteger minA;
+@property (nonatomic, assign) NSInteger failStreak;
+@property (nonatomic, assign) BOOL restoreWarningShown;
+@property (nonatomic, copy, nullable) void (^testDone)(void);
+@end
+
 @implementation CLBatteryCompatibilityEngine
 
 - (void)startWithSelection:(NSArray<NSNumber *> *)selection {
-    // 状态机在后续任务接入
+    if (self.running) return;
+    self.running = YES;
+    self.cancelRequested = NO;
+    self.restoreWarningShown = NO;
+    self.pendingKinds = [NSMutableArray array];
+    for (NSInteger i = 0; i < selection.count && i < 3; i++) {
+        if (selection[i].boolValue) [self.pendingKinds addObject:@(i)];
+    }
+    [self emitPhase:CLL(@"正在关闭 CL 全局开关…")];
+    [[CLBatteryManager shared] saveConfigKey:@"enable" value:@NO completion:^(BOOL success) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self runNextTest];
+        });
+    }];
 }
 
 - (void)cancel {
-    // 状态机在后续任务接入
+    if (!self.running || self.cancelRequested) return;
+    self.cancelRequested = YES;
+    if (self.timer) {
+        [self stopTimer];
+        [self abortRestoreWithReason:CLL(@"已取消并恢复配置")];
+    }
+}
+
+#pragma mark - 编排
+
+- (void)runNextTest {
+    if (self.cancelRequested) {
+        [self abortRestoreWithReason:CLL(@"已取消并恢复配置")];
+        return;
+    }
+    if (self.pendingKinds.count == 0) {
+        [self finishAll];
+        return;
+    }
+    self.currentKind = (CLCompatTestKind)self.pendingKinds.firstObject.integerValue;
+    [self.pendingKinds removeObjectAtIndex:0];
+    // 每项开始前复核全局开关未被外部改回
+    [[CLAPIClient shared] getConfigWithKey:nil completion:^(NSDictionary * _Nullable resp, NSError * _Nullable error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (self.cancelRequested) return;
+            NSDictionary *data = (error == nil && [resp isKindOfClass:[NSDictionary class]] && [resp[@"status"] integerValue] == 0)
+                ? resp[@"data"] : nil;
+            if (data && [data[@"enable"] boolValue]) {
+                [self abortRestoreWithReason:CLL(@"CL 已被重新启用，测试中止")];
+                return;
+            }
+            [self beginTest:self.currentKind];
+        });
+    }];
+}
+
+- (void)beginTest:(CLCompatTestKind)kind {
+    self.phase = 0;
+    self.elapsed = 0;
+    self.changeElapsed = -1;
+    self.maxA = NSIntegerMin;
+    self.minA = NSIntegerMax;
+    self.failStreak = 0;
+    self.pollInFlight = NO;
+    self.confirmStartIndex = 0;
+    self.samples = [NSMutableArray array];
+    [self emitPhase:[self nameForKind:kind]];
+
+    // 基线复核：非充电态无法判定状态变化
+    [self fetchBatteryData:^(NSDictionary * _Nullable data) {
+        if (self.cancelRequested) return;
+        if (!data || ![data[@"IsCharging"] boolValue]) {
+            [self finishTestWithVerdict:CLCompatTestVerdictError
+                                message:CLL(@"基线异常：当前未在充电")];
+            return;
+        }
+        [self applyPathConfigForKind:kind completion:^{
+            if (self.cancelRequested) return;
+            [self sendCommandForKind:kind completion:^(BOOL ok) {
+                if (self.cancelRequested) return;
+                if (!ok) {
+                    [self finishTestWithVerdict:CLCompatTestVerdictError
+                                        message:CLL(@"控制面写入失败")];
+                    return;
+                }
+                [self startMonitoring];
+            }];
+        }];
+    }];
+}
+
+- (NSString *)nameForKind:(CLCompatTestKind)kind {
+    switch (kind) {
+        case CLCompatTestKindStopCharge: return CLL(@"停充测试");
+        case CLCompatTestKindSmartStopCharge: return CLL(@"智能停充测试");
+        case CLCompatTestKindInflow: return CLL(@"禁流测试");
+    }
+}
+
+- (void)applyPathConfigForKind:(CLCompatTestKind)kind completion:(void(^)(void))completion {
+    if (kind == CLCompatTestKindInflow) {
+        completion();
+        return;
+    }
+    // 停充测传统 IsCharging 写法，智能停充测 PredictiveChargingInhibit 写法
+    BOOL predictive = (kind == CLCompatTestKindSmartStopCharge);
+    [[CLBatteryManager shared] saveConfigKey:@"adv_predictive_inhibit_charge" value:@(predictive) completion:^(BOOL success) {
+        dispatch_async(dispatch_get_main_queue(), completion);
+    }];
+}
+
+- (void)sendCommandForKind:(CLCompatTestKind)kind completion:(void(^)(BOOL ok))completion {
+    CLAPICallback handler = ^(NSDictionary * _Nullable resp, NSError * _Nullable error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            BOOL ok = (error == nil && [resp isKindOfClass:[NSDictionary class]] && [resp[@"status"] integerValue] == 0);
+            completion(ok);
+        });
+    };
+    if (kind == CLCompatTestKindInflow) {
+        [[CLAPIClient shared] setInflowStatus:NO completion:handler];
+    } else {
+        [[CLAPIClient shared] setChargeStatus:NO completion:handler];
+    }
+}
+
+#pragma mark - 采样与判定
+
+- (void)startMonitoring {
+    __weak typeof(self) weakSelf = self;
+    dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_timer(timer, DISPATCH_TIME_NOW, (uint64_t)(CLCompatSampleInterval * NSEC_PER_SEC), (uint64_t)(0.1 * NSEC_PER_SEC));
+    dispatch_source_set_event_handler(timer, ^{
+        [weakSelf pollTick];
+    });
+    self.timer = timer;
+    dispatch_resume(timer);
+}
+
+- (void)stopTimer {
+    if (self.timer) {
+        dispatch_source_cancel(self.timer);
+        self.timer = nil;
+    }
+}
+
+- (void)pollTick {
+    if (self.cancelRequested || self.pollInFlight) return;
+    self.pollInFlight = YES;
+    [self fetchBatteryData:^(NSDictionary * _Nullable data) {
+        self.pollInFlight = NO;
+        if (self.cancelRequested) return;
+        if (!data) {
+            self.failStreak++;
+            if (self.failStreak >= 5) {
+                [self finishTestWithVerdict:CLCompatTestVerdictError
+                                    message:CLL(@"数据采集中断")];
+            }
+            return;
+        }
+        self.failStreak = 0;
+        [self handleSample:data];
+    }];
+}
+
+- (void)fetchBatteryData:(void(^)(NSDictionary * _Nullable data))completion {
+    [[CLAPIClient shared] getBatteryInfoWithCompletion:^(NSDictionary * _Nullable resp, NSError * _Nullable error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (error == nil && [resp isKindOfClass:[NSDictionary class]] && [resp[@"status"] integerValue] == 0) {
+                completion([resp[@"data"] isKindOfClass:[NSDictionary class]] ? resp[@"data"] : nil);
+            } else {
+                completion(nil);
+            }
+        });
+    }];
+}
+
+- (NSInteger)effectiveCurrentmA:(NSDictionary *)data {
+    id instant = data[@"InstantAmperage"];
+    if (instant != nil) return [instant integerValue];
+    id amp = data[@"Amperage"];
+    if (amp != nil) return [amp integerValue];
+    return 0;
+}
+
+- (void)handleSample:(NSDictionary *)data {
+    NSInteger current = [self effectiveCurrentmA:data];
+    self.elapsed += CLCompatSampleInterval;
+    [self.samples addObject:@(current)];
+    if (current > self.maxA) self.maxA = current;
+    if (current < self.minA) self.minA = current;
+
+    CLCompatTestEvent *event = [[CLCompatTestEvent alloc] init];
+    event.kind = CLCompatEventKindSample;
+    event.testKind = self.currentKind;
+    event.currentmA = current;
+    event.elapsed = self.elapsed;
+    event.progress = MIN(self.elapsed / CLCompatMonitorLimit, 1.0);
+    [self emitEvent:event];
+
+    BOOL isCharging = [data[@"IsCharging"] boolValue];
+    BOOL extCapable = [data[@"ExternalChargeCapable"] boolValue];
+    BOOL extConnected = [data[@"ExternalConnected"] boolValue];
+
+    if (self.phase == 0) {
+        // 等待状态变化：禁流以电流特征为主（iOS17+ External* 派生值会抖动）
+        BOOL changed;
+        if (self.currentKind == CLCompatTestKindInflow) {
+            changed = (!extCapable || !extConnected || !isCharging || current < 0);
+        } else {
+            changed = !isCharging;
+        }
+        if (changed) {
+            self.phase = 1;
+            self.changeElapsed = self.elapsed;
+            self.confirmStartIndex = self.samples.count - 1;
+            CLCompatTestEvent *changeEvent = [[CLCompatTestEvent alloc] init];
+            changeEvent.kind = CLCompatEventKindStateChange;
+            changeEvent.testKind = self.currentKind;
+            changeEvent.elapsed = self.changeElapsed;
+            [self emitEvent:changeEvent];
+        } else if (self.elapsed >= CLCompatMonitorLimit) {
+            [self finishTestWithVerdict:CLCompatTestVerdictUnsupported
+                                message:CLL(@"120 秒内充电状态无变化")];
+        }
+        return;
+    }
+
+    // 确认窗口
+    NSInteger confirmCount = (NSInteger)(self.samples.count - (NSUInteger)self.confirmStartIndex);
+    if (confirmCount < (NSInteger)CLCompatConfirmWindow) return;
+    NSUInteger start = (NSUInteger)self.confirmStartIndex;
+    NSArray<NSNumber *> *window = [self.samples subarrayWithRange:NSMakeRange(start, self.samples.count - start)];
+    BOOL allBelow = YES, allAbove = YES;
+    for (NSNumber *v in window) {
+        if (v.integerValue < CLCompatCurrentThresholdmA) allAbove = NO;
+        else allBelow = NO;
+    }
+    if (allBelow) {
+        [self finishTestWithVerdict:CLCompatTestVerdictSupported message:nil];
+    } else if (allAbove) {
+        [self finishTestWithVerdict:CLCompatTestVerdictUnsupported
+                            message:CLL(@"停充后电流持续 ≥5mA")];
+    } else if (confirmCount >= (NSInteger)CLCompatConfirmWindowMax) {
+        // 混合抖动：按全窗口均值判定
+        double sum = 0;
+        for (NSNumber *v in window) sum += v.doubleValue;
+        double mean = sum / (double)window.count;
+        [self finishTestWithVerdict:(mean < (double)CLCompatCurrentThresholdmA
+                                     ? CLCompatTestVerdictSupported
+                                     : CLCompatTestVerdictUnsupported)
+                            message:nil];
+    }
+}
+
+#pragma mark - 单项收尾与回稳
+
+- (void)finishTestWithVerdict:(CLCompatTestVerdict)verdict message:(nullable NSString *)message {
+    [self stopTimer];
+    CLCompatTestEvent *event = [[CLCompatTestEvent alloc] init];
+    event.kind = CLCompatEventKindVerdict;
+    event.testKind = self.currentKind;
+    event.verdict = verdict;
+    event.message = message;
+    event.maxCurrentmA = self.maxA;
+    event.minCurrentmA = self.minA;
+    event.elapsed = self.changeElapsed;
+    [self emitEvent:event];
+
+    [self settleAfterTest:^(BOOL settled) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (self.cancelRequested) return;
+            if (!settled) self.restoreWarningShown = YES;
+            void (^done)(void) = self.testDone;
+            self.testDone = nil;
+            if (done) done();
+        });
+    }];
+}
+
+- (void)settleAfterTest:(void(^)(BOOL settled))completion {
+    CLCompatTestKind kind = self.currentKind;
+    void (^startSettle)(void) = ^{
+        __block NSInteger tries = 0;
+        __block void (^poll)(void);
+        poll = ^{
+            if (self.cancelRequested) { poll = nil; completion(NO); return; }
+            if (tries >= (NSInteger)CLCompatSettleLimit) { poll = nil; completion(NO); return; }
+            tries++;
+            [self fetchBatteryData:^(NSDictionary * _Nullable data) {
+                BOOL charging = [data[@"IsCharging"] boolValue];
+                NSInteger current = data ? [self effectiveCurrentmA:data] : 0;
+                if (charging && current > 0) {
+                    poll = nil;
+                    completion(YES);
+                } else {
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(CLCompatSampleInterval * NSEC_PER_SEC)),
+                                   dispatch_get_main_queue(), poll);
+                }
+            }];
+        };
+        poll();
+    };
+    if (kind == CLCompatTestKindInflow) {
+        [[CLAPIClient shared] setInflowStatus:YES completion:^(NSDictionary * _Nullable resp, NSError * _Nullable error) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [[CLAPIClient shared] setChargeStatus:YES completion:^(NSDictionary * _Nullable r2, NSError * _Nullable e2) {
+                    dispatch_async(dispatch_get_main_queue(), startSettle);
+                }];
+            });
+        }];
+    } else {
+        [[CLAPIClient shared] setChargeStatus:YES completion:^(NSDictionary * _Nullable resp, NSError * _Nullable error) {
+            dispatch_async(dispatch_get_main_queue(), startSettle);
+        }];
+    }
+}
+
+#pragma mark - 总收尾
+
+- (void)finishAll {
+    self.running = NO;
+    [CLBatteryCompatibilityEngine applySnapshotWithCompletion:^(BOOL ok) {
+        CLCompatTestEvent *event = [[CLCompatTestEvent alloc] init];
+        event.kind = CLCompatEventKindFinished;
+        event.message = self.restoreWarningShown ? CLL(@"测试后充电恢复异常，请手动检查") : nil;
+        [self emitEvent:event];
+    }];
+}
+
+- (void)abortRestoreWithReason:(NSString *)reason {
+    [self stopTimer];
+    [[CLAPIClient shared] setInflowStatus:YES completion:^(NSDictionary * _Nullable r1, NSError * _Nullable e1) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [[CLAPIClient shared] setChargeStatus:YES completion:^(NSDictionary * _Nullable r2, NSError * _Nullable e2) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [CLBatteryCompatibilityEngine applySnapshotWithCompletion:^(BOOL ok) {
+                        self.running = NO;
+                        CLCompatTestEvent *event = [[CLCompatTestEvent alloc] init];
+                        event.kind = CLCompatEventKindAborted;
+                        event.message = reason;
+                        [self emitEvent:event];
+                    }];
+                });
+            }];
+        });
+    }];
+}
+
+#pragma mark - 事件
+
+- (void)emitPhase:(NSString *)text {
+    CLCompatTestEvent *event = [[CLCompatTestEvent alloc] init];
+    event.kind = CLCompatEventKindPhaseChanged;
+    event.testKind = self.currentKind;
+    event.message = text;
+    [self emitEvent:event];
+}
+
+- (void)emitEvent:(CLCompatTestEvent *)event {
+    void (^handler)(CLCompatTestEvent *) = self.onEvent;
+    if (!handler) return;
+    dispatch_async(dispatch_get_main_queue(), ^{ handler(event); });
 }
 
 + (void)runPrecheckWithCompletion:(void(^)(NSDictionary<NSString *, NSNumber *> *results))completion {    [[CLAPIClient shared] getBatteryInfoWithCompletion:^(NSDictionary * _Nullable resp, NSError * _Nullable error) {
@@ -664,13 +1038,53 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
                 [strongSelf3 presentViewController:alert animated:YES completion:nil];
                 return;
             }
-            // 测试启动由后续任务接入
+            [strongSelf3 beginTestFlow];
         }];
     }];
 }
 
-- (void)setPrecheckRowsPending {
-    for (NSString *key in self.precheckRows) {
+- (void)beginTestFlow {
+    BOOL stopOn = self.testSwitches.count > 0 ? self.testSwitches[0].on : NO;
+    BOOL smartOn = self.testSwitches.count > 1 ? self.testSwitches[1].on : NO;
+    BOOL inflowOn = self.testSwitches.count > 2 ? self.testSwitches[2].on : NO;
+    if (!stopOn && !smartOn && !inflowOn) {
+        [CLBatteryCompatibilityEngine clearSnapshot];
+        [self showSimpleAlert:CLL(@"请至少选择一项测试")];
+        return;
+    }
+    NSArray<NSNumber *> *selection = @[@(stopOn), @(smartOn), @(inflowOn)];
+    __weak typeof(self) weakSelf = self;
+    self.engine.onEvent = ^(CLCompatTestEvent *event) {
+        [weakSelf handleEngineEvent:event];
+    };
+    [self updateControlsForRunning:YES];
+    [self.engine startWithSelection:selection];
+}
+
+- (void)showSimpleAlert:(NSString *)message {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:nil
+                                                                   message:message
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"确定") style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)handleEngineEvent:(CLCompatTestEvent *)event {
+    switch (event.kind) {
+        case CLCompatEventKindPhaseChanged:
+            self.currentTestLabel.text = event.message ?: @"—";
+            break;
+        case CLCompatEventKindFinished:
+        case CLCompatEventKindAborted:
+            if (event.message.length > 0) self.eventLabel.text = event.message;
+            [self updateControlsForRunning:NO];
+            break;
+        default:
+            break;
+    }
+}
+
+- (void)setPrecheckRowsPending {    for (NSString *key in self.precheckRows) {
         UILabel *label = self.precheckRows[key];
         label.text = @"…";
         label.textColor = [UIColor secondaryLabelColor];
