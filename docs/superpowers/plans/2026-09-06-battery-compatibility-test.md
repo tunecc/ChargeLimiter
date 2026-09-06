@@ -1,3 +1,7 @@
+---
+archived-with: 2026-09-06-battery-compatibility-test-page
+status: final
+---
 # 电池兼容性测试页面 实施计划
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

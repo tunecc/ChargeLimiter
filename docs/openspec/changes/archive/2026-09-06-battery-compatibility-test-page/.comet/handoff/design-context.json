@@ -1,0 +1,14 @@
+{
+  "change": "battery-compatibility-test-page",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "b6cff0d9b4ba6d31904d6bd77dd12f7c7bddba9a6c3b35ba0bf9485086b588cc",
+  "files": [
+    { "path": "docs/openspec/changes/battery-compatibility-test-page/proposal.md", "sha256": "9b5d6987c0968c8d1dea228d7689d2d1d3260bd932f5ead53ce6713f80fbc4f2" },
+    { "path": "docs/openspec/changes/battery-compatibility-test-page/design.md", "sha256": "6ec783956d0d2f367dfa244a46953a50c864545ab4c73d5d3c7a59ab010672cb" },
+    { "path": "docs/openspec/changes/battery-compatibility-test-page/tasks.md", "sha256": "44fff82a5d662cf48875951344e45e786a2b03eaa11f8ceb7f56cee1016f4dd9" },
+    { "path": "docs/openspec/changes/battery-compatibility-test-page/specs/battery-compatibility-test/spec.md", "sha256": "43ceed90dc5461fa2398b9eea1977edc293517305db260170b009e4acfa27a00" }
+  ]
+}
