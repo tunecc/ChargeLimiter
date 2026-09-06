@@ -458,8 +458,8 @@
 "支持" = "Supported";
 "无法支持" = "Not Supported";
 "异常" = "Error";
-"最大电流" = "Max current";
-"最低电流" = "Min current";
+"判定窗口最大电流" = "Max current (verdict window)";
+"判定窗口最低电流" = "Min current (verdict window)";
 "状态变化耗时 %ds" = "State changed in %ds";
 "%lds / 剩余约 %lds" = "%lds / ~%lds left";
 "测试完成" = "Tests finished";
@@ -486,3 +486,6 @@
 "基线异常：无法恢复充电" = "Baseline error: cannot resume charging";
 "测试期间请勿拔掉充电线：禁流生效的判定依赖「电源已连接」状态的切换，拔线会造成误判。" = "Do NOT unplug the charger during the test: inflow verdict relies on the External-Connected state flip; unplugging causes misjudgment.";
 "开始测试时会自动恢复充电基线；电量接近满电可能无法恢复，请在电量较低时重试。" = "The charging baseline is restored automatically on start; a nearly full battery may prevent it — retry at a lower battery level.";
+"禁流被系统恢复，正在重新下发禁流（第 %d 次）" = "Charging was restored by the system; re-issuing inflow disable (attempt %d)";
+"禁流无法维持：充电被系统恢复且重试已耗尽" = "Inflow disable cannot be held: charging was restored by the system and retries are exhausted";
+"前置检查显示的是点击开始时的状态；测试过程中充电状态会按测试需要自动切换。" = "Pre-checks reflect the state when you tapped Start; charging switches automatically as each test requires.";
