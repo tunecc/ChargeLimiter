@@ -480,3 +480,9 @@
 "关闭 CL 全局开关失败" = "Failed to turn off the CL master switch";
 "daemon 已离线，测试中止" = "daemon went offline; test aborted";
 "配置恢复失败，请重进本页恢复" = "Failed to restore settings; re-enter this page to restore";
+"未在充电，开始时将自动恢复" = "Not charging now; charging will resume automatically on start";
+"正在恢复充电基线…" = "Restoring charging baseline…";
+"无法恢复充电（可能已接近满电），请在电量较低时重试" = "Cannot resume charging (battery may be nearly full); retry at a lower battery level";
+"基线异常：无法恢复充电" = "Baseline error: cannot resume charging";
+"测试期间请勿拔掉充电线：禁流生效的判定依赖「电源已连接」状态的切换，拔线会造成误判。" = "Do NOT unplug the charger during the test: inflow verdict relies on the External-Connected state flip; unplugging causes misjudgment.";
+"开始测试时会自动恢复充电基线；电量接近满电可能无法恢复，请在电量较低时重试。" = "The charging baseline is restored automatically on start; a nearly full battery may prevent it — retry at a lower battery level.";
