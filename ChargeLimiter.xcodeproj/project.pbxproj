@@ -77,6 +77,9 @@
 		A720B9A32F2F0995008B9C91 /* CLAPIClient.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9742F2F0995008B9C91 /* CLAPIClient.m */; };
 		A720B9A42F2F0995008B9C91 /* CLTestApp.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9772F2F0995008B9C91 /* CLTestApp.m */; };
 		A720B9A52F2F0995008B9C91 /* CLAdvancedSettingsViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B95F2F2F0995008B9C91 /* CLAdvancedSettingsViewController.m */; };
+		BB7C0A010000000000000003 /* CLBatteryCompatibilityTestViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = BB7C0A010000000000000001 /* CLBatteryCompatibilityTestViewController.m */; };
+		BB7C0A010000000000000004 /* CLBatteryCompatibilityTestViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = BB7C0A010000000000000001 /* CLBatteryCompatibilityTestViewController.m */; };
+		BB7C0A010000000000000005 /* CLBatteryCompatibilityTestViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = BB7C0A010000000000000001 /* CLBatteryCompatibilityTestViewController.m */; };
 		A720B9A82F2F0C0B008B9C91 /* CLSimpleHTTPServer.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9A72F2F0C0B008B9C91 /* CLSimpleHTTPServer.m */; };
 		A720B9A92F2F0C0B008B9C91 /* CLSimpleHTTPServer.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9A72F2F0C0B008B9C91 /* CLSimpleHTTPServer.m */; };
 		A720B9AA2F2F0C0C008B9C91 /* CLSimpleHTTPServer.m in Sources */ = {isa = PBXBuildFile; fileRef = A720B9A72F2F0C0B008B9C91 /* CLSimpleHTTPServer.m */; };
@@ -196,6 +199,8 @@
 		18D455212B91A5BD0032EDE7 /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
 		18D455232B91A5BD0032EDE7 /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
 		A720B95F2F2F0995008B9C91 /* CLAdvancedSettingsViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = CLAdvancedSettingsViewController.m; sourceTree = "<group>"; };
+		BB7C0A010000000000000001 /* CLBatteryCompatibilityTestViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = CLBatteryCompatibilityTestViewController.m; sourceTree = "<group>"; };
+		BB7C0A010000000000000002 /* CLBatteryCompatibilityTestViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CLBatteryCompatibilityTestViewController.h; sourceTree = "<group>"; };
 		A720B9602F2F0995008B9C91 /* CLHelpViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = CLHelpViewController.m; sourceTree = "<group>"; };
 		A720B9612F2F0995008B9C91 /* CLMainViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CLMainViewController.h; sourceTree = "<group>"; };
 		A720B9622F2F0995008B9C91 /* CLMainViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = CLMainViewController.m; sourceTree = "<group>"; };
@@ -409,6 +414,8 @@
 				A720B9622F2F0995008B9C91 /* CLMainViewController.m */,
 				A720B9652F2F0995008B9C91 /* CLSettingsViewController.h */,
 				A720B9662F2F0995008B9C91 /* CLSettingsViewController.m */,
+				BB7C0A010000000000000002 /* CLBatteryCompatibilityTestViewController.h */,
+				BB7C0A010000000000000001 /* CLBatteryCompatibilityTestViewController.m */,
 			);
 			path = Controllers;
 			sourceTree = "<group>";
@@ -751,6 +758,7 @@
 				A7FF00102F6D001000000001 /* CLLocalization.m in Sources */,
 				A7DIAG010F6D001000000020 /* CLDiagnosticCollector.m in Sources */,
 				A720B9842F2F0995008B9C91 /* CLAdvancedSettingsViewController.m in Sources */,
+				BB7C0A010000000000000003 /* CLBatteryCompatibilityTestViewController.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -770,6 +778,7 @@
 				A7FF00122F6D001000000003 /* CLLocalization.m in Sources */,
 				A7DIAG012F6D001000000021 /* CLDiagnosticCollector.m in Sources */,
 				A720B9A52F2F0995008B9C91 /* CLAdvancedSettingsViewController.m in Sources */,
+				BB7C0A010000000000000004 /* CLBatteryCompatibilityTestViewController.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -809,6 +818,7 @@
 				876448EE6523421DA13762B6 /* CLLocalization.m in Sources */,
 				A7DIAG014F6D001000000022 /* CLDiagnosticCollector.m in Sources */,
 				5469A50775CC4D6F83F5C016 /* CLAdvancedSettingsViewController.m in Sources */,
+				BB7C0A010000000000000005 /* CLBatteryCompatibilityTestViewController.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
