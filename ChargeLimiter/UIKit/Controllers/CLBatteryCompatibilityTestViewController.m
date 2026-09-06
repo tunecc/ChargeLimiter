@@ -797,6 +797,7 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
 @property (nonatomic, strong) UILabel *probeResultLabel;
 @property (nonatomic, assign) BOOL engineRunning;
 @property (nonatomic, assign) BOOL probeRunning;
+@property (nonatomic, strong, nullable) NSDictionary *lastProbePayload;
 @property (nonatomic, strong) NSMutableArray<NSNumber *> *verdicts;
 
 @end
@@ -967,6 +968,9 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
         [weakSelf probeButtonTapped];
     }];
     self.probeResultLabel = [self.probeCard addMultilineValueRowWithTitle:CLL(@"最近探针结论") value:CLL(@"尚未运行")];
+    [self.probeCard addActionButtonWithTitle:CLL(@"复制详细") color:[UIColor systemGrayColor] handler:^{
+        [weakSelf copyProbeDetails];
+    }];
     [self.probeCard addTipRow:CLL(@"将尝试多种停充写法并自动恢复，整轮可能需要 1–2 分钟。请插着充电器运行。")];
     [self.mainStack addArrangedSubview:self.probeCard];
 }
@@ -1231,7 +1235,91 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
     if (self.probeRunning || self.engineRunning) {
         return;
     }
-    // 探针调用后续接入
+    UIAlertController *confirm = [UIAlertController alertControllerWithTitle:CLL(@"运行停充控制探针")
+                                                                     message:CLL(@"将尝试多种停充写法并自动恢复，整轮可能需要 1–2 分钟。请插着充电器运行。")
+                                                              preferredStyle:UIAlertControllerStyleAlert];
+    __weak typeof(self) weakSelf = self;
+    [confirm addAction:[UIAlertAction actionWithTitle:CLL(@"取消") style:UIAlertActionStyleCancel handler:nil]];
+    [confirm addAction:[UIAlertAction actionWithTitle:CLL(@"运行") style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        [weakSelf runProbe];
+    }]];
+    [self presentViewController:confirm animated:YES completion:nil];
+}
+
+- (void)runProbe {
+    self.probeRunning = YES;
+    self.probeResultLabel.text = CLL(@"运行中…");
+    [self updateControlsForRunning:self.engineRunning];
+    __weak typeof(self) weakSelf = self;
+    [[CLAPIClient shared] runChargeControlProbeWithWaitMs:2000 restore:YES paths:nil services:nil completion:^(NSDictionary * _Nullable resp, NSError * _Nullable error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            strongSelf.probeRunning = NO;
+            [strongSelf updateControlsForRunning:strongSelf.engineRunning];
+            if (error || resp == nil || [resp[@"status"] integerValue] != 0) {
+                NSInteger status = resp ? [resp[@"status"] integerValue] : -999;
+                NSString *msg;
+                if (status == -12) {
+                    msg = CLL(@"探针正在运行，请稍候");
+                } else {
+                    msg = error.localizedDescription ?: ([resp[@"msg"] description] ?: CLL(@"daemon 未运行"));
+                }
+                strongSelf.probeResultLabel.text = [NSString stringWithFormat:@"%@: %@", CLL(@"探针失败"), msg];
+                return;
+            }
+            NSDictionary *data = [resp[@"data"] isKindOfClass:[NSDictionary class]] ? resp[@"data"] : nil;
+            strongSelf.lastProbePayload = data;
+            strongSelf.probeResultLabel.text = [strongSelf probeSummaryFromPayload:data];
+        });
+    }];
+}
+
+- (NSString *)probeSummaryFromPayload:(NSDictionary *)payload {
+    if (![payload isKindOfClass:[NSDictionary class]]) return CLL(@"尚无探针结果");
+    NSDictionary *summary = [payload[@"summary"] isKindOfClass:[NSDictionary class]] ? payload[@"summary"] : @{};
+    if ([summary[@"any_effective"] boolValue]) {
+        return [NSString stringWithFormat:CLL(@"探针结论：控制面可生效（best_path: %@）"),
+                [summary[@"best_path"] description] ?: @"-"];
+    }
+    return [NSString stringWithFormat:CLL(@"探针结论：未发现可生效写法（dominant_failure: %@）"),
+            [summary[@"dominant_failure"] description] ?: @"-"];
+}
+
+- (void)copyProbeDetails {
+    if (self.lastProbePayload == nil) {
+        [self showSimpleAlert:CLL(@"请先运行停充控制探针。")];
+        return;
+    }
+    NSDictionary *payload = self.lastProbePayload;
+    NSDictionary *summary = [payload[@"summary"] isKindOfClass:[NSDictionary class]] ? payload[@"summary"] : @{};
+    NSMutableArray<NSString *> *lines = [NSMutableArray array];
+    [lines addObject:CLL(@"停充控制探针结果")];
+    [lines addObject:[NSString stringWithFormat:@"device: %@", [payload[@"device"] description] ?: @"-"]];
+    [lines addObject:[NSString stringWithFormat:@"sysver: %@", [payload[@"sysver"] description] ?: @"-"]];
+    [lines addObject:[NSString stringWithFormat:@"use_smart: %@", [payload[@"use_smart"] description] ?: @"-"]];
+    [lines addObject:[NSString stringWithFormat:@"any_effective: %@", [summary[@"any_effective"] description] ?: @"-"]];
+    [lines addObject:[NSString stringWithFormat:@"best_path: %@", [summary[@"best_path"] description] ?: @"-"]];
+    [lines addObject:[NSString stringWithFormat:@"dominant_failure: %@", [summary[@"dominant_failure"] description] ?: @"-"]];
+    NSArray *results = [payload[@"results"] isKindOfClass:[NSArray class]] ? payload[@"results"] : @[];
+    for (NSDictionary *item in results) {
+        if (![item isKindOfClass:[NSDictionary class]]) continue;
+        [lines addObject:[NSString stringWithFormat:@"- %@ / %@ => %@ (write_ret=%@, prop_changed=%@, current_stopped=%@)",
+                          [item[@"service"] description] ?: @"-",
+                          [item[@"path"] description] ?: @"-",
+                          [item[@"verdict"] description] ?: @"-",
+                          [item[@"write_ret"] description] ?: @"-",
+                          [item[@"prop_changed"] description] ?: @"-",
+                          [item[@"current_stopped"] description] ?: @"-"]];
+    }
+    NSError *jsonErr = nil;
+    NSData *jsonData = [NSJSONSerialization dataWithJSONObject:payload options:NSJSONWritingPrettyPrinted error:&jsonErr];
+    if (jsonData) {
+        [lines addObject:@""];
+        [lines addObject:[[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding] ?: @""];
+    }
+    UIPasteboard.generalPasteboard.string = [lines componentsJoinedByString:@"\n"];
+    [self showSimpleAlert:CLL(@"已复制到剪贴板")];
 }
 
 @end
