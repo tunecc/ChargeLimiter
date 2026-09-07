@@ -413,7 +413,7 @@
 "电池兼容性测试" = "Battery Compatibility Test";
 "说明" = "About";
 "一键检测本机是否支持 CL 的停充与禁流控制。测试会短暂停充或禁流（每项最长 2 分钟），结束后自动恢复配置。" = "One-tap check whether this device supports CL stop-charge and inflow control. Tests briefly stop charging or inflow (up to 2 min each); settings restore automatically afterwards.";
-"请在插电且正在充电时运行；既不支持停充也不支持禁流的设备不被 CL 支持。" = "Run while plugged in and charging; devices that support neither stop-charge nor inflow are not supported by CL.";
+"请在插电状态下运行；既不支持停充也不支持禁流的设备不被 CL 支持。" = "Run while plugged in; devices that support neither stop-charge nor inflow are not supported by CL.";
 "前置检查" = "Preconditions";
 "daemon 在线" = "daemon online";
 "已插电" = "Plugged in";
@@ -480,7 +480,6 @@
 "关闭 CL 全局开关失败" = "Failed to turn off the CL master switch";
 "daemon 已离线，测试中止" = "daemon went offline; test aborted";
 "配置恢复失败，请重进本页恢复" = "Failed to restore settings; re-enter this page to restore";
-"未在充电，开始时将自动恢复" = "Not charging now; charging will resume automatically on start";
 "正在恢复充电基线…" = "Restoring charging baseline…";
 "无法恢复充电（可能已接近满电），请在电量较低时重试" = "Cannot resume charging (battery may be nearly full); retry at a lower battery level";
 "基线异常：无法恢复充电" = "Baseline error: cannot resume charging";
@@ -488,4 +487,3 @@
 "开始测试时会自动恢复充电基线；电量接近满电可能无法恢复，请在电量较低时重试。" = "The charging baseline is restored automatically on start; a nearly full battery may prevent it — retry at a lower battery level.";
 "禁流被系统恢复，正在重新下发禁流（第 %d 次）" = "Charging was restored by the system; re-issuing inflow disable (attempt %d)";
 "禁流无法维持：充电被系统恢复且重试已耗尽" = "Inflow disable cannot be held: charging was restored by the system and retries are exhausted";
-"前置检查显示的是点击开始时的状态；测试过程中充电状态会按测试需要自动切换。" = "Pre-checks reflect the state when you tapped Start; charging switches automatically as each test requires.";

@@ -329,6 +329,8 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
 // 禁流系统对抗重试
 @property (nonatomic, assign) NSInteger inflowRetries;
 @property (nonatomic, assign) BOOL inflowRetryInFlight;
+// 禁流生效观察：写完成至充电被止住的滞后窗口内连续充电采样计数
+@property (nonatomic, assign) NSInteger inflowChargeStreak;
 @property (nonatomic, assign) NSInteger failStreak;
 @property (nonatomic, assign) BOOL restoreWarningShown;
 @property (nonatomic, copy, nullable) void (^testDone)(void);
@@ -435,6 +437,7 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
     self.confirmMinA = NSIntegerMax;
     self.inflowRetries = 0;
     self.inflowRetryInFlight = NO;
+    self.inflowChargeStreak = 0;
     self.failStreak = 0;
     self.pollInFlight = NO;
     self.confirmStartIndex = 0;
@@ -673,10 +676,17 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
         if (changed) {
             self.phase = 1;
             self.changeElapsed = self.elapsed;
-            self.confirmStartIndex = self.samples.count - 1;
-            // 判定窗口统计以状态变化样本起算
-            self.confirmMaxA = current;
-            self.confirmMinA = current;
+            // 禁流确认窗口自「写生效」样本起算（首个非充电样本开窗），避免写生效
+            // 滞后窗口内的充电样本污染判定；停充类保持状态变化样本即窗口起点
+            if (self.currentKind == CLCompatTestKindInflow) {
+                self.confirmStartIndex = -1;
+                self.inflowChargeStreak = 0;
+            } else {
+                self.confirmStartIndex = self.samples.count - 1;
+                // 判定窗口统计以状态变化样本起算
+                self.confirmMaxA = current;
+                self.confirmMinA = current;
+            }
             CLCompatTestEvent *changeEvent = [[CLCompatTestEvent alloc] init];
             changeEvent.kind = CLCompatEventKindStateChange;
             changeEvent.testKind = self.currentKind;
@@ -690,35 +700,37 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
     }
 
     // 确认窗口
+    BOOL inflowWindowOpen = (self.currentKind != CLCompatTestKindInflow) || (self.confirmStartIndex >= 0);
+    BOOL chargeRestored = isCharging && current >= CLCompatCurrentThresholdmA;
+
+    // 仅禁流：窗口未建立（写生效滞后观察期）时，充电样本不计恢复事件、不入判定
+    // 统计，仅累计连续充电采样；达到确认窗口长度（10s）等效为充电被恢复处理。
+    if (self.currentKind == CLCompatTestKindInflow && !inflowWindowOpen) {
+        if (chargeRestored) {
+            if (!self.inflowRetryInFlight) self.inflowChargeStreak++;
+            if (self.inflowChargeStreak >= (NSInteger)CLCompatConfirmWindow) {
+                [self inflowRetryOrExhaust];
+            }
+            return;
+        }
+        // 首个生效样本开窗，判定窗口统计以该样本起算
+        self.confirmStartIndex = self.samples.count - 1;
+        self.confirmMaxA = current;
+        self.confirmMinA = current;
+        self.inflowChargeStreak = 0;
+    }
+
     if (current > self.confirmMaxA) self.confirmMaxA = current;
     if (current < self.confirmMinA) self.confirmMinA = current;
 
-    // 仅禁流：确认窗口内充电被系统恢复（iOS 对抗单次禁流写）→ 重新下发禁流并
-    // 重置确认窗口继续监测；重试耗尽仍被恢复判"禁流无法维持"。停充类不加重试。
-    if (self.currentKind == CLCompatTestKindInflow && isCharging && current >= CLCompatCurrentThresholdmA) {
-        // 重试写在途时不重复计为恢复事件（防重入），等写落定后窗口重开
-        if (self.inflowRetryInFlight) return;
-        if (self.inflowRetries >= CLCompatInflowMaxRetries) {
-            [self finishTestWithVerdict:CLCompatTestVerdictUnsupported
-                                message:CLL(@"禁流无法维持：充电被系统恢复且重试已耗尽")];
-            return;
+    // 仅禁流：窗口已建立（生效已被观察到）后充电被系统恢复（iOS 对抗单次禁流
+    // 写）→ 重新下发禁流，窗口自写再次生效的样本重开；重试耗尽仍被恢复判"禁流
+    // 无法维持"。停充类不加重试。
+    if (self.currentKind == CLCompatTestKindInflow && inflowWindowOpen && chargeRestored) {
+        // 重试写在途时不重复计为恢复事件（防重入），等写落定后由生效样本重开窗口
+        if (!self.inflowRetryInFlight) {
+            [self inflowRetryOrExhaust];
         }
-        self.inflowRetries++;
-        [self emitPhase:[NSString stringWithFormat:CLL(@"禁流被系统恢复，正在重新下发禁流（第 %d 次）"), (int)self.inflowRetries]];
-        self.inflowRetryInFlight = YES;
-        __weak typeof(self) weakSelf = self;
-        [self beginWrite];
-        [[CLAPIClient shared] setInflowStatus:NO completion:^(NSDictionary * _Nullable resp, NSError * _Nullable error) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [weakSelf endWrite];
-                if (!weakSelf || weakSelf.cancelRequested) return;
-                weakSelf.inflowRetryInFlight = NO;
-                // 确认窗口重开：从下一采样起重新累计，判定窗口统计同步重置
-                weakSelf.confirmStartIndex = weakSelf.samples.count;
-                weakSelf.confirmMaxA = NSIntegerMin;
-                weakSelf.confirmMinA = NSIntegerMax;
-            });
-        }];
         return;
     }
 
@@ -749,6 +761,32 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
                                      : CLCompatTestVerdictUnsupported)
                             message:nil];
     }
+}
+
+// 充电被系统恢复（或重试写未在观察期内生效）：重下发禁流或判"禁流无法维持"。
+// 窗口关闭（confirmStartIndex=-1），自写再次生效的样本重开。
+- (void)inflowRetryOrExhaust {
+    if (self.inflowRetries >= CLCompatInflowMaxRetries) {
+        [self finishTestWithVerdict:CLCompatTestVerdictUnsupported
+                            message:CLL(@"禁流无法维持：充电被系统恢复且重试已耗尽")];
+        return;
+    }
+    self.inflowRetries++;
+    [self emitPhase:[NSString stringWithFormat:CLL(@"禁流被系统恢复，正在重新下发禁流（第 %d 次）"), (int)self.inflowRetries]];
+    self.inflowRetryInFlight = YES;
+    self.confirmStartIndex = -1;
+    self.inflowChargeStreak = 0;
+    __weak typeof(self) weakSelf = self;
+    [self beginWrite];
+    [[CLAPIClient shared] setInflowStatus:NO completion:^(NSDictionary * _Nullable resp, NSError * _Nullable error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf endWrite];
+            if (!weakSelf || weakSelf.cancelRequested) return;
+            // 窗口不在此重置：由下一个「写生效」样本重开
+            weakSelf.inflowRetryInFlight = NO;
+            weakSelf.inflowChargeStreak = 0;
+        });
+    }];
 }
 
 #pragma mark - 单项收尾与回稳
@@ -908,7 +946,7 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
 + (void)runPrecheckWithCompletion:(void(^)(NSDictionary<NSString *, NSNumber *> *results))completion {    [[CLAPIClient shared] getBatteryInfoWithCompletion:^(NSDictionary * _Nullable resp, NSError * _Nullable error) {
         dispatch_async(dispatch_get_main_queue(), ^{
             NSMutableDictionary<NSString *, NSNumber *> *r = [@{
-                @"daemon": @NO, @"plugged": @NO, @"charging": @NO, @"battery": @NO
+                @"daemon": @NO, @"plugged": @NO, @"battery": @NO
             } mutableCopy];
             NSDictionary *data = nil;
             if (error == nil && [resp isKindOfClass:[NSDictionary class]] && [resp[@"status"] integerValue] == 0) {
@@ -917,7 +955,6 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
             r[@"daemon"] = @(data != nil);
             if (data) {
                 r[@"plugged"] = @([data[@"ExternalConnected"] boolValue]);
-                r[@"charging"] = @([data[@"IsCharging"] boolValue]);
                 NSInteger cap = [data[@"CurrentCapacity"] integerValue];
                 r[@"battery"] = @(cap >= 10 && cap <= 95);
             }
@@ -1091,10 +1128,9 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
     CLCompatCard *card = [[CLCompatCard alloc] init];
     [card addSectionHeader:CLL(@"说明")];
     [card addTipRow:CLL(@"一键检测本机是否支持 CL 的停充与禁流控制。测试会短暂停充或禁流（每项最长 2 分钟），结束后自动恢复配置。")];
-    [card addTipRow:CLL(@"请在插电且正在充电时运行；既不支持停充也不支持禁流的设备不被 CL 支持。")];
+    [card addTipRow:CLL(@"请在插电状态下运行；既不支持停充也不支持禁流的设备不被 CL 支持。")];
     [card addTipRow:CLL(@"测试期间请勿拔掉充电线：禁流生效的判定依赖「电源已连接」状态的切换，拔线会造成误判。")];
     [card addTipRow:CLL(@"开始测试时会自动恢复充电基线；电量接近满电可能无法恢复，请在电量较低时重试。")];
-    [card addTipRow:CLL(@"前置检查显示的是点击开始时的状态；测试过程中充电状态会按测试需要自动切换。")];
     [self.mainStack addArrangedSubview:card];
 }
 
@@ -1103,7 +1139,6 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
     [self.precheckCard addSectionHeader:CLL(@"前置检查")];
     self.precheckRows[@"daemon"] = [self.precheckCard addValueRowWithTitle:CLL(@"daemon 在线") value:@"—"];
     self.precheckRows[@"plugged"] = [self.precheckCard addValueRowWithTitle:CLL(@"已插电") value:@"—"];
-    self.precheckRows[@"charging"] = [self.precheckCard addValueRowWithTitle:CLL(@"正在充电") value:@"—"];
     self.precheckRows[@"battery"] = [self.precheckCard addValueRowWithTitle:CLL(@"电量 10%–95%") value:@"—"];
     [self.mainStack addArrangedSubview:self.precheckCard];
 }
@@ -1480,19 +1515,13 @@ static void *kCLCompatRowHandlerKey = &kCLCompatRowHandlerKey;
     NSDictionary<NSString *, NSString *> *failMessages = @{
         @"daemon": CLL(@"daemon 未运行"),
         @"plugged": CLL(@"未插电，请插电后重试"),
-        @"charging": CLL(@"未在充电，开始时将自动恢复"),
         @"battery": CLL(@"电量需在 10%–95% 之间"),
     };
     for (NSString *key in self.precheckRows) {
         UILabel *label = self.precheckRows[key];
         BOOL ok = results[key].boolValue;
         label.text = ok ? @"✓" : failMessages[key];
-        // charging 不再硬阻断：未充电时以橙色提示"将自动恢复"
-        if ([key isEqualToString:@"charging"]) {
-            label.textColor = ok ? [UIColor systemGreenColor] : [UIColor systemOrangeColor];
-        } else {
-            label.textColor = ok ? [UIColor systemGreenColor] : [UIColor systemRedColor];
-        }
+        label.textColor = ok ? [UIColor systemGreenColor] : [UIColor systemRedColor];
         // 失败文案较长，放宽右对齐截断
         label.adjustsFontSizeToFitWidth = ok ? YES : NO;
         label.minimumScaleFactor = ok ? 1.0 : 0.7;
