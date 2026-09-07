@@ -1,0 +1,8 @@
+{
+  "openspec_proposal": "docs/openspec/changes/fix-compat-retry-race-precheck/proposal.md",
+  "openspec_design": "docs/openspec/changes/fix-compat-retry-race-precheck/design.md",
+  "openspec_tasks": "docs/openspec/changes/fix-compat-retry-race-precheck/tasks.md",
+  "openspec_delta_spec": "docs/openspec/changes/fix-compat-retry-race-precheck/specs/battery-compatibility-test/spec.md",
+  "build_tasks_complete": "docs/openspec/changes/fix-compat-retry-race-precheck/tasks.md",
+  "archive_directory": "docs/openspec/changes/archive/2026-09-07-fix-compat-retry-race-precheck"
+}
