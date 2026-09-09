@@ -900,7 +900,7 @@
 						"$(PROJECT_DIR)/ChargeLimiter",
 						/opt/theos/vendor/lib/iphone/rootless,
 					);
-					MARKETING_VERSION = 1.15.3;
+					MARKETING_VERSION = 1.16.0;
 				MonkeyDevBuildPackageOnAnyBuild = NO;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = NO;
@@ -955,7 +955,7 @@
 						"$(PROJECT_DIR)/ChargeLimiter",
 						/opt/theos/vendor/lib/iphone/rootless,
 					);
-					MARKETING_VERSION = 1.15.3;
+					MARKETING_VERSION = 1.16.0;
 				MonkeyDevBuildPackageOnAnyBuild = NO;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = NO;
@@ -1143,7 +1143,7 @@
 						"$(PROJECT_DIR)/ChargeLimiter",
 						/opt/theos/vendor/lib,
 					);
-					MARKETING_VERSION = 1.15.3;
+					MARKETING_VERSION = 1.16.0;
 				MonkeyDevBuildPackageOnAnyBuild = NO;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = NO;
@@ -1189,7 +1189,7 @@
 						"$(PROJECT_DIR)/ChargeLimiter",
 						/opt/theos/vendor/lib,
 					);
-					MARKETING_VERSION = 1.15.3;
+					MARKETING_VERSION = 1.16.0;
 				MonkeyDevBuildPackageOnAnyBuild = NO;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = NO;
@@ -1238,7 +1238,7 @@
 						"$(PROJECT_DIR)/ChargeLimiter",
 						/opt/theos/vendor/lib,
 					);
-					MARKETING_VERSION = 1.15.3;
+					MARKETING_VERSION = 1.16.0;
 				MonkeyDevBuildPackageOnAnyBuild = NO;
 				MonkeyDevDeviceIP = 192.168.1.12;
 				MonkeyDevInstallOnAnyBuild = NO;
@@ -1288,7 +1288,7 @@
 						"$(PROJECT_DIR)/ChargeLimiter",
 						/opt/theos/vendor/lib,
 					);
-					MARKETING_VERSION = 1.15.3;
+					MARKETING_VERSION = 1.16.0;
 				MonkeyDevBuildPackageOnAnyBuild = NO;
 				MonkeyDevDeviceIP = 192.168.1.12;
 				MonkeyDevInstallOnAnyBuild = NO;
@@ -1338,7 +1338,7 @@
 						"$(PROJECT_DIR)/ChargeLimiter",
 						/opt/theos/vendor/lib/iphone/rootless,
 					);
-					MARKETING_VERSION = 1.15.3;
+					MARKETING_VERSION = 1.16.0;
 				MonkeyDevBuildPackageOnAnyBuild = NO;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = NO;
@@ -1393,7 +1393,7 @@
 						"$(PROJECT_DIR)/ChargeLimiter",
 						/opt/theos/vendor/lib/iphone/rootless,
 					);
-					MARKETING_VERSION = 1.15.3;
+					MARKETING_VERSION = 1.16.0;
 				MonkeyDevBuildPackageOnAnyBuild = NO;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = NO;
@@ -1447,7 +1447,7 @@
 					/opt/theos/vendor/lib/iphone/roothide,
 					/opt/theos/vendor/lib,
 				);
-				MARKETING_VERSION = 1.15.3;
+				MARKETING_VERSION = 1.16.0;
 				MonkeyDevBuildPackageOnAnyBuild = NO;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = NO;
@@ -1504,7 +1504,7 @@
 					/opt/theos/vendor/lib/iphone/roothide,
 					/opt/theos/vendor/lib,
 				);
-				MARKETING_VERSION = 1.15.3;
+				MARKETING_VERSION = 1.16.0;
 				MonkeyDevBuildPackageOnAnyBuild = NO;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = NO;
@@ -1564,7 +1564,7 @@
 					/opt/theos/vendor/lib/iphone/roothide,
 					/opt/theos/vendor/lib,
 				);
-				MARKETING_VERSION = 1.15.3;
+				MARKETING_VERSION = 1.16.0;
 				MonkeyDevBuildPackageOnAnyBuild = NO;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = NO;
@@ -1623,7 +1623,7 @@
 					/opt/theos/vendor/lib/iphone/roothide,
 					/opt/theos/vendor/lib,
 				);
-				MARKETING_VERSION = 1.15.3;
+				MARKETING_VERSION = 1.16.0;
 				MonkeyDevBuildPackageOnAnyBuild = NO;
 				MonkeyDevDeviceIP = 127.0.0.1;
 				MonkeyDevInstallOnAnyBuild = NO;
