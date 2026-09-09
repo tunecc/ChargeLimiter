@@ -497,3 +497,24 @@
 "系统自愈" = "System self-heal";
 "释放后恢复" = "Restored after release";
 "检测到退出充电（%ds）" = "Charge-state exit detected (%ds)";
+
+/* v1.16.0 补齐缺失翻译 */
+"1. 长时间轻负载插电：观察电量是否稳定停留在目标附近，是否频繁补电。" = "1. Light load, plugged in for a long time: check the battery stays steady near the target without frequent top-ups.";
+"2. 中高负载插电：观察电量是否在保持区间内缓慢下滑，以及低于下边界后才恢复补电。" = "2. Medium/high load, plugged in: check the battery drifts down slowly within the hold band and tops up only after falling below the lower edge.";
+"\n\n同时检测到旧版残留文件，可先删除残留再迁移：\n%@" = "\n\nLegacy leftover files were also detected; you can remove them before migrating:\n%@";
+"一键检测停充 / 智能停充 / 禁流支持" = "One-tap check of Stop / Smart Stop / Inflow support";
+"供电环境" = "Power environment";
+"保持" = "Hold";
+"保持区间内等待下一次检查" = "Within hold band; waiting for the next check";
+"围绕“停止充电”目标维持一个缓冲区间，模拟 AlDente 的 Sailing Mode" = "Keeps a buffer band around the charge-stop target, mimicking AlDente's Sailing Mode";
+"将尝试多种停充写法（每条观察约 2 秒）并自动恢复，整轮可能需要 1–2 分钟。请插着充电器运行。" = "Tries several stop-charge write variants (about 2 s of observation each) and restores them automatically. A full run may take 1–2 minutes. Keep the charger connected.";
+"插电保持配置已更新" = "Sailing Mode settings updated";
+"最近充电命令时间" = "Last charge command";
+"最近禁流/恢复时间" = "Last inflow on/off";
+"最近策略切换" = "Recent policy changes";
+"温控" = "Thermal";
+"立即刷新" = "Refresh now";
+"系统控制" = "System-managed";
+"补电阈值" = "Recharge threshold";
+"请输入 1 ~ 10 之间的分钟数\n达到保持目标后，会按这个间隔检查一次是否需要恢复补电" = "Enter a number from 1 to 10 (minutes)\nAfter the hold target is reached, the app checks at this interval whether a top-up is needed";
+"请输入 1 ~ 10 之间的百分比\n达到目标后，电量低于这个阈值时才会恢复补电" = "Enter a percentage from 1 to 10\nAfter the target is reached, a top-up starts only when the battery drops below this threshold";
