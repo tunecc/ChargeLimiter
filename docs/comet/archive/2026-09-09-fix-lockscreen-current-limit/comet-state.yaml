@@ -1,0 +1,283 @@
+schema: comet.native.v4
+name: fix-lockscreen-current-limit
+language: zh-CN
+phase: archive
+status: done
+state_version: 14
+brief: brief.md
+shape_confirmation_hash: da35ec0cec9a7972aa64a4a2ee42e99b30f47ea7263ac007edd45f7caaf9a9c1
+spec_changes: []
+workspace:
+  isolation: current
+  change_branch: main
+  target_branch: main
+  finish: null
+loop:
+  stage: done
+  goal_cycle: 2
+  iteration: 1
+  attempt: 1
+  retry_epoch: 0
+  failed_iteration_count: 0
+  no_progress_count: 0
+  execution_failure_count: 0
+  previous_unresolved_ids: []
+  next_action: null
+acceptance:
+  - id: A1
+    source: brief.md
+    text: A1：交付物 `b8c0764` 在 main HEAD 在位；读数驱动闭环符号（desired/sync 闭环、60s 自愈定时器、200ms
+      去抖、读回校验、粘滞兜底）全仓源码零残留，既有测试
+      `scripts/tests/test_limit_inflow_command_driven.py` 通过。
+    result: passed
+    reason:
+      text: git merge-base --is-ancestor b8c0764 main 退出码 0，b8c0764 确为 main HEAD
+        99635a0 祖先；b8c0764 删除 daemon.mm 闭环约 220 行、utils.mm 9 行并删除
+        test_thermal_lockscreen_hold.py /
+        test_thermal_session_gate.py（两文件已不存在）。对
+        desiredThermalSimulationModeForCurrentState|syncThermalSimulationModeForCurrentState|getThermalSimulationModePref|refreshThermalSelfHealTimer|g_thermalSelfHealTimer|g_thermalLimitActive|kThermalLimitStickyWindowSeconds|thermal_session_sticky_hold|thermal_write_unconfirmed|thermal_desired_downgrade|debounce
+        在 *.mm/*.h/*.m/*.c/*.cpp/*.py/*.swift 全仓扫描零命中（仅 CHANGELOG.md:38
+        历史记载，非源码）；daemon.mm 已无任何
+        dispatch_source_create。scripts/tests/test_limit_inflow_command_driven.py
+        本机重跑 7 tests OK，与 Runtime 检查一致。
+      truncated: false
+  - id: A2
+    source: brief.md
+    text: A2：thermal 模式写入唯一入口为 `setThermalSimulationMode`（NSUserDefaults
+      suite=com.apple.cltm），仅由充电命令边沿（setBatteryStatus
+      停充→默认档/开充→限流档）与配置变更边沿（set_conf /
+      set_limit_inflow）触发；电池事件流不参与（onBatteryEventEnd 为空），无任何定时器可达 thermal 写入。
+    result: passed
+    reason:
+      text: thermal 写入唯一入口 setThermalSimulationMode（utils.mm:3539-3545，NSUserDefaults
+        suiteName=com.apple.cltm 写
+        thermalSimulationMode），全仓仅两个调用点：daemon.mm:1835（applyThermalModeForCurrentState）与
+        daemon.mm:1878（restoreThermalSimulationForReset 写
+        off，仅限卸载/退出复位链，非限流控制）。applyThermalModeForCurrentState
+        触发点全部为边沿：setBatteryStatus（daemon.mm:1843，停充→g_chargeCommandEnabled=NO→默认档/开充→YES→限流档，见决策函数
+        1821-1832）、set_conf（daemon.mm:3578-3586，键
+        adv_def_thermal_mode/adv_limit_inflow/adv_limit_inflow_mode/adv_thermal_mode_lock）、set_limit_inflow_config（daemon.mm:3617）。onBatteryEventEnd
+        为空（daemon.mm:2607-2610，仅注释，调用点 3284/3313）。决策函数只读 4
+        个配置键+g_chargeCommandEnabled，不读系统实时信号。全 daemon 仅 3 个 NSTimer（752
+        holdMonitor、774 disableInflowRetry、862 trollStoreBundleCheck）：前两者只能经
+        refreshBatteryStateAndApplyPolicy→applyChargePolicy 的充电命令边沿间接连带 thermal
+        写入，无定时器直接发起 thermal 写；无 60s 自愈定时器残留。
+      truncated: false
+  - id: A3
+    source: brief.md
+    text: A3：关闭限流（`adv_limit_inflow` off 且无 `adv_thermal_mode_lock`）后，集中决策函数返回默认
+      thermal 档（`adv_def_thermal_mode`，默认关闭）。
+    result: passed
+    reason:
+      text: 'targetThermalModeForCurrentState（daemon.mm:1821-1832）：lock=NO
+        跳过锁定分支；limitInflow=NO 跳过限流分支，返回
+        defaultMode=getLocalString(@"adv_def_thermal_mode", @"off")；initConf 默认值
+        adv_def_thermal_mode: off（daemon.mm:3348）。即 adv_limit_inflow off 且无
+        adv_thermal_mode_lock 时集中决策函数返回默认档（默认关闭），不依赖任何电池读数。'
+      truncated: false
+  - id: A4
+    source: brief.md
+    text: A4：停充、恢复充电既有控制路径无回归：仓库既有相关单测全部通过。
+    result: passed
+    reason:
+      text: 停充/恢复充电相关既有单测全部通过：本机运行 16
+        个相关模块（test_limit_inflow_command_driven/atomic_config/store_batch/ui_atomic、test_ios17_charge_override_paths、test_ios17_inflow_flicker_guard、test_ios17_ui_hold_status_display、test_temp_pause_hysteresis、test_charge_enable_verify、test_charge_control_probe_logic、test_key_readpoint_rewiring、test_smart_charge_reset_logic、test_smart_charge_restore_after_disable、test_acccharge_lpm_boot_recovery、test_thermal_mode_live_refresh、test_config_write_failure_feedback）共
+        72 tests OK；test_limit_inflow_command_driven 单独以 Runtime 同命令重跑亦通过（7
+        tests OK）。全仓 205 项中唯一失败为
+        test_version_single_source.test_release_version_is_consistent（版本号元数据期望
+        1.15.2 vs 实际 1.15.3），与停充/恢复充电控制路径无关，不落入 A4 的相关单测范围。
+      truncated: false
+builder_handoff:
+  candidate_id: 72a75e03-f342-4f91-9b39-e6159ac71dc4
+  identity_provider: skill-coordinated
+  builder_execution_ref: skill-coordinated:builder:73bcc099-9982-4ebe-b6b9-dd1dfbc28d3c
+  iteration: 1
+  summary:
+    text: 收尾轮(修订后验收 A1-A4):无代码变更,候选为 main HEAD 99635a0。A1 对应事实:b8c0764 为 HEAD
+      祖先,读数闭环符号源码零残留,既有单测 test_limit_inflow_command_driven 通过。A2 对应事实:thermal
+      写入唯一入口 setThermalSimulationMode(utils.mm),决策函数
+      targetThermalModeForCurrentState 只读命令+配置,4 个调用点均为命令/配置边沿,onBatteryEventEnd
+      为空,无定时器可达。A3 对应事实:决策函数在 adv_limit_inflow off 且无 adv_thermal_mode_lock 时返回
+      adv_def_thermal_mode 默认档。A4 对应事实:仓库既有单测在本轮 Runtime
+      检查中通过。独立只读审查已在首轮完成,结论不变。
+    truncated: false
+  addressed_acceptance_ids:
+    - A1
+    - A2
+    - A3
+    - A4
+  checks:
+    - name:
+        text: git-merge-base-ancestor-b8c0764
+        truncated: false
+      result: passed
+      note:
+        text: git merge-base --is-ancestor b8c0764 main 退出码 0
+        truncated: false
+    - name:
+        text: git-worktree-clean
+        truncated: false
+      result: passed
+      note:
+        text: git status --short 为空,候选即 main HEAD 99635a0
+        truncated: false
+    - name:
+        text: test-limit-inflow-command-driven
+        truncated: false
+      result: passed
+      note:
+        text: python3 -m unittest scripts.tests.test_limit_inflow_command_driven 退出码
+          0(Runtime 首轮已执行)
+        truncated: false
+  checks_truncated: false
+  known_limits:
+    - text: legacy job 清理按用户决定另立 change;锁屏真机证据不再采集;拔线残留记为已接受原版行为
+      truncated: false
+  known_limits_truncated: false
+  review:
+    status: passed
+    summary:
+      text: 独立只读审查(首轮)通过且候选未变:b8c0764 为 main HEAD 祖先;被删符号源码零残留;thermal 写入唯一入口
+        utils.mm:3539,daemon 决策函数 daemon.mm:1819 只读命令与配置,调用点均为命令/配置边沿;工作树干净。
+      truncated: false
+    reviewer_execution_ref: readonly-review-subagent-2026-09-09-fix-lockscreen-current-limit
+  submitted_at: 2026-09-09T06:01:52.220Z
+blockers: []
+verification:
+  candidate_id: 72a75e03-f342-4f91-9b39-e6159ac71dc4
+  identity_provider: skill-coordinated
+  verifier_execution_ref: skill-coordinated:verifier:60bb736f-0efd-4bd9-81a2-47bd3ceb56ba
+  iteration: 1
+  attempt: 1
+  assurance: skill-coordinated
+  verdict: pass
+  checks:
+    - id: chk-ancestor
+      name:
+        text: git-ancestor-b8c0764
+        truncated: false
+      argv_display:
+        - text: merge-base
+          truncated: false
+        - text: --is-ancestor
+          truncated: false
+        - text: b8c0764
+          truncated: false
+        - text: main
+          truncated: false
+      argv_truncated: false
+      cwd_ref: .
+      status: passed
+      exit_code: 0
+      duration_ms: 20
+    - id: chk-clean
+      name:
+        text: git-worktree-clean
+        truncated: false
+      argv_display:
+        - text: status
+          truncated: false
+        - text: --porcelain
+          truncated: false
+      argv_truncated: false
+      cwd_ref: .
+      status: passed
+      exit_code: 0
+      duration_ms: 17
+    - id: chk-cmd-driven-test
+      name:
+        text: test-limit-inflow-command-driven
+        truncated: false
+      argv_display:
+        - text: -m
+          truncated: false
+        - text: unittest
+          truncated: false
+        - text: scripts.tests.test_limit_inflow_command_driven
+          truncated: false
+        - text: -v
+          truncated: false
+      argv_truncated: false
+      cwd_ref: .
+      status: passed
+      exit_code: 0
+      duration_ms: 73
+  summary:
+    text: main HEAD 99635a0 在代码层完整满足修订后验收 A1-A4：b8c0764 在位且读数驱动闭环符号源码零残留，thermal
+      写入收敛为 setThermalSimulationMode 唯一入口并仅由充电命令边沿与配置变更边沿驱动（onBatteryEventEnd
+      为空、无定时器直达写入），关闭限流时决策函数返回默认档，充电控制相关既有单测全部通过。遗留项均为 brief 明确移出验收的 Non-goals
+      或元数据级红项，不阻塞归档。
+    truncated: false
+  risks:
+    - text: 锁屏真机 thermal 限流有效性未验证——brief 已按 2026-09-09 决定移入 Non-goals，按上游文档化系统限制对待。
+      truncated: false
+    - text: legacy chaoge.ChargeLimiter launchd job 清理未实现（postinst 未清理旧 job），已决定另立
+        change。
+      truncated: false
+    - text: 拔线后 thermalSimulationMode 残留限流档至下一次充电命令边沿——已记录为 b8c0764 明示接受的原版行为。
+      truncated: false
+    - text: 无 cltm pref 读回诊断能力，'pref 被清除'与'有效 state 回落'现场不可区分，作为已知限制遗留。
+      truncated: false
+    - text: test_version_single_source.test_release_version_is_consistent 在 main HEAD
+        为红：79f2658 将版本 bump 至 1.15.3 但未同步测试期望 1.15.2；与充电控制无关且不属 A4 范围，建议后续小改修正。
+      truncated: false
+    - text: TrollStore bundle 检查定时器（daemon.mm:862）在 bundle 丢失路径经
+        resetBatteryStatusWithContext(YES,@"bundle_missing")→restoreThermalSimulationForReset
+        写 off（daemon.mm:847/1877-1879），属退出前复位恢复语义（写默认 off，非限流写入），对命令驱动语义无影响。
+      truncated: false
+  risks_truncated: false
+  completed_at: 2026-09-09T06:22:51.048Z
+history:
+  - goal_cycle: 1
+    iteration: 1
+    attempt: 1
+    outcome: fail
+    unresolved_ids:
+      - A1
+      - A2
+      - A3
+      - A4
+      - A5
+    summary:
+      text: 交付物 b8c0764 本身在 main HEAD 完整在位：desired 读数闭环/自愈/去抖/读回/粘滞零残留，thermal
+        写入收敛为命令与配置边沿唯一入口，代码层根因修复成立。但逐项验收中 A2（legacy launchd 清理交付物缺失）与
+        A5（拔线后限流档残留，不恢复默认 thermal 模式）为代码层可判定的不满足，判 failed；A1/A3/A4
+        因锁屏真机配对证据未采集（2026-09-09 收尾决定放弃）判 blocked。按收尾决定不改变未满足项判定，整体 verdict 为
+        fail。
+      truncated: false
+    completed_at: 2026-09-09T05:12:43.649Z
+  - goal_cycle: 1
+    iteration: 2
+    attempt: 0
+    outcome: recovery
+    unresolved_ids: []
+    summary:
+      text: Native confirmed acceptance criteria changed
+      truncated: false
+    completed_at: 2026-09-09T06:00:23.624Z
+  - goal_cycle: 2
+    iteration: 1
+    attempt: 1
+    outcome: pass
+    unresolved_ids: []
+    summary:
+      text: main HEAD 99635a0 在代码层完整满足修订后验收 A1-A4：b8c0764 在位且读数驱动闭环符号源码零残留，thermal
+        写入收敛为 setThermalSimulationMode 唯一入口并仅由充电命令边沿与配置变更边沿驱动（onBatteryEventEnd
+        为空、无定时器直达写入），关闭限流时决策函数返回默认档，充电控制相关既有单测全部通过。遗留项均为 brief 明确移出验收的 Non-goals
+        或元数据级红项，不阻塞归档。
+      truncated: false
+    completed_at: 2026-09-09T06:22:51.048Z
+history_overflow:
+  dropped_entries: 0
+  first_dropped_at: null
+  last_dropped_at: null
+  outcome_counts:
+    pass: 0
+    fail: 0
+    blocked: 0
+    execution-error: 0
+    recovery: 0
+verification_result: pass
+verification_report: verification.md
+archived: true
+created_at: 2026-08-19T12:13:48.687Z
