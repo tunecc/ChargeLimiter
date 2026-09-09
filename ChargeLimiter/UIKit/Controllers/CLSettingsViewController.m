@@ -6579,7 +6579,7 @@ static BOOL CLDisplayedPowerStateUsesExternalPower(CLBatteryManager *manager) {
     [self updateCardValue:self.infoCard title:CLL(@"高温模拟") value:[self thermalModeLabel:manager.thermalSimulateMode]];
     [self updateCardValue:self.infoCard title:CLL(@"电流") value:[NSString stringWithFormat:@"%ld mA", (long)manager.amperage]];
     [self updateCardValue:self.infoCard title:CLL(@"电压") value:[NSString stringWithFormat:@"%.2f V", manager.voltage]];
-    [self updateCardValue:self.infoCard title:CLL(@"循环") value:[NSString stringWithFormat:@"%ld 次", (long)manager.cycleCount]];
+    [self updateCardValue:self.infoCard title:CLL(@"循环") value:[NSString stringWithFormat:CLL(@"%ld 次"), (long)manager.cycleCount]];
     
     [self updateCardValue:self.powerPathCard title:CLL(@"供电状态") value:powerStateLabel];
     [self updateCardValue:self.powerPathCard title:CLL(@"充电命令") value:[self chargeCommandLabelForManager:manager]];
