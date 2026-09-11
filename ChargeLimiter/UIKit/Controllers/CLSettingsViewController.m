@@ -4351,23 +4351,27 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     
     NSLayoutConstraint *widthConstraint = [self.mainStack.widthAnchor constraintEqualToAnchor:containerView.widthAnchor constant:-32];
     widthConstraint.priority = UILayoutPriorityDefaultHigh;
-    
+    // 列宽硬上限（required）= 容器-32：防止英文长文案把 750 等宽约束打破、
+    // 列被撑到 600pt 上限（iPad 布局）。与主页 maxWidthConstraint 同一修复。
+    NSLayoutConstraint *maxWidthConstraint = [self.mainStack.widthAnchor constraintLessThanOrEqualToAnchor:containerView.widthAnchor constant:-32];
+
     [NSLayoutConstraint activateConstraints:@[
         [self.scrollView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
         [self.scrollView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.scrollView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         [self.scrollView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
-        
+
         [containerView.topAnchor constraintEqualToAnchor:self.scrollView.topAnchor],
         [containerView.bottomAnchor constraintEqualToAnchor:self.scrollView.bottomAnchor],
         [containerView.leadingAnchor constraintEqualToAnchor:self.scrollView.leadingAnchor],
         [containerView.trailingAnchor constraintEqualToAnchor:self.scrollView.trailingAnchor],
         [containerView.widthAnchor constraintEqualToAnchor:self.scrollView.widthAnchor],
-        
+
         [self.mainStack.topAnchor constraintEqualToAnchor:containerView.topAnchor constant:20],
         [self.mainStack.bottomAnchor constraintEqualToAnchor:containerView.bottomAnchor constant:-40],
         [self.mainStack.centerXAnchor constraintEqualToAnchor:containerView.centerXAnchor],
         widthConstraint,
+        maxWidthConstraint,
         [self.mainStack.widthAnchor constraintLessThanOrEqualToConstant:600],
     ]];
     
@@ -5403,23 +5407,28 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     
     NSLayoutConstraint *widthConstraint = [self.mainStack.widthAnchor constraintEqualToAnchor:containerView.widthAnchor constant:-32];
     widthConstraint.priority = UILayoutPriorityDefaultHigh;
+    // 列宽硬上限（required）= 容器-32：英文文案更长，内容固有宽度超屏时 Auto Layout
+    // 会打破上面 750 的等宽约束、把列撑到 600pt 上限（iPad 布局），iPhone 上表现为
+    // 两侧留白变大、控件被推出屏幕外。required 上限让超宽内容改为截断让位。
+    NSLayoutConstraint *maxWidthConstraint = [self.mainStack.widthAnchor constraintLessThanOrEqualToAnchor:containerView.widthAnchor constant:-32];
 
     [NSLayoutConstraint activateConstraints:@[
         [self.scrollView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
         [self.scrollView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.scrollView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         [self.scrollView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
-        
+
         [containerView.topAnchor constraintEqualToAnchor:self.scrollView.topAnchor],
         [containerView.bottomAnchor constraintEqualToAnchor:self.scrollView.bottomAnchor],
         [containerView.leadingAnchor constraintEqualToAnchor:self.scrollView.leadingAnchor],
         [containerView.trailingAnchor constraintEqualToAnchor:self.scrollView.trailingAnchor],
         [containerView.widthAnchor constraintEqualToAnchor:self.scrollView.widthAnchor],
-        
+
         [self.mainStack.topAnchor constraintEqualToAnchor:containerView.topAnchor constant:60],
         [self.mainStack.bottomAnchor constraintEqualToAnchor:containerView.bottomAnchor constant:-40],
         [self.mainStack.centerXAnchor constraintEqualToAnchor:containerView.centerXAnchor],
         widthConstraint,
+        maxWidthConstraint,
         [self.mainStack.widthAnchor constraintLessThanOrEqualToConstant:600],
     ]];
     
