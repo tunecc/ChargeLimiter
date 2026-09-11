@@ -1907,6 +1907,12 @@ static void restoreMCLStateAfterEnable(void) {
     if (!isSmartChargeMCLSupported()) {
         return;
     }
+    // 记忆键不存在 = CL 从未执行过永久停用、从未动过 MCL：不得回写，
+    // 否则会把从未停用用户的"80% 限制"（MCL=YES）按缺省值 NO 静默降级为
+    // "优化电池充电"（违背还原不得覆盖用户主动选择的约束）。
+    if (getlocalKV(kSmartChargeMCLStateBeforeDisableKey) == nil) {
+        return;
+    }
     BOOL mclBefore = getLocalBool(kSmartChargeMCLStateBeforeDisableKey, NO);
     if (!setSmartChargeMCLEnabled(mclBefore)) {
         NSFileErrorLog(@"MCL restore to %d failed", mclBefore);
@@ -1944,6 +1950,8 @@ static void restoreSmartChargeForReset(NSString* reason) {
 
 static void restoreThermalSimulationForReset(void) {
     setThermalSimulationMode(@"off");
+    // spec『还原的对象与语义』第 5 条：温控与 PPM 模拟双双归零。
+    setPPMSimulationMode(@"off");
 }
 
 static void restoreAcceleratedChargeStateForReset(void) {
