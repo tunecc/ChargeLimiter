@@ -79,6 +79,12 @@ BOOL isSmartChargeEnable(); // 系统自带电池优化
 int getSmartChargeStatus(); // 0:disable 1:enable 2:fullcharge 3:temporarily_disable
 BOOL temporarilyDisableSmartCharge();
 void setSmartChargeEnable(BOOL flag);
+// iOS 17+ MCL（Manual Charge Limit，"充电优化"三选项的 80% 限制开关）。
+// MCL selector 仅 iOS 17+ 存在：探测内含 @available + respondsToSelector 门控，
+// 旧系统探测恒 NO，get 恒 NO、set 恒 NO（无效），行为与 iOS 16 一致。
+BOOL isSmartChargeMCLSupported(void);
+BOOL getSmartChargeMCLEnabled(void);
+BOOL setSmartChargeMCLEnabled(BOOL flag);
 
 /* ---------------- App ---------------- */
 id getlocalKV(NSString* key);

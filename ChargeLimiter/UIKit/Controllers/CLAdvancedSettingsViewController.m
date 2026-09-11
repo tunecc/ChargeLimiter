@@ -877,6 +877,7 @@ static const NSInteger CLAdvHoldModeTag = 302;
 static const NSInteger CLAdvSystemCapacityControlAt100Tag = 315;
 static const NSInteger CLAdvHoldTempDisableSmartChargeTag = 312;
 static const NSInteger CLAdvDisableSmartChargeTag = 311;
+static const NSInteger CLAdvRestoreSmartChargeTag = 316;
 static const NSInteger CLAdvHoldModeBandTag = 305;
 static const NSInteger CLAdvHoldModeBehaviorTag = 313;
 static const NSInteger CLAdvAccChargeMainTag = 399;       // 加速充电主开关（含 disclosure）
@@ -2322,6 +2323,8 @@ static const NSInteger CLAdvAccChargeLPMTag = 405;
     [smartChargeCard addSwitchRowWithIcon:@"battery.100.circle" title:CLL(@"永久停用系统优化充电") subtitle:CLL(@"直接关闭系统的优化充电策略；旧版本默认可能已开启") isOn:manager.disableSmartCharge color:[UIColor systemBlueColor] tag:CLAdvDisableSmartChargeTag target:self action:@selector(disableSmartChargeChanged:)];
     [smartChargeCard addSeparator];
     [smartChargeCard addSwitchRowWithIcon:@"clock.badge.checkmark" title:CLL(@"插电保持时临时停用") subtitle:CLL(@"仅在保持/停充阶段暂时停用，退出后尝试恢复系统优化充电") isOn:holdTempDisableSmartChargeEnabled color:[UIColor systemBlueColor] tag:CLAdvHoldTempDisableSmartChargeTag target:self action:@selector(holdTempDisableSmartChargeChanged:)];
+    [smartChargeCard addSeparator];
+    [smartChargeCard addPickerRowWithIcon:@"arrow.triangle.2.circlepath" title:CLL(@"还原系统优化充电") subtitle:CLL(@"清除本工具残留的停用/临时停用状态，恢复系统优化充电与充电控制") value:[self smartChargeRestoreValueText] color:[UIColor systemGreenColor] tag:CLAdvRestoreSmartChargeTag target:self action:@selector(restoreSmartChargeTapped:)];
     [self updateSmartChargeOptionInterlockStateInCard:smartChargeCard manager:manager];
     [self.mainStack addArrangedSubview:smartChargeCard];
 
@@ -2769,6 +2772,56 @@ static const NSInteger CLAdvAccChargeLPMTag = 405;
     }
     manager.holdTempDisableSmartCharge = sender.on;
     [[CLAPIClient shared] setConfigWithKey:@"adv_hold_temp_disable_smart_charge" value:@(sender.on) completion:nil];
+}
+
+- (NSString *)smartChargeRestoreValueText {
+    CLBatteryManager *manager = [CLBatteryManager shared];
+    switch (manager.smartChargeStatus) {
+        case 0:
+            return CLL(@"已关闭");
+        case 1:
+            return CLL(@"已启用");
+        case 2:
+            return CLL(@"满充窗口");
+        case 3:
+            return manager.smartChargeManagedByDaemon ? CLL(@"已临时停用 · 由本工具控制") : CLL(@"已临时停用");
+        default:
+            return CLL(@"未知");
+    }
+}
+
+- (void)restoreSmartChargeTapped:(UITapGestureRecognizer *)tap {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"还原系统优化充电")
+                                                                  message:CLL(@"将清除本工具残留的永久停用/临时停用状态，复位充电与禁流控制覆盖，并重新打开系统优化充电。是否继续？")
+                                                           preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"取消") style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"还原") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        [[CLAPIClient shared] restoreSmartChargeWithCompletion:^(NSDictionary * _Nullable response, NSError * _Nullable error) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                NSDictionary *data = [response[@"data"] isKindOfClass:[NSDictionary class]] ? response[@"data"] : @{};
+                NSInteger afterStatus = [data[@"after_status"] integerValue];
+                BOOL ok = (error == nil && [response[@"status"] integerValue] == 0 && (afterStatus == 1 || afterStatus == 2));
+                NSString *title = ok ? CLL(@"还原成功") : CLL(@"还原失败");
+                NSString *message;
+                if (ok) {
+                    message = CLL(@"系统优化充电已恢复。若系统设置中的选项仍异常，请重启设备后再试。");
+                } else if (error == nil && [response[@"status"] integerValue] == 0) {
+                    message = CLL(@"还原命令已执行，但系统优化充电状态未变化，请重启设备后再试。");
+                } else {
+                    message = [NSString stringWithFormat:CLL(@"操作失败：%@"), error.localizedFailureReason ?: error.localizedDescription ?: CLL(@"无法连接守护进程")];
+                }
+                UIAlertController *resultAlert = [UIAlertController alertControllerWithTitle:title
+                                                                                     message:message
+                                                                              preferredStyle:UIAlertControllerStyleAlert];
+                [resultAlert addAction:[UIAlertAction actionWithTitle:CLL(@"确定") style:UIAlertActionStyleDefault handler:nil]];
+                [self presentViewController:resultAlert animated:YES completion:nil];
+                if (ok) {
+                    [self reloadContentRows];
+                }
+            });
+        }];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)holdModeBandTapped:(UITapGestureRecognizer *)tap {

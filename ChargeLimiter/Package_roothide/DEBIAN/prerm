@@ -23,6 +23,10 @@ warn_manual_cleanup() {
     printf '[ChargeLimiter] Failed to remove shared data automatically (%s). Please remove it manually from your file manager.\n' "$1" >&2
 }
 
+warn_restore_failed() {
+    printf '[ChargeLimiter] Warning: failed to restore system charge state during removal. If Optimized Battery Charging stays off, toggle it in Settings, or reinstall ChargeLimiter and use "Restore Optimized Battery Charging".\n' >&2
+}
+
 resolve_roothide_data_dir() {
     logical_path="/var/mobile/ChargeLimiter"
     for jbroot_cmd in /usr/bin/jbroot /bin/jbroot jbroot; do
@@ -60,7 +64,9 @@ cleanup_shared_data() {
     return 1
 }
 
-"$APP_DIR/ChargeLimiterDaemon" reset_and_exit 2>/dev/null
+if ! "$APP_DIR/ChargeLimiterDaemon" reset_and_exit >/dev/null 2>&1; then
+    warn_restore_failed
+fi
 launchctl bootout system "$DAEMON_PLIST" 2>/dev/null
 launchctl bootout user/foreground "$DAEMON_PLIST" 2>/dev/null || launchctl unload "$DAEMON_PLIST" 2>/dev/null
 killall -9 ChargeLimiter ChargeLimiterDaemon 2>/dev/null

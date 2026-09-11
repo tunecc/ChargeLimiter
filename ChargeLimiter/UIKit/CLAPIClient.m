@@ -336,6 +336,13 @@ static int CLStartDaemonBestEffort(void) {
     } else if ([api isEqualToString:@"reset_conf"]) {
         NSLog(@"[CL-Mock] 重置配置");
         return @{@"status": @0};
+    } else if ([api isEqualToString:@"restore_smart_charge"]) {
+        NSLog(@"[CL-Mock] 还原系统优化充电");
+        return @{@"status": @0,
+                 @"data": @{@"before_status": @3,
+                            @"after_status": @1,
+                            @"session_cleared": @YES,
+                            @"cleared_permanent_disable": @NO}};
     } else if ([api isEqualToString:@"clear_statistics"]) {
         NSLog(@"[CL-Mock] 清空历史统计");
         return @{@"status": @0};
@@ -604,6 +611,10 @@ static int CLStartDaemonBestEffort(void) {
 
 - (void)resetConfigWithCompletion:(CLAPICallback)completion {
     [self sendRequest:@{@"api": @"reset_conf"} completion:completion];
+}
+
+- (void)restoreSmartChargeWithCompletion:(nullable CLAPICallback)completion {
+    [self sendRequest:@{@"api": @"restore_smart_charge"} completion:completion];
 }
 
 - (void)getStatisticsWithConf:(NSDictionary *)conf completion:(CLAPICallback)completion {

@@ -42,6 +42,9 @@ typedef void (^CLAPICallback)(NSDictionary *_Nullable response, NSError *_Nullab
 // 便捷方法 - 重置配置
 - (void)resetConfigWithCompletion:(nullable CLAPICallback)completion;
 
+// 便捷方法 - 还原系统优化充电（清除本工具残留的停用/临时停用状态并强制恢复）
+- (void)restoreSmartChargeWithCompletion:(nullable CLAPICallback)completion;
+
 // 便捷方法 - 获取历史统计数据
 - (void)getStatisticsWithConf:(NSDictionary *)conf completion:(CLAPICallback)completion;
 

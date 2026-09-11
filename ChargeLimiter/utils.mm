@@ -3568,12 +3568,19 @@ void setPPMSimulationMode(NSString* mode) {
     }
 }
 
-@interface PowerUISmartChargeClient
+@interface PowerUISmartChargeClient : NSObject
 - (instancetype)initWithClientName:(NSString*)name;
 - (int)isSmartChargingCurrentlyEnabled:(NSError**)err;
 - (BOOL)disableSmartCharging:(NSError**)err;
 - (BOOL)enableSmartCharging:(NSError**)err;
 - (BOOL)temporarilyDisableSmartCharging:(NSError**)err;
+// iOS 17+ Manual Charge Limit（设置"充电优化"三选项中的 80% 限制开关）。
+// 固件逆向（iPhone16,2 17.1 21B80）：三选项 = OBC(旧 SmartCharging) + MCL 组合，
+// 仅关 OBC 时设置 UI 仍显示开启；MCL 经同一 XPC 通道 client:setMCLState:withHandler:。
+- (BOOL)isMCLSupported;
+- (BOOL)isMCLCurrentlyEnabled:(NSError**)err;
+- (BOOL)enableMCL:(NSError**)err;
+- (BOOL)disableMCL:(NSError**)err;
 @end
 
 static PowerUISmartChargeClient* getSmartChargeClient() {
@@ -3600,6 +3607,59 @@ int getSmartChargeStatus() {
 
 BOOL isSmartChargeEnable() {
     return getSmartChargeStatus() > 0;
+}
+
+// iOS 17+ MCL（Manual Charge Limit，设置"充电优化"的 80% 限制开关）。
+// MCL API 是 iOS 17 才加入 PowerUISmartChargeClient 的：iOS 16 上类存在但
+// selector 不存在，直接调用会抛 unrecognized selector 打挂 daemon
+// （get_bat_info 每次都会探测）。必须 @available + respondsToSelector 双重门控，
+// 旧系统全部走 NO/无效路径。
+BOOL isSmartChargeMCLSupported(void) {
+    if (@available(iOS 17.0, *)) {
+        PowerUISmartChargeClient* client = getSmartChargeClient();
+        if (client == nil) {
+            return NO;
+        }
+        if (![client respondsToSelector:@selector(isMCLSupported)]
+            || ![client respondsToSelector:@selector(isMCLCurrentlyEnabled:)]
+            || ![client respondsToSelector:@selector(enableMCL:)]
+            || ![client respondsToSelector:@selector(disableMCL:)]) {
+            return NO;
+        }
+        return [client isMCLSupported];
+    }
+    return NO;
+}
+
+BOOL getSmartChargeMCLEnabled(void) {
+    if (!isSmartChargeMCLSupported()) {
+        return NO;
+    }
+    PowerUISmartChargeClient* client = getSmartChargeClient();
+    NSError* err = nil;
+    BOOL enabled = [client isMCLCurrentlyEnabled:&err];
+    if (err != nil) {
+        NSLog(@"getSmartChargeMCLEnabled err=%@", err);
+        return NO;
+    }
+    return enabled;
+}
+
+BOOL setSmartChargeMCLEnabled(BOOL flag) {
+    if (!isSmartChargeMCLSupported()) {
+        return NO;
+    }
+    PowerUISmartChargeClient* client = getSmartChargeClient();
+    if (getSmartChargeMCLEnabled() == flag) {
+        return YES;
+    }
+    NSError* err = nil;
+    BOOL ok = flag ? [client enableMCL:&err] : [client disableMCL:&err];
+    if (err != nil || !ok) {
+        NSLog(@"setSmartChargeMCLEnabled(%d) ok=%d err=%@", flag, ok, err);
+        return NO;
+    }
+    return YES;
 }
 
 BOOL temporarilyDisableSmartCharge() {

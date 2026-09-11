@@ -159,6 +159,7 @@ static const int kDisableInflowRetryMaxAttempts = 3;
 static const NSTimeInterval kDisableInflowRetryDelaySeconds = 0.6;
 static const NSTimeInterval kPredictiveInhibitFallbackVerifyDelaySeconds = 8.0;
 static NSString* const kDaemonResetAndExitNotifyName = @"com.chargelimiter.mod.daemon.reset_and_exit";
+static NSString* const kDaemonRestoreNotifyName = @"com.chargelimiter.mod.daemon.restore";
 
 // iOS 17 禁流态守卫：禁流态下 ExternalConnected/ExternalChargeCapable 由系统间接派生，息屏周期性刷新会抖动，
 // 不能当插电边沿判据。此函数用语义判定当前是否处于禁流态：用户开关 adv_disable_inflow=YES，或上一轮
@@ -206,6 +207,7 @@ static IONotificationPortRef gNotifyPort = NULL;
 static io_object_t iopmpsNoti = IO_OBJECT_NULL;
 static UPSDataSlim* gUPSPS = nil;
 static int gDaemonResetAndExitNotifyToken = 0;
+static int gDaemonRestoreNotifyToken = 0;
 
 NSDictionary* handleReq(NSDictionary* nsreq);
 static void onBatteryEventEnd(void);
@@ -228,6 +230,7 @@ static NSString* policyEventTypeForTransition(NSString* nextPolicyState, NSStrin
 static void appendSmartChargeCoordinationEvent(NSString* reason, int fromStatus, int toStatus, NSDictionary* info, NSDictionary* extras, time_t now);
 static void loadSmartChargeCoordinationRuntimeState(void);
 static void tryRestoreSmartChargeAfterCoordination(NSString* reason);
+static NSDictionary* performFullSmartChargeRestore(NSString* reason);
 static void performAcccharge(BOOL flag);
 static void restoreSmartChargeForReset(NSString* reason);
 static void restoreThermalSimulationForReset(void);
@@ -830,6 +833,35 @@ static void unregisterDaemonResetAndExitSignal(void) {
     }
     notify_cancel(gDaemonResetAndExitNotifyToken);
     gDaemonResetAndExitNotifyToken = 0;
+}
+
+static void requestDaemonSmartChargeRestore(void) {
+    // 与 requestDaemonResetAndExit 同模式：notify 回调在主队列执行，电池事件同样
+    // 跑在主 runloop，天然串行；还原为幂等系统级写，无需 Service 锁。
+    dispatch_async(dispatch_get_main_queue(), ^{
+        performFullSmartChargeRestore(@"daemon_restore_notify");
+        refreshBatteryStateAndApplyPolicy();
+    });
+}
+
+static void registerDaemonRestoreNotifySignal(void) {
+    if (gDaemonRestoreNotifyToken != 0) {
+        return;
+    }
+    notify_register_dispatch(kDaemonRestoreNotifyName.UTF8String,
+                             &gDaemonRestoreNotifyToken,
+                             dispatch_get_main_queue(),
+                             ^(int token) {
+        requestDaemonSmartChargeRestore();
+    });
+}
+
+static void unregisterDaemonRestoreNotifySignal(void) {
+    if (gDaemonRestoreNotifyToken == 0) {
+        return;
+    }
+    notify_cancel(gDaemonRestoreNotifyToken);
+    gDaemonRestoreNotifyToken = 0;
 }
 
 static void verifyBundleStillInstalledForCurrentMode(void) {
@@ -1858,6 +1890,38 @@ static BOOL shouldRestorePermanentSmartChargeDisableForResetReason(NSString* rea
     ] containsObject:reason ?: @""];
 }
 
+// iOS 17+ MCL（Manual Charge Limit）联动：设置"充电优化"三选项 = OBC + MCL 组合
+// （固件逆向 iPhone16,2 17.1：仅关 OBC 时设置 UI 仍显示开启，80% 限制也不受影响）。
+// 永久停用前把 MCL 原状态记入本地配置，还原/自愈时恢复，避免把用户原选的
+// "80% 限制"静默改成"优化电池充电"。旧系统 MCL 不受支持，全部为无效操作。
+static NSString* const kSmartChargeMCLStateBeforeDisableKey = @"smart_charge_mcl_state_before_disable";
+
+static void rememberMCLStateBeforeDisable(void) {
+    if (!isSmartChargeMCLSupported()) {
+        return;
+    }
+    setLocalBool(kSmartChargeMCLStateBeforeDisableKey, getSmartChargeMCLEnabled());
+}
+
+static void restoreMCLStateAfterEnable(void) {
+    if (!isSmartChargeMCLSupported()) {
+        return;
+    }
+    BOOL mclBefore = getLocalBool(kSmartChargeMCLStateBeforeDisableKey, NO);
+    if (!setSmartChargeMCLEnabled(mclBefore)) {
+        NSFileErrorLog(@"MCL restore to %d failed", mclBefore);
+    }
+}
+
+static void disableMCLForPermanentDisable(void) {
+    if (!isSmartChargeMCLSupported()) {
+        return;
+    }
+    if (!setSmartChargeMCLEnabled(NO)) {
+        NSFileErrorLog(@"MCL disable failed");
+    }
+}
+
 static void restoreSmartChargeForReset(NSString* reason) {
     loadSmartChargeCoordinationRuntimeState();
     tryRestoreSmartChargeAfterCoordination(reason ?: @"reset");
@@ -1871,7 +1935,11 @@ static void restoreSmartChargeForReset(NSString* reason) {
     if (smartChargeStatus < 0) {
         return;
     }
-    setSmartChargeEnable(shouldRestorePermanentSmartChargeDisableForResetReason(reason) ? YES : NO);
+    BOOL restoreEnable = shouldRestorePermanentSmartChargeDisableForResetReason(reason);
+    setSmartChargeEnable(restoreEnable ? YES : NO);
+    if (restoreEnable) {
+        restoreMCLStateAfterEnable();
+    }
 }
 
 static void restoreThermalSimulationForReset(void) {
@@ -1880,6 +1948,24 @@ static void restoreThermalSimulationForReset(void) {
 
 static void restoreAcceleratedChargeStateForReset(void) {
     performAcccharge(NO);
+}
+
+// 重置/卸载路径补写禁流键：上方 props 只覆盖 IsCharging/PCI/ExternalConnected，
+// iOS 17 禁流写在 FieldDiagsInflowInhibit/OBCInflowInhibit（override 写平面），
+// 不显式复位会残留到系统对抗自愈为止（非确定性）。
+static void restoreInflowOverrideForReset(void) {
+    if (!CLCanUseOverrideChargeControl()) {
+        return;
+    }
+    io_service_t overrideServ = CLCopyOverrideWriteService();
+    if (overrideServ == IO_OBJECT_NULL) {
+        return;
+    }
+    kern_return_t ret = setInflowStatusOverride(overrideServ, YES);
+    IOObjectRelease(overrideServ);
+    if (ret != 0) {
+        NSFileErrorLog(@"reset inflow restore write failed ret=%d", ret);
+    }
 }
 
 static void resetBatteryStatusWithContext(BOOL restoreRuntimeSideEffects, NSString* reason) {
@@ -1898,6 +1984,7 @@ static void resetBatteryStatusWithContext(BOOL restoreRuntimeSideEffects, NSStri
         props[@"ExternalConnected"] = @YES;
         IORegistryEntrySetCFProperties(serv, (__bridge CFTypeRef)props);
     }
+    restoreInflowOverrideForReset();
     g_chargeCommandEnabled = YES;
     g_lastChargeCommandTs = now;
     g_lastInflowCommandTs = now;
@@ -2907,6 +2994,57 @@ static void tryRestoreSmartChargeAfterCoordination(NSString* reason) {
     }
 }
 
+// 完整还原系统优化充电与充电控制残留（App「还原系统优化充电」入口 / CLI restore）。
+// 与 reset 路径的差异：不依赖本地 disable_smart_charge 配置，无条件强制重新打开
+// 系统优化充电，并清除本地「永久停用」配置——否则 daemon 会在下一个电池事件
+// 按旧配置立即重新停用，还原无效。
+static NSDictionary* performFullSmartChargeRestore(NSString* reason) {
+    loadSmartChargeCoordinationRuntimeState();
+    BOOL sessionCleared = g_tempSmartChargeDisabledByCL;
+    if (sessionCleared) {
+        endSmartChargeCoordinationSession();
+    }
+    int beforeStatus = getSmartChargeStatus();
+    BOOL clearedPermanentDisable = getLocalBool(@"disable_smart_charge", NO);
+    if (clearedPermanentDisable) {
+        setLocalBool(@"disable_smart_charge", NO);
+    }
+    setSmartChargeEnable(YES);
+    // iOS 17+：完整还原含 MCL（80% 限制开关）——恢复永久停用前记住的状态。
+    restoreMCLStateAfterEnable();
+    int afterStatus = getSmartChargeStatus();
+    restoreInflowOverrideForReset();
+    io_service_t serv = getIOPMPSServ();
+    if (serv != IO_OBJECT_NULL) {
+        NSMutableDictionary* props = [NSMutableDictionary new];
+        props[@"IsCharging"] = @YES;
+        props[@"PredictiveChargingInhibit"] = @NO;
+        props[@"ExternalConnected"] = @YES;
+        IORegistryEntrySetCFProperties(serv, (__bridge CFTypeRef)props);
+    }
+    restoreThermalSimulationForReset();
+    // spec『还原的对象与语义』第 6 条：还原加速充电项。daemon 存活时按内存缓存
+    // 还原（performAcccharge 的幂等守卫保证安全）；CLI/崩溃残留场景缓存为空，
+    // performAcccharge(NO) 为无害 no-op。
+    restoreAcceleratedChargeStateForReset();
+    appendSmartChargeCoordinationEvent(@"smart_charge_restored",
+                                       beforeStatus,
+                                       afterStatus,
+                                       nil,
+                                       @{
+                                           @"trigger": reason ?: @"",
+                                           @"session_cleared": @(sessionCleared),
+                                           @"cleared_permanent_disable": @(clearedPermanentDisable),
+                                       },
+                                       time(0));
+    return @{
+        @"before_status": @(beforeStatus),
+        @"after_status": @(afterStatus),
+        @"session_cleared": @(sessionCleared),
+        @"cleared_permanent_disable": @(clearedPermanentDisable),
+    };
+}
+
 static void recoverSmartChargeCoordinationOnBootstrap(void) {
     loadSmartChargeCoordinationRuntimeState();
     if (!g_tempSmartChargeDisabledByCL) {
@@ -2921,7 +3059,9 @@ static void recoverSmartChargeCoordinationOnBootstrap(void) {
     BOOL permanentlyDisableSmartCharge = getLocalBool(@"disable_smart_charge", NO);
     if (permanentlyDisableSmartCharge) {
         if (g_smartChargeStatus != 0) {
+            rememberMCLStateBeforeDisable();
             setSmartChargeEnable(NO);
+            disableMCLForPermanentDisable();
             g_smartChargeStatus = getSmartChargeStatus();
         }
         if (g_smartChargeStatus != 3) {
@@ -2961,6 +3101,7 @@ static void selfHealSmartChargeOnBootstrap(void) {
     }
     if (!isSmartChargeEnable()) {
         setSmartChargeEnable(YES);
+        restoreMCLStateAfterEnable();
     }
 }
 
@@ -2974,7 +3115,9 @@ static void syncSmartChargeCoordination(NSDictionary* info, BOOL isAdaptorConnec
     if (permanentlyDisableSmartCharge) {
         if (g_smartChargeStatus != 0) {
             int fromStatus = g_smartChargeStatus;
+            rememberMCLStateBeforeDisable();
             setSmartChargeEnable(NO);
+            disableMCLForPermanentDisable();
             g_smartChargeStatus = getSmartChargeStatus();
             appendSmartChargeCoordinationEvent(@"smart_charge_permanently_disabled",
                                                fromStatus,
@@ -3515,7 +3658,9 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
                 BOOL disableSmartCharge = getLocalBool(@"disable_smart_charge", NO);
                 if (disableSmartCharge) {
                     if (isSmartChargeEnable()) {
+                        rememberMCLStateBeforeDisable();
                         setSmartChargeEnable(NO);
+                        disableMCLForPermanentDisable();
                     }
                 }
                 evaluateFullChargeSchedule(YES);
@@ -3525,6 +3670,7 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             // disableSmartCharging: 写的是系统级开关，仅改本地配置不会恢复。
             if (![val boolValue] && !isSmartChargeEnable()) {
                 setSmartChargeEnable(YES);
+                restoreMCLStateAfterEnable();
             }
         } else if ([key isEqualToString:@"action"]) {
             if ([val isEqualToString:@"noti"]) {
@@ -3656,6 +3802,9 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
         data[@"HoldEarlyRechargeStreakRequired"] = @0;
         data[@"SmartChargeStatus"] = @(g_smartChargeStatus);
         data[@"SmartChargeManagedByDaemon"] = @(g_tempSmartChargeDisabledByCL);
+        // iOS 17+ MCL（80% 限制开关）状态：App 显示与诊断用。旧系统恒 false/false。
+        data[@"SmartChargeMCLSupported"] = @(isSmartChargeMCLSupported());
+        data[@"SmartChargeMCLEnabled"] = @(getSmartChargeMCLEnabled());
         data[@"SmartChargeOriginalStatus"] = @(g_smartChargeCoordinationOriginalStatus);
         data[@"SmartChargeCoordinationSessionID"] = g_smartChargeCoordinationSessionID ?: @"";
         data[@"SmartChargeCoordinationStartTime"] = @(g_smartChargeCoordinationStartedTs);
@@ -3770,6 +3919,14 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
         int status = setInflowStatus(flag.boolValue);
         return @{
             @"status": @(status)
+        };
+    } else if ([api isEqualToString:@"restore_smart_charge"]) {
+        // App「还原系统优化充电」入口：清除本工具残留并强制恢复系统优化充电。
+        NSDictionary* result = performFullSmartChargeRestore(@"api_restore_smart_charge");
+        refreshBatteryStateAndApplyPolicy();
+        return @{
+            @"status": @0,
+            @"data": result,
         };
     } else if ([api isEqualToString:@"charge_control_probe"]) {
         @synchronized (CLProbeGetLock()) {
@@ -4175,6 +4332,7 @@ void detectUPSBattery() {
         CFRunLoopSourceRef runSrc = IONotificationPortGetRunLoopSource(gNotifyPort);
         CFRunLoopAddSource(CFRunLoopGetCurrent(), runSrc, kCFRunLoopDefaultMode);
         registerDaemonResetAndExitSignal();
+        registerDaemonRestoreNotifySignal();
         refreshTrollStoreBundleCheckTimer();
         io_service_t serv = getIOPMPSServ();
         if (serv != IO_OBJECT_NULL) {
@@ -4283,6 +4441,7 @@ int main(int argc, char** argv) { // daemon_main
                     g_trollStoreBundleCheckTimer = nil;
                 }
                 unregisterDaemonResetAndExitSignal();
+                unregisterDaemonRestoreNotifySignal();
                 resetBatteryStatusWithContext(YES, @"daemon_exit");
                 if (iopmpsNoti != IO_OBJECT_NULL) {
                     IOObjectRelease(iopmpsNoti);
@@ -4309,6 +4468,14 @@ int main(int argc, char** argv) { // daemon_main
                 notify_post(kDaemonResetAndExitNotifyName.UTF8String);
                 usleep(300 * 1000);
                 resetBatteryStatusWithContext(YES, @"cli_reset_and_exit_fallback");
+                return 0;
+            } else if (0 == strcmp(argv[argIndex], "restore")) {
+                // CLI 还原入口：先通知运行中的 daemon 进程内还原（清会话/配置一致），
+                // 再由本进程兜底执行（daemon 未运行时无进程内状态问题）。
+                notify_post(kDaemonRestoreNotifyName.UTF8String);
+                usleep(300 * 1000);
+                NSDictionary* result = performFullSmartChargeRestore(@"cli_restore");
+                NSLog(@"restore result: %@", result);
                 return 0;
             } else if (0 == strcmp(argv[argIndex], "cleanup_data_container")) {
                 return cleanupAppDataContainer_C();
