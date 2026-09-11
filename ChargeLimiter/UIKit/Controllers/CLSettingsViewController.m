@@ -5123,6 +5123,7 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
 @property (nonatomic, strong) UIView *systemControlHintView;
 @property (nonatomic, strong) UILabel *systemControlHintLabel;
 @property (nonatomic, strong) NSTimer *systemControlHintTimer;
+@property (nonatomic, strong) UIView *smartChargeRestoreBanner;
 @property (nonatomic, assign) NSInteger lastChargeAboveForHint;
 @property (nonatomic, assign) BOOL lastSystemCapacityControlActiveForHint;
 @property (nonatomic, assign) BOOL didCheckLegacyMigrationPrompt;
@@ -5461,7 +5462,10 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     
     // 控制卡片
     [self setupControlCard];
-    
+
+    // 系统优化充电残留还原提示条（控制卡片下方，默认隐藏）
+    [self setupSmartChargeRestoreBanner];
+
     // 充电限制卡片
     [self setupLimitCard];
 
@@ -5510,6 +5514,106 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     }];
     
     [self.mainStack addArrangedSubview:self.controlCard];
+}
+
+// 系统优化充电残留提示条：优化充电被留在"临时停用"且无本工具协调会话时显示，
+// 点按后一键还原。不做静默自动恢复（用户已确认提示式处理）。
+- (void)setupSmartChargeRestoreBanner {
+    UIView *banner = [[UIView alloc] init];
+    banner.translatesAutoresizingMaskIntoConstraints = NO;
+    banner.backgroundColor = [[UIColor systemOrangeColor] colorWithAlphaComponent:0.14];
+    banner.layer.cornerRadius = 12;
+    banner.hidden = YES;
+    banner.alpha = 0;
+
+    UIImageView *icon = [[UIImageView alloc] init];
+    icon.translatesAutoresizingMaskIntoConstraints = NO;
+    icon.tintColor = [UIColor systemOrangeColor];
+    UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:15 weight:UIFontWeightSemibold];
+    icon.image = CLSymbolImage(@"exclamationmark.arrow.circlepath", config);
+
+    UILabel *label = [[UILabel alloc] init];
+    label.translatesAutoresizingMaskIntoConstraints = NO;
+    label.font = [UIFont systemFontOfSize:13];
+    label.textColor = [UIColor labelColor];
+    label.numberOfLines = 0;
+    label.text = CLL(@"系统优化充电处于异常临时停用状态，可能无法使用系统的充电限制");
+
+    UILabel *actionLabel = [[UILabel alloc] init];
+    actionLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    actionLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+    actionLabel.textColor = [UIColor systemOrangeColor];
+    actionLabel.text = CLL(@"还原");
+
+    [banner addSubview:icon];
+    [banner addSubview:label];
+    [banner addSubview:actionLabel];
+    [NSLayoutConstraint activateConstraints:@[
+        [icon.leadingAnchor constraintEqualToAnchor:banner.leadingAnchor constant:12],
+        [icon.topAnchor constraintGreaterThanOrEqualToAnchor:banner.topAnchor constant:12],
+        [icon.widthAnchor constraintEqualToConstant:18],
+        [icon.heightAnchor constraintEqualToConstant:18],
+
+        [label.leadingAnchor constraintEqualToAnchor:icon.trailingAnchor constant:8],
+        [label.topAnchor constraintEqualToAnchor:banner.topAnchor constant:11],
+        [label.bottomAnchor constraintEqualToAnchor:banner.bottomAnchor constant:-11],
+
+        [actionLabel.leadingAnchor constraintGreaterThanOrEqualToAnchor:label.trailingAnchor constant:8],
+        [actionLabel.trailingAnchor constraintEqualToAnchor:banner.trailingAnchor constant:-12],
+        [actionLabel.centerYAnchor constraintEqualToAnchor:label.centerYAnchor]
+    ]];
+
+    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(smartChargeRestoreBannerTapped)];
+    [banner addGestureRecognizer:tap];
+
+    [self.mainStack addArrangedSubview:banner];
+    self.smartChargeRestoreBanner = banner;
+}
+
+- (void)updateSmartChargeRestoreBannerVisibilityForManager:(CLBatteryManager *)manager {
+    UIView *banner = self.smartChargeRestoreBanner;
+    if (!banner) {
+        return;
+    }
+    BOOL residue = (manager.smartChargeStatus == 3 && !manager.smartChargeManagedByDaemon);
+    if (banner.hidden == !residue) {
+        return;
+    }
+    [UIView animateWithDuration:0.25 animations:^{
+        banner.hidden = !residue;
+        banner.alpha = residue ? 1.0 : 0.0;
+    }];
+}
+
+- (void)smartChargeRestoreBannerTapped {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"还原系统优化充电")
+                                                                  message:CLL(@"检测到系统优化充电处于异常临时停用状态（可能由本工具异常退出残留）。将清除残留状态并恢复系统优化充电，是否继续？")
+                                                           preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"取消") style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"还原") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        [[CLAPIClient shared] restoreSmartChargeWithCompletion:^(NSDictionary * _Nullable response, NSError * _Nullable error) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                NSDictionary *data = [response[@"data"] isKindOfClass:[NSDictionary class]] ? response[@"data"] : @{};
+                NSInteger afterStatus = [data[@"after_status"] integerValue];
+                BOOL ok = (error == nil && [response[@"status"] integerValue] == 0 && (afterStatus == 1 || afterStatus == 2));
+                NSString *title = ok ? CLL(@"还原成功") : CLL(@"还原失败");
+                NSString *message;
+                if (ok) {
+                    message = CLL(@"系统优化充电已恢复。若系统设置中的选项仍异常，请重启设备后再试。");
+                } else if (error == nil && [response[@"status"] integerValue] == 0) {
+                    message = CLL(@"还原命令已执行，但系统优化充电状态未变化，请重启设备后再试。");
+                } else {
+                    message = [NSString stringWithFormat:CLL(@"操作失败：%@"), error.localizedFailureReason ?: error.localizedDescription ?: CLL(@"无法连接守护进程")];
+                }
+                UIAlertController *resultAlert = [UIAlertController alertControllerWithTitle:title
+                                                                                     message:message
+                                                                              preferredStyle:UIAlertControllerStyleAlert];
+                [resultAlert addAction:[UIAlertAction actionWithTitle:CLL(@"确定") style:UIAlertActionStyleDefault handler:nil]];
+                [self presentViewController:resultAlert animated:YES completion:nil];
+            });
+        }];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)setupSystemControlHintFloating {
@@ -6585,6 +6689,7 @@ static BOOL CLDisplayedPowerStateUsesExternalPower(CLBatteryManager *manager) {
     [self updateCardValue:self.powerPathCard title:CLL(@"充电命令") value:[self chargeCommandLabelForManager:manager]];
     [self updateCardValue:self.powerPathCard title:CLL(@"系统停充抑制") value:(manager.predictiveChargingInhibitActive ? CLL(@"已启用") : CLL(@"未启用"))];
     [self updateCardValue:self.powerPathCard title:CLL(@"系统优化充电") value:[self smartChargeStatusLabelForManager:manager]];
+    [self updateSmartChargeRestoreBannerVisibilityForManager:manager];
     [self updateCardValue:self.powerPathCard title:CLL(@"检查间隔") value:[self holdCheckIntervalLabelForManager:manager]];
     [self updateCardValue:self.powerPathCard title:CLL(@"保持范围") value:[self holdRangeLabelForManager:manager]];
 

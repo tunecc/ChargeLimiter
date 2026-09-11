@@ -451,3 +451,15 @@
 "补电阈值" = "Recharge threshold";
 "请输入 1 ~ 10 之间的分钟数\n达到保持目标后，会按这个间隔检查一次是否需要恢复补电" = "Enter a number from 1 to 10 (minutes)\nAfter the hold target is reached, the app checks at this interval whether a top-up is needed";
 "请输入 1 ~ 10 之间的百分比\n达到目标后，电量低于这个阈值时才会恢复补电" = "Enter a percentage from 1 to 10\nAfter the target is reached, a top-up starts only when the battery drops below this threshold";
+"还原" = "Restore";
+"还原系统优化充电" = "Restore Optimized Battery Charging";
+"清除本工具残留的停用/临时停用状态，恢复系统优化充电与充电控制" = "Clear disable/temp-disable state left by ChargeLimiter and restore the system's Optimized Battery Charging and charge control";
+"将清除本工具残留的永久停用/临时停用状态，复位充电与禁流控制覆盖，并重新打开系统优化充电。是否继续？" = "This clears the permanent/temporary disable state left by ChargeLimiter, resets charge and inflow-control overrides, and turns Optimized Battery Charging back on. Continue?";
+"检测到系统优化充电处于异常临时停用状态（可能由本工具异常退出残留）。将清除残留状态并恢复系统优化充电，是否继续？" = "Optimized Battery Charging is stuck in a temporary-disabled state (likely residue after ChargeLimiter exited unexpectedly). This clears the residue and restores Optimized Battery Charging. Continue?";
+"系统优化充电处于异常临时停用状态，可能无法使用系统的充电限制" = "Optimized Battery Charging is stuck in a temporary-disabled state; the system's charge limit may not work";
+"还原成功" = "Restored";
+"还原失败" = "Restore failed";
+"系统优化充电已恢复。若系统设置中的选项仍异常，请重启设备后再试。" = "Optimized Battery Charging has been restored. If the option in Settings still misbehaves, restart the device and try again.";
+"操作失败：%@" = "Operation failed: %@";
+"无法连接守护进程" = "Cannot reach the daemon";
+"还原命令已执行，但系统优化充电状态未变化，请重启设备后再试。" = "The restore command ran, but Optimized Battery Charging state did not change. Restart the device and try again.";
