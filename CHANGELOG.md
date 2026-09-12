@@ -4,6 +4,29 @@
 
 写法参考了 Keep a Changelog 和一些成熟项目常见的结构：每个版本先说明主线，再按少量分类列出用户真正会感知到的变化，尽量详细，但不写成长文。
 
+## v1.16.1 - 2026-09-11
+
+本版主线：**iOS 17 充电优化的双开关控制与完整还原**。iOS 17 起系统「充电优化」三选项（关闭 / 80% 限制 / 优化电池充电）背后其实是 OBC 与 MCL 两个独立开关（固件逆向 iPhone16,2 iOS 17.1 得出），此前只关 OBC 一个开关无法真正生效；本版把两个开关成对联动控制，并新增「还原系统优化充电」入口——卸载 / 停用插件时把系统充电优化完整还原回用户原设置，不再残留。
+
+### 新增
+
+- **iOS 17 充电优化双开关联动**：永久停用前记住 MCL 原状态（`smart_charge_mcl_state_before_disable`）并成对关闭，还原 / 自愈恢复记忆状态，避免把用户原选「80% 限制」静默改成「优化电池充电」。
+- **完整还原入口三通道**：App 高级设置「还原系统优化充电」+ CLI restore + notify 信号；主页状态 3 残留提示条（仅非托管会话提示，点按确认还原，不静默自动）。
+- **prerm 还原失败可见化**：三平台 `warn_restore_failed` 提示，数据容器清理逻辑不变。
+- **`get_bat_info` 暴露 SmartChargeMCLSupported / SmartChargeMCLEnabled**：供 App 显示与诊断。
+
+### 修复
+
+- **iOS 16 崩溃回归**：MCL selector 仅 iOS 17+ 存在，旧系统 `[client isMCLSupported]` 探测抛 unrecognized selector 打挂 daemon（`get_bat_info` 每次探测触发，App 读不到电池数据）；改为 `@available(iOS 17)` + `respondsToSelector` 四 selector 双门控，并补 `NSObject` 父类。
+- **还原记忆键守卫**：键不存在（从未执行过永久停用）时 no-op，避免把从未停用用户的「80% 限制」按缺省 NO 静默降级为「优化电池充电」。
+- **温控与 PPM 双归零**：reset 与完整还原两路径补 `setPPMSimulationMode(@"off")`，落实温控与 PPM 双归零。
+- **英文模式 iPad 式列宽**：主页与软件设置页 `mainStack` 加 required 列宽硬上限，英文长文案不再把列宽撑到 600pt iPad 布局，超宽内容改为截断让位；同时收窄 `TARGETED_DEVICE_FAMILY=[1]` + `UIRequiresFullScreen`/`UIRequiredDeviceCapabilities=arm64`，修 iPhone 15 Pro Max 主页 iPad 分屏样式。
+
+### 改进
+
+- **清理 67 条死翻译条目**：en/zh 两表同步删除零引用死条目（旧措辞残留、v1.15.1 已移除的 adaptive hold 层、v1.15.0 调试与观测旧文案等），语言表条目与代码引用精确一致（449=449）。
+- **`%ld 次` 接入本地化**：电量卡片计数英文用户不再看到裸中文。
+
 ## v1.16.0 - 2026-09-09
 
 本版主线：**新增「电池兼容性测试」页面**。不同电池/设备/iOS/越狱组合对停充、智能停充、禁流的支持差异很大，此前只能按 README 手动 curl + 盯电流逐项验证；本版把这套验证做成 App 内一键自动化测试——开始前自动体检，结束自动恢复原配置，输出单项结论与总体判定，让「我的设备到底支不支持」开箱即查。同版 README 整体重写为中英双语。
