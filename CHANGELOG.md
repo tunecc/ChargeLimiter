@@ -17,6 +17,7 @@
 - **MCL 诊断活通道优先**：`MCLDiagnostics.layer1` 新增 `live` 子字典；判定矩阵改为磁盘 Missing/ReadFailed 而活通道有值时按活通道判定，`effective_channel` 标注判定生效通道（disk/live/none）；`pref_lost` 仅在磁盘与活通道双通道均无法证实 `MCLFeatureState=true` 时给出，verdict 枚举不变。
 - **修复归因修正**：`featureWritten` 改为磁盘读或活通道任一证实 `MCLFeatureState=true` 即算写入；两通道都无法证实才归 `gate1_augury_feature`/`gate2_device_gate`；活通道证实已写但代理内存 `after.layer2.mcl_enabled=false` 时归 `still_disconnected` 并附 `note`（写入已被 cfprefsd 受理、代理内存未翻转），失败建议保持「重启设备后重试」。
 - **App 修复反馈回灌**：修复失败弹窗在失败分支后追加两行关键证据——`force_enable_ok`（服务端调用受理）与修复后 `after.layer2.mcl_enabled`（代理内存标志）；MCL 诊断复制导出在诊断 JSON 内附最近一次修复完整响应（键名 `last_repair`）。
+- **活通道防退化（修复轮 2）**：`get_bat_info` 1Hz 轮询的活通道读改为按域 15s TTL 缓存（raw+解析结果复用，cfprefsd 异常期不再每次 fork `defaults` 堆积请求），修复复核路径强制刷新绕过缓存以看到刚写入的 live 值；子进程补提权失败检查（`_exit(126)`）、exec 失败退出码降级（`exec_failed`，不再误判域不存在）与 execl 前 fd 收口；`MCLFeatureState` 双通道值冲突（磁盘 false + live true = 服务端刚写、磁盘滞后）改按 live 优先并以 `effective_channel=conflict_live_wins` 标注，其余键维持磁盘优先，健康设备零副作用。
 
 ## v1.17.0 - 2026-09-19
 

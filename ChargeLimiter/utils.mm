@@ -3771,11 +3771,66 @@ static NSString* CLMCLTruncateRawData(NSData* data) {
     return text ?: @"";
 }
 
+/* ------- 活通道 15s TTL 缓存（v1.17.1 修复轮 2 审查发现 1） -------
+ * get_bat_info 以 1Hz 轮询收集 MCL 诊断，活通道每次 fork 两个 defaults 子进程
+ * （正常 +100~300ms/次；cfprefsd 异常时每域 3s 超时、最坏 6s 且请求堆积）。
+ * 按域缓存 raw + 解析结果（rc/found/values/states），TTL 15s 内复用；forceRefresh=YES
+ * 绕过查找强制活读（修复复核专用——必须看到 enableMCL 刚写入的 live 值，归因守卫
+ * 依赖），但 fresh 结果仍回填缓存。缓存仅是活通道读的复用层，不改变任何解析/
+ * 报告语义；get_bat_info/get_mcl_diagnostics 常规路径走缓存。 */
+
+// 活通道缓存 TTL（秒）：1Hz 轮询下 15s 内至多 fork 一轮 defaults 子进程。
+static const NSTimeInterval kMCLLiveCacheTTLSeconds = 15;
+
+static NSMutableDictionary<NSString*, NSDictionary*>* CLMCLLiveCacheDict(void) {
+    static NSMutableDictionary* cache = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        cache = [NSMutableDictionary dictionary];
+    });
+    return cache;
+}
+
+// 按域取缓存条目；缺失/过期/损坏一律返回 nil（调用方回退 fresh spawn）。
+static NSDictionary* CLMCLLiveCacheEntry(NSString* domain) {
+    NSMutableDictionary* cache = CLMCLLiveCacheDict();
+    NSDictionary* entry = nil;
+    @synchronized (cache) {
+        entry = [cache[domain] isKindOfClass:[NSDictionary class]] ? cache[domain] : nil;
+    }
+    if (entry == nil) {
+        return nil;
+    }
+    NSTimeInterval age = [NSDate date].timeIntervalSince1970 - [entry[@"timestamp"] doubleValue];
+    if (!(age >= 0) || age >= kMCLLiveCacheTTLSeconds) {
+        return nil; // TTL 过期或时钟回拨：视为未命中
+    }
+    return entry;
+}
+
+// 回填缓存（force-refresh 同样回填，修复后常规路径即见最新 live 值）。
+static void CLMCLLiveCacheStore(NSString* domain, NSData* raw, int rc, NSInteger found, NSDictionary* values, NSDictionary* states) {
+    if (domain.length == 0 || raw == nil) {
+        return;
+    }
+    NSMutableDictionary* cache = CLMCLLiveCacheDict();
+    NSDictionary* entry = @{@"raw": [raw copy] ?: [NSData data],
+                            @"rc": @(rc),
+                            @"found": @(found),
+                            @"values": [values copy] ?: @{},
+                            @"states": [states copy] ?: @{},
+                            @"timestamp": @([NSDate date].timeIntervalSince1970)};
+    @synchronized (cache) {
+        cache[domain] = entry;
+    }
+}
+
 // 以 mobile 用户执行 /usr/bin/defaults read <domain>（fork + setuid + execl），
 // stdout/stderr 合流入 outData。带约 3s 超时保护：poll 读 + 超时 SIGKILL 回收，
-// defaults 卡死不得拖住诊断。返回 0=正常；-1=spawn 失败；-2=超时。
+// defaults 卡死不得拖住诊断。返回 0=正常；-1=spawn 失败；-2=超时；-3=exec 失败
+// （子进程 _exit(127)）；-4=setgid/setuid 失败（子进程 _exit(126)）。
 // getpwnam 与 UTF8String 都在父进程解析——fork 后子进程只做 async-signal-safe
-// 调用（close/dup2/setgid/setuid/execl/_exit），exec 失败走 _exit(127)。
+// 调用（close/dup2/getdtablesize/setgid/setuid/execl/_exit），exec 失败走 _exit(127)。
 static int CLMCLSpawnDefaultsRead(NSString* domain, NSMutableData* outData) {
     int fds[2];
     if (pipe(fds) != 0) {
@@ -3799,8 +3854,16 @@ static int CLMCLSpawnDefaultsRead(NSString* domain, NSMutableData* outData) {
         dup2(fds[1], STDOUT_FILENO);
         dup2(fds[1], STDERR_FILENO);
         close(fds[1]);
-        setgid(pw->pw_gid);
-        setuid(pw->pw_uid);
+        // fd 收口（v1.17.1 修复轮 2 审查发现 5）：execl 前 close 从 STDERR+1 到
+        // getdtablesize()，防 mobile 用户子进程持有 root daemon 的 HTTP/XPC/日志等 fd。
+        int maxFd = getdtablesize();
+        for (int fd = STDERR_FILENO + 1; fd < maxFd; fd++) {
+            close(fd);
+        }
+        // 提权失败 _exit(126)（修复轮 2 审查发现 3）：以 root 身份读会命中 root 域，
+        // 活通道将静默全 Missing，复辟 gate1 误归因。
+        if (setgid(pw->pw_gid) != 0) _exit(126);
+        if (setuid(pw->pw_uid) != 0) _exit(126);
         execl("/usr/bin/defaults", "defaults", "read", domainC, (char*)NULL);
         _exit(127);
     }
@@ -3839,6 +3902,18 @@ static int CLMCLSpawnDefaultsRead(NSString* domain, NSMutableData* outData) {
     }
     int status = 0;
     while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+    // 退出码降级（修复轮 2 审查发现 4）：仅认子进程 _exit 哨兵码——127=exec 失败、
+    // 126=提权失败，由调用方按通道不可用降级，不得落进「输出为空 = 域不存在」的
+    // Missing 解析；defaults 自身退出码（域不存在走输出解析）与超时 SIGKILL
+    // （WIFSIGNALED）不受影响。
+    if (rc == 0 && WIFEXITED(status)) {
+        int exitCode = WEXITSTATUS(status);
+        if (exitCode == 127) {
+            rc = -3;
+        } else if (exitCode == 126) {
+            rc = -4;
+        }
+    }
     return rc;
 }
 
@@ -3900,7 +3975,7 @@ static NSInteger CLMCLParseDefaultsDomainOutput(NSString* text, NSMutableDiction
     return 0;
 }
 
-BOOL CLMCLReadPrefsLive(NSMutableDictionary* outLive) {
+BOOL CLMCLReadPrefsLive(NSMutableDictionary* outLive, BOOL forceRefresh) {
     if (outLive == nil) {
         return NO;
     }
@@ -3937,7 +4012,37 @@ BOOL CLMCLReadPrefsLive(NSMutableDictionary* outLive) {
     BOOL liveHit = NO;
     for (NSString* domain in CLMCLCandidateDomains()) {
         NSMutableData* outData = [NSMutableData data];
-        int rc = CLMCLSpawnDefaultsRead(domain, outData);
+        NSMutableDictionary* domainValues = [NSMutableDictionary dictionary];
+        NSMutableDictionary* domainStates = [NSMutableDictionary dictionary];
+        NSInteger found = 0;
+        int rc = 0;
+        // 15s TTL 缓存（修复轮 2 审查发现 1）：常规路径命中即复用 raw+解析结果，不 fork；
+        // forceRefresh=YES（修复复核）绕过查找强制活读。
+        NSDictionary* cached = forceRefresh ? nil : CLMCLLiveCacheEntry(domain);
+        if (cached != nil) {
+            [outData appendData:[cached[@"raw"] isKindOfClass:[NSData class]] ? cached[@"raw"] : [NSData data]];
+            rc = [cached[@"rc"] intValue];
+            found = [cached[@"found"] integerValue];
+            if ([cached[@"values"] isKindOfClass:[NSDictionary class]]) {
+                [domainValues addEntriesFromDictionary:cached[@"values"]];
+            }
+            if ([cached[@"states"] isKindOfClass:[NSDictionary class]]) {
+                [domainStates addEntriesFromDictionary:cached[@"states"]];
+            }
+        } else {
+            rc = CLMCLSpawnDefaultsRead(domain, outData);
+            if (rc == -2) {
+                // 超时：该域读取异常（区分于缺失），不参与命中
+                for (NSString* key in CLMCLPrefKeys()) {
+                    domainStates[key] = @(CLMCLPrefReadFailed);
+                }
+            } else if (rc == 0) {
+                found = CLMCLParseDefaultsDomainOutput(CLMCLTruncateRawData(outData), domainValues, domainStates);
+            }
+            // -1/-3/-4（spawn/exec/提权失败）：域状态保持 Missing，由下方统一降级通道；
+            // 各域结果（含失败）统一回填缓存，避免异常期每次轮询重新 fork 请求堆积。
+            CLMCLLiveCacheStore(domain, outData, rc, found, domainValues, domainStates);
+        }
         [raw appendData:[[NSString stringWithFormat:@"=== %@ ===\n", domain] dataUsingEncoding:NSUTF8StringEncoding]];
         [raw appendData:outData];
         [raw appendData:[@"\n" dataUsingEncoding:NSUTF8StringEncoding]];
@@ -3947,16 +4052,21 @@ BOOL CLMCLReadPrefsLive(NSMutableDictionary* outLive) {
             outLive[@"raw"] = CLMCLTruncateRawData(raw);
             return NO;
         }
-        NSMutableDictionary* domainValues = [NSMutableDictionary dictionary];
-        NSMutableDictionary* domainStates = [NSMutableDictionary dictionary];
-        NSInteger found = 0;
-        if (rc == -2) {
-            // 超时：该域读取异常（区分于缺失），不参与命中
-            for (NSString* key in CLMCLPrefKeys()) {
-                domainStates[key] = @(CLMCLPrefReadFailed);
-            }
-        } else {
-            found = CLMCLParseDefaultsDomainOutput(CLMCLTruncateRawData(outData), domainValues, domainStates);
+        if (rc == -3) {
+            // exec 失败（子进程 _exit(127)，修复轮 2 审查发现 4）：降级通道，
+            // 不得解析为「域不存在/全 Missing」（复辟 gate1 误归因）
+            outLive[@"channel"] = @"unavailable";
+            outLive[@"channel_reason"] = @"exec_failed";
+            outLive[@"raw"] = CLMCLTruncateRawData(raw);
+            return NO;
+        }
+        if (rc == -4) {
+            // setgid/setuid 失败（子进程 _exit(126)，修复轮 2 审查发现 3）：子进程将以
+            // root 读 root 域 → 静默全 Missing，同样降级通道
+            outLive[@"channel"] = @"unavailable";
+            outLive[@"channel_reason"] = @"setuid_failed";
+            outLive[@"raw"] = CLMCLTruncateRawData(raw);
+            return NO;
         }
         if (found > 0) {
             if (!liveHit) {

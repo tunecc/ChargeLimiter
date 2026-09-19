@@ -104,8 +104,11 @@ BOOL CLMCLReadPrefs(NSMutableDictionary* outPrefs);
 // outLive[@"channel"]=@"ok"|@"unavailable"、@"channel_reason"（仅不可用时）、
 // @"pref_files"（Preferences 目录下 powerui|smartcharg 命中文件名字面值）、
 // @"domain"/@"values"/@"states"（语义同 CLMCLReadPrefs）、@"raw"（defaults 原始输出，截断 8KB）。
+// v1.17.1 修复轮 2：结果按域做 15s TTL 缓存（raw+解析结果），常规轮询路径命中即复用；
+// forceRefresh=YES 绕过缓存强制活读（修复复核专用——必须看到 enableMCL 刚写入的
+// live 值，归因守卫依赖），fresh 结果仍回填缓存。
 // 返回 YES=活通道命中任一白名单键；NO=通道不可用或两候选域均未命中。
-BOOL CLMCLReadPrefsLive(NSMutableDictionary* outLive);
+BOOL CLMCLReadPrefsLive(NSMutableDictionary* outLive, BOOL forceRefresh);
 // 层2：OBC 状态 + MCL 支持性/读回。返回 YES=MCL 受支持。
 BOOL CLMCLReadAgentState(int* obcStatus, BOOL* mclSupported, BOOL* mclEnabled);
 

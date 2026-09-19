@@ -83,10 +83,10 @@ class MCLLivePrefsChannelContractTests(unittest.TestCase):
         cls.utils_h = UTILS_H.read_text()
 
     def test_live_declaration_in_header(self):
-        self.assertIn("BOOL CLMCLReadPrefsLive(NSMutableDictionary* outLive);", self.utils_h)
+        self.assertIn("BOOL CLMCLReadPrefsLive(NSMutableDictionary* outLive, BOOL forceRefresh);", self.utils_h)
 
     def test_live_channel_enumerates_pref_files_case_insensitive(self):
-        body = function_body(self.utils_mm, "BOOL CLMCLReadPrefsLive(NSMutableDictionary* outLive) {")
+        body = function_body(self.utils_mm, "BOOL CLMCLReadPrefsLive(NSMutableDictionary* outLive, BOOL forceRefresh) {")
         self.assertIn("/var/mobile/Library/Preferences/", body)
         self.assertIn('@"pref_files"', body)
         self.assertIn("NSCaseInsensitiveSearch", body)
@@ -94,7 +94,7 @@ class MCLLivePrefsChannelContractTests(unittest.TestCase):
         self.assertIn("smartcharg", body)
 
     def test_live_channel_reports_channel_status(self):
-        body = function_body(self.utils_mm, "BOOL CLMCLReadPrefsLive(NSMutableDictionary* outLive) {")
+        body = function_body(self.utils_mm, "BOOL CLMCLReadPrefsLive(NSMutableDictionary* outLive, BOOL forceRefresh) {")
         self.assertIn('@"channel"', body)
         self.assertIn('@"ok"', body)
         self.assertIn('@"unavailable"', body)
@@ -103,7 +103,7 @@ class MCLLivePrefsChannelContractTests(unittest.TestCase):
         self.assertIn('@"unresolved"', body)         # 两候选域均未命中
 
     def test_live_channel_spawns_defaults_per_candidate_domain(self):
-        body = function_body(self.utils_mm, "BOOL CLMCLReadPrefsLive(NSMutableDictionary* outLive) {")
+        body = function_body(self.utils_mm, "BOOL CLMCLReadPrefsLive(NSMutableDictionary* outLive, BOOL forceRefresh) {")
         self.assertIn("/usr/bin/defaults", body)
         self.assertIn("CLMCLSpawnDefaultsRead(", body)
         self.assertIn('@"raw"', body)
@@ -143,26 +143,27 @@ class MCLLiveFirstVerdictContractTests(unittest.TestCase):
         cls.daemon_mm = DAEMON_MM.read_text()
 
     def test_layer1_embeds_live_subdict_after_disk_read(self):
-        body = function_body(self.daemon_mm, "static NSDictionary* collectMCLDiagnosticsWithLayer3(NSDictionary* layer3Override) {")
+        body = function_body(self.daemon_mm, "static NSDictionary* collectMCLDiagnosticsWithLayer3(NSDictionary* layer3Override, BOOL forceRefresh) {")
         disk = body.index("CLMCLReadPrefs(layer1)")
-        live = body.index("CLMCLReadPrefsLive(live)")
+        live = body.index("CLMCLReadPrefsLive(live, forceRefresh)")
         embed = body.index('layer1[@"live"]')
         self.assertLess(disk, live)      # 磁盘快照在前，活通道紧随其后补盲
         self.assertLess(live, embed)
 
     def test_verdict_call_uses_live_first_merged_view(self):
-        body = function_body(self.daemon_mm, "static NSDictionary* collectMCLDiagnosticsWithLayer3(NSDictionary* layer3Override) {")
+        body = function_body(self.daemon_mm, "static NSDictionary* collectMCLDiagnosticsWithLayer3(NSDictionary* layer3Override, BOOL forceRefresh) {")
         self.assertIn("MCLLiveFirstLayer1(", body)
         self.assertIn("MCLVerdictFromDiagnostics(mclSupported, verdictLayer1", body)
         # 原始磁盘 layer1 不得直接作为判定输入
         self.assertNotIn("MCLVerdictFromDiagnostics(mclSupported, layer1", body)
 
     def test_effective_channel_annotated_in_report(self):
-        body = function_body(self.daemon_mm, "static NSDictionary* collectMCLDiagnosticsWithLayer3(NSDictionary* layer3Override) {")
+        body = function_body(self.daemon_mm, "static NSDictionary* collectMCLDiagnosticsWithLayer3(NSDictionary* layer3Override, BOOL forceRefresh) {")
         self.assertIn('layer1[@"effective_channel"]', body)
 
     def test_merge_helper_disk_first_live_fallback(self):
-        # 活通道优先 = 仅磁盘 Missing/ReadFailed 的键采用 live 值；磁盘可读时磁盘优先
+        # 磁盘优先为主：仅磁盘 Missing/ReadFailed 的键采用 live 值；MCLFeatureState 的
+        # 「磁盘 false/live true」值冲突例外（live 优先）见 MCLFeatureStateConflictRuleContractTests
         body = function_body(self.daemon_mm, "static NSDictionary* MCLLiveFirstLayer1(NSDictionary* layer1, NSString** effectiveChannel) {")
         disk_check = body.index("diskState == CLMCLPrefFound")
         live_check = body.index("liveState == CLMCLPrefFound")
@@ -273,7 +274,7 @@ class MCLDiagnosticsContractTests(unittest.TestCase):
         self.assertIn("collectMCLDiagnostics()", self.daemon_mm)
 
     def test_ios16_gate_returns_early_with_zero_collection(self):
-        body = function_body(self.daemon_mm, "static NSDictionary* collectMCLDiagnosticsWithLayer3(NSDictionary* layer3Override) {")
+        body = function_body(self.daemon_mm, "static NSDictionary* collectMCLDiagnosticsWithLayer3(NSDictionary* layer3Override, BOOL forceRefresh) {")
         early = body.index("if (!mclSupported) {")
         head = body[early:early + 400]
         self.assertNotIn("CLMCLReadPrefs(", head)       # 早退分支内不得做层1/层2 收集
@@ -591,3 +592,194 @@ class MCLRepairFeedbackEvidenceContractTests(unittest.TestCase):
         self.assertIn("lastMCLRepairResult", body)
         self.assertIn("lastMCLDiagnostics", body)   # 诊断 JSON 仍是导出主体
         self.assertIn("NSJSONSerialization", body)
+
+
+class MCLLiveSpawnHardeningContractTests(unittest.TestCase):
+    """任务 5.3 修复轮 2（审查发现 3/4/5）：活通道子进程加固。
+
+    1. setuid/setgid 返回值检查：失败 _exit(126)——防止 defaults 以 root 身份读
+       root 域 → 活通道静默全 Missing 复辟 gate1 误归因。
+    2. waitpid 退出码降级：子进程 _exit(127)（exec 失败）→ 该域通道降级
+       unavailable（reason exec_failed），不得解析为「域不存在」。
+    3. 子进程 fd 收口：execl 前 close 从 STDERR+1 到 getdtablesize()——防 mobile
+       用户子进程持有 root daemon 的 HTTP/XPC/日志 fd。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.utils_mm = UTILS_MM.read_text()
+        cls.utils_h = UTILS_H.read_text()
+
+    def _spawn_body(self):
+        return function_body(self.utils_mm, "static int CLMCLSpawnDefaultsRead(NSString* domain, NSMutableData* outData) {")
+
+    def _live_body(self):
+        return function_body(self.utils_mm, "BOOL CLMCLReadPrefsLive(NSMutableDictionary* outLive, BOOL forceRefresh) {")
+
+    def test_setgid_setuid_checked_and_fail_exit_126(self):
+        body = self._spawn_body()
+        self.assertIn("if (setgid(pw->pw_gid) != 0) _exit(126);", body)
+        self.assertIn("if (setuid(pw->pw_uid) != 0) _exit(126);", body)
+        self.assertLess(body.index("setgid(pw->pw_gid)"), body.index("setuid(pw->pw_uid)"))  # 先降组再降用户
+
+    def test_waitpid_exit_code_downgrade_to_exec_failed(self):
+        # 仅认子进程 _exit 哨兵码：127=exec 失败 → -3、126=提权失败 → -4；
+        # defaults 自身退出码（域不存在走输出解析）与超时 SIGKILL（WIFSIGNALED）不受影响
+        body = self._spawn_body()
+        waitpid = body.index("waitpid(pid, &status, 0)")
+        self.assertIn("WIFEXITED(status)", body)
+        self.assertIn("WEXITSTATUS(status)", body)
+        exited = body.index("WIFEXITED(status)")
+        self.assertLess(waitpid, exited)   # 降级判定在 waitpid 之后
+        self.assertIn("rc = -3", body)     # exec 失败（_exit(127)）
+        self.assertIn("rc = -4", body)     # setgid/setuid 失败（_exit(126)）
+
+    def test_live_channel_reports_exec_and_privilege_failure_reasons(self):
+        # exec/提权失败均降级通道不可用，不得落进「域不存在/全 Missing」解析
+        body = self._live_body()
+        self.assertIn('@"exec_failed"', body)
+        self.assertIn('@"setuid_failed"', body)
+        self.assertEqual(body.count('outLive[@"channel"] = @"unavailable";'), 4)  # 缺工具/spawn/exec/提权四类
+        self.assertIn("rc == -3", body)
+        self.assertIn("rc == -4", body)
+
+    def test_fd_sweep_closes_inherited_fds_before_execl(self):
+        # execl 前 close STDERR+1 到 getdtablesize()：防 mobile 用户子进程持有 root daemon fd
+        body = self._spawn_body()
+        child = body.index("pid == 0")
+        sweep = body.index("STDERR_FILENO + 1")
+        setuid = body.index("setuid(pw->pw_uid)")
+        execl = body.index("execl(")
+        self.assertLess(child, sweep)      # 收口在子进程分支内
+        self.assertLess(sweep, setuid)     # 收口在提权之前
+        self.assertLess(sweep, execl)      # 收口在 execl 之前
+        self.assertIn("getdtablesize()", body)
+
+
+class MCLLiveChannelCacheContractTests(unittest.TestCase):
+    """任务 5.3 修复轮 2（审查发现 1）：活通道 15s TTL 缓存 + force-refresh 直通。
+
+    get_bat_info 1Hz 轮询每次收集 fork 两个 defaults 子进程（正常 +100~300ms/次，
+    cfprefsd 异常时最坏 6s 且请求堆积）。按域缓存 raw+解析结果，TTL 15s 内复用；
+    forceRefresh=YES 绕过缓存查找强制活读（修复复核专用），但仍回填缓存。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.utils_mm = UTILS_MM.read_text()
+        cls.utils_h = UTILS_H.read_text()
+
+    def _live_body(self):
+        return function_body(self.utils_mm, "BOOL CLMCLReadPrefsLive(NSMutableDictionary* outLive, BOOL forceRefresh) {")
+
+    def test_ttl_constant_declared_with_15s(self):
+        self.assertIn("kMCLLiveCacheTTLSeconds = 15", self.utils_mm)
+
+    def test_cache_lookup_helper_has_ttl_expiry(self):
+        body = function_body(self.utils_mm, "static NSDictionary* CLMCLLiveCacheEntry(NSString* domain) {")
+        self.assertIn("kMCLLiveCacheTTLSeconds", body)   # 过期判定用 TTL 常量
+        self.assertIn("timestamp", body)
+
+    def test_cache_store_helper_exists(self):
+        function_body(self.utils_mm, "static void CLMCLLiveCacheStore(NSString* domain, NSData* raw, int rc, NSInteger found, NSDictionary* values, NSDictionary* states) {")
+
+    def test_live_read_takes_force_refresh_param(self):
+        self.assertIn("BOOL CLMCLReadPrefsLive(NSMutableDictionary* outLive, BOOL forceRefresh);", self.utils_h)
+        self.assertIn("forceRefresh", self._live_body())
+
+    def test_cache_hit_gates_spawn_and_force_bypasses_lookup(self):
+        body = self._live_body()
+        bypass = body.index("forceRefresh ? nil : CLMCLLiveCacheEntry(domain)")
+        spawn = body.index("CLMCLSpawnDefaultsRead(domain, outData)")
+        self.assertLess(bypass, spawn)   # 缓存查找在 spawn 之前门控
+        self.assertIn("CLMCLLiveCacheStore(", body)   # fresh 分支统一回填
+
+    def test_cache_hit_reuses_raw_and_parsed_result(self):
+        body = self._live_body()
+        cached = body.index("CLMCLLiveCacheEntry(domain)")
+        reuse = body.index("cached[@\"raw\"]")
+        values = body.index("cached[@\"values\"]")
+        self.assertLess(cached, reuse)
+        self.assertLess(cached, values)  # 命中路径复用 raw + 解析结果，不 fork
+
+
+class MCLLiveCacheBypassContractTests(unittest.TestCase):
+    """任务 5.3 修复轮 2（审查发现 1）：收集函数 force-refresh 参数与修复复核直通。
+
+    关键约束：修复复核 ⑤ 必须绕过活通道缓存强制刷新（否则看不到 enableMCL 刚写入的
+    live 值，归因守卫失效）；get_bat_info/get_mcl_diagnostics 常规路径与修复前快照、
+    kept 路径 after 快照走缓存包装（collectMCLDiagnostics → force=NO）。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.daemon_mm = DAEMON_MM.read_text()
+
+    def _inner_body(self):
+        return function_body(self.daemon_mm, "static NSDictionary* performMCLLimitRepairInner(void) {")
+
+    def test_collect_takes_force_refresh_and_propagates_to_live(self):
+        body = function_body(self.daemon_mm, "static NSDictionary* collectMCLDiagnosticsWithLayer3(NSDictionary* layer3Override, BOOL forceRefresh) {")
+        self.assertIn("CLMCLReadPrefsLive(live, forceRefresh)", body)
+
+    def test_cached_wrapper_passes_no_force(self):
+        body = function_body(self.daemon_mm, "static NSDictionary* collectMCLDiagnostics(void) {")
+        self.assertIn("collectMCLDiagnosticsWithLayer3(nil, NO)", body)
+
+    def test_repair_recheck_bypasses_cache_after_force_enable(self):
+        body = self._inner_body()
+        force = body.index("CLMCLForceEnable()")
+        recheck = body.index("collectMCLDiagnosticsWithLayer3(layer3Override, YES)")
+        self.assertLess(force, recheck)  # 复核在 force enable 之后且强制刷新
+
+    def test_recheck_after_diag_is_the_forced_collection(self):
+        # 归因守卫消费的 afterDiag 必须来自强制刷新收集
+        body = self._inner_body()
+        self.assertIn("NSDictionary* afterDiag = collectMCLDiagnosticsWithLayer3(layer3Override, YES);", body)
+
+    def test_before_snapshot_and_kept_after_use_cached_wrapper(self):
+        # 修复前快照与 kept 提前返回的 after 快照走常规缓存路径（无写入，缓存语义安全）
+        body = self._inner_body()
+        self.assertIn("NSDictionary* beforeDiag = collectMCLDiagnostics();", body)
+        self.assertIn("NSDictionary* afterDiag = collectMCLDiagnostics();", body)  # kept 路径
+
+
+class MCLFeatureStateConflictRuleContractTests(unittest.TestCase):
+    """任务 5.3 修复轮 2（审查发现 2）：MCLFeatureState 冲突 live 优先。
+
+    磁盘 plist 是 cfprefsd 异步落盘副本，新鲜度恒 ≤ cfprefsd：双通道同时 Found 且
+    磁盘=false / live=true 的组合只能是服务端刚写、磁盘滞后——仅 MCLFeatureState
+    一键 live 优先，其余五键维持磁盘优先；冲突时 effective_channel 标
+    conflict_live_wins。健康设备（disk=false/live=false）无冲突，零副作用。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.daemon_mm = DAEMON_MM.read_text()
+
+    def _merge_body(self):
+        return function_body(self.daemon_mm, "static NSDictionary* MCLLiveFirstLayer1(NSDictionary* layer1, NSString** effectiveChannel) {")
+
+    def test_conflict_rule_scoped_to_feature_state_key(self):
+        # 冲突条件声明即以 MCLFeatureState 键名为前提（仅此一键有冲突规则）
+        body = self._merge_body()
+        self.assertIn('BOOL featureConflict = [key isEqualToString:@"MCLFeatureState"]', body)
+
+    def test_conflict_requires_disk_false_and_live_true(self):
+        # 磁盘 Found 且为 false、live Found 且为 true 才冲突；健康 disk=false/live=false 无冲突
+        body = self._merge_body()
+        self.assertIn("![values[key] boolValue]", body)
+        self.assertIn("[liveValues[key] boolValue]", body)
+        self.assertIn("values[key] != nil", body)
+        self.assertIn("liveValues[key] != nil", body)
+
+    def test_disk_branch_excludes_conflict_keys(self):
+        body = self._merge_body()
+        self.assertIn("diskState == CLMCLPrefFound && !featureConflict", body)
+
+    def test_conflict_channel_label_reported(self):
+        body = self._merge_body()
+        self.assertIn('@"conflict_live_wins"', body)
+        conflict_label = body.index('@"conflict_live_wins"')
+        disk_label = body.index('@"disk"')
+        self.assertLess(conflict_label, disk_label)  # 冲突标签优先于 disk/live/none

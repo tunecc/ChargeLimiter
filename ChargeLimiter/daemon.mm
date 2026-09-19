@@ -2030,11 +2030,15 @@ static NSDictionary* MCLLayer3EvidenceStandalone(void) {
              @"note": @"candidate_keys_absent"};
 }
 
-// 活通道优先合并（v1.17.1 修复轮 1 回灌）：磁盘直读对 cfprefsd 缓冲态全盲（plist
-// 可能长期不落盘甚至从不存在），磁盘 Missing/ReadFailed 的键以活通道值为准；磁盘
-// 可读时磁盘优先（持久层真相）。返回合并视图供判定，报告层1 原样保留磁盘真值 +
-// live 子字典；*effectiveChannel 输出 MCLFeatureState 判定生效通道：disk=磁盘可读、
-// live=活通道补盲、none=双通道均未证实。
+// 活通道优先合并（v1.17.1 修复轮 2 修订冲突规则）：磁盘直读对 cfprefsd 缓冲态全盲
+// （plist 可能长期不落盘甚至从不存在），磁盘 Missing/ReadFailed 的键以活通道值为准；
+// 磁盘可读时磁盘优先（持久层真相）。唯一例外：MCLFeatureState 双通道同时 Found 且
+// 磁盘=false / live=true 的值冲突——磁盘 plist 是 cfprefsd 异步落盘副本，新鲜度恒 ≤
+// cfprefsd，该组合只能是服务端刚写、磁盘滞后，此键 live 优先；其余五键维持磁盘优先。
+// 健康设备（disk=false/live=false）无冲突，零副作用。返回合并视图供判定，报告层1
+// 原样保留磁盘真值 + live 子字典；*effectiveChannel 输出 MCLFeatureState 判定生效
+// 通道：conflict_live_wins=双通道值冲突 live 优先、disk=磁盘可读、live=活通道补盲、
+// none=双通道均未证实。
 static NSDictionary* MCLLiveFirstLayer1(NSDictionary* layer1, NSString** effectiveChannel) {
     NSDictionary* states = layer1[@"states"] ?: @{};
     NSDictionary* values = layer1[@"values"] ?: @{};
@@ -2045,10 +2049,17 @@ static NSDictionary* MCLLiveFirstLayer1(NSDictionary* layer1, NSString** effecti
     NSMutableDictionary* mergedStates = [NSMutableDictionary dictionary];
     BOOL featureDisk = NO;
     BOOL featureLive = NO;
+    BOOL featureConflictLiveWins = NO;
     for (NSString* key in CLMCLPrefKeys()) {
         int diskState = [states[key] intValue];
         int liveState = [liveStates[key] intValue];
-        if (diskState == CLMCLPrefFound) {
+        // 值冲突仅限 MCLFeatureState 一键：磁盘 Found 且为 false、live Found 且为 true
+        // （磁盘滞后 + live true 只能是服务端刚写，cfprefsd 新鲜度恒 ≥ 磁盘副本）。
+        BOOL featureConflict = [key isEqualToString:@"MCLFeatureState"]
+            && diskState == CLMCLPrefFound && liveState == CLMCLPrefFound
+            && values[key] != nil && liveValues[key] != nil
+            && ![values[key] boolValue] && [liveValues[key] boolValue];
+        if (diskState == CLMCLPrefFound && !featureConflict) {
             id value = values[key];
             if (value != nil) {
                 mergedValues[key] = value;
@@ -2065,18 +2076,25 @@ static NSDictionary* MCLLiveFirstLayer1(NSDictionary* layer1, NSString** effecti
             mergedStates[key] = @(CLMCLPrefFound);
             if ([key isEqualToString:@"MCLFeatureState"]) {
                 featureLive = YES;
+                if (featureConflict) {
+                    featureConflictLiveWins = YES;
+                }
             }
         } else {
             // 双通道均未证实：保留磁盘 Missing/ReadFailed 原状（判定走既有歧义行）
             mergedStates[key] = @(diskState);
         }
     }
-    if (featureDisk) {
-        if (effectiveChannel != NULL) *effectiveChannel = @"disk";
-    } else if (featureLive) {
-        if (effectiveChannel != NULL) *effectiveChannel = @"live";
-    } else {
-        if (effectiveChannel != NULL) *effectiveChannel = @"none";
+    if (effectiveChannel != NULL) {
+        if (featureConflictLiveWins) {
+            *effectiveChannel = @"conflict_live_wins";
+        } else if (featureDisk) {
+            *effectiveChannel = @"disk";
+        } else if (featureLive) {
+            *effectiveChannel = @"live";
+        } else {
+            *effectiveChannel = @"none";
+        }
     }
     return @{@"domain": layer1[@"domain"] ?: @"unresolved",
              @"plist_path": layer1[@"plist_path"] ?: @"",
@@ -2123,7 +2141,10 @@ static NSString* MCLVerdictFromDiagnostics(BOOL mclSupported, NSDictionary* laye
 
 // MCL 全链路诊断（单次收集 < 1s：plist 直读 + 既有 XPC 读回 + 候选键单查；不加轮询）。
 // get_bat_info 子字典与 get_mcl_diagnostics 共用；iOS 16 及以下早退零收集（Design Doc 4）。
-static NSDictionary* collectMCLDiagnosticsWithLayer3(NSDictionary* layer3Override) {
+// v1.17.1 修复轮 2：forceRefresh 透传活通道——常规路径（get_bat_info/get_mcl_diagnostics/
+// 修复前快照/kept after 快照）走 15s TTL 缓存；仅修复复核 ⑤ 传 YES 绕过缓存强制活读
+// （必须看到 enableMCL 刚写入的 live 值，归因守卫依赖）。
+static NSDictionary* collectMCLDiagnosticsWithLayer3(NSDictionary* layer3Override, BOOL forceRefresh) {
     NSMutableDictionary* report = [NSMutableDictionary dictionary];
     report[@"collectedAt"] = @(time(0));
     BOOL mclSupported = isSmartChargeMCLSupported();
@@ -2147,8 +2168,9 @@ static NSDictionary* collectMCLDiagnosticsWithLayer3(NSDictionary* layer3Overrid
     // poweruiagent 以 mobile 用户经 cfprefsd 写偏好，plist 可能长期不落盘甚至从
     // 不存在；"文件读不到"≠"偏好为空"≠"服务端没写"。live 子字典携带通道状态
     // （channel/channel_reason）、目录证据（pref_files）、六键解析与 defaults 原始输出（raw）。
+    // forceRefresh 透传（修复轮 2）：常规路径命中 15s TTL 缓存即不 fork defaults 子进程。
     NSMutableDictionary* live = [NSMutableDictionary dictionary];
-    CLMCLReadPrefsLive(live);
+    CLMCLReadPrefsLive(live, forceRefresh);
     layer1[@"live"] = live;
     report[@"layer1"] = layer1;
     // 层2：agent 内存层读回（复用既有 XPC 通道，F1 语义）。
@@ -2163,7 +2185,8 @@ static NSDictionary* collectMCLDiagnosticsWithLayer3(NSDictionary* layer3Overrid
     report[@"layer3"] = layer3Override ?: MCLLayer3EvidenceStandalone();
     // 判定活通道优先（v1.17.1）：磁盘 Missing/ReadFailed 的键以活通道值为准合成
     // 判定视图；pref_lost 仅在双通道均无法证实 MCLFeatureState=true 时给出。
-    // 报告 layer1 保留磁盘真值 + live 子字典，effective_channel 标注判定生效通道。
+    // 报告 layer1 保留磁盘真值 + live 子字典，effective_channel 标注判定生效通道
+    // （disk/live/none，修复轮 2 增补 MCLFeatureState 值冲突场景 conflict_live_wins）。
     NSString* effectiveChannel = nil;
     NSDictionary* verdictLayer1 = MCLLiveFirstLayer1(layer1, &effectiveChannel);
     layer1[@"effective_channel"] = effectiveChannel ?: @"none";
@@ -2171,8 +2194,10 @@ static NSDictionary* collectMCLDiagnosticsWithLayer3(NSDictionary* layer3Overrid
     return report;
 }
 
+// 常规收集包装：走活通道 15s TTL 缓存（get_bat_info 1Hz 轮询、get_mcl_diagnostics、
+// 修复前快照与 kept after 快照共用）。修复复核 ⑤ 不得经由本包装（须强制刷新）。
 static NSDictionary* collectMCLDiagnostics(void) {
-    return collectMCLDiagnosticsWithLayer3(nil);
+    return collectMCLDiagnosticsWithLayer3(nil, NO);
 }
 
 /* ---------------- iOS 17+ MCL 强制修复编排（Design Doc 3.4，tasks 3.2） ---------------- */
@@ -2326,7 +2351,9 @@ static NSDictionary* performMCLLimitRepairInner(void) {
     // ④ 修复序列（目标=启用）：规范化偏好 → 无条件 enableMCL（Task 3 入口，绕过读回短路）
     NSDictionary* normalize = MCLNormalizePrefsForRepair(beforePrefs);
     BOOL forceOK = CLMCLForceEnable();
-    // ⑤ 复核：层3 前后 diff + 重跑诊断（diff 出 limit/override 类整型变化 → layer3 升级 registry_diff）
+    // ⑤ 复核：层3 前后 diff + 重跑诊断（diff 出 limit/override 类整型变化 → layer3 升级 registry_diff）。
+    // 修复复核必须绕过活通道 15s TTL 缓存强制刷新（forceRefresh=YES，修复轮 2 审查
+    // 发现 1）：否则看不到 enableMCL 刚写入的 live 值，归因守卫（liveProven）失效。
     NSDictionary* registryAfter = MCLSnapshotRegistryNumericProps();
     NSDictionary* diff = MCLDiffRegistryProps(registryBefore, registryAfter);
     NSDictionary* limitRelated = diff[@"limit_related"] ?: @{};
@@ -2336,7 +2363,7 @@ static NSDictionary* performMCLLimitRepairInner(void) {
                            @"present": @YES,
                            @"diff": limitRelated};
     }
-    NSDictionary* afterDiag = collectMCLDiagnosticsWithLayer3(layer3Override);
+    NSDictionary* afterDiag = collectMCLDiagnosticsWithLayer3(layer3Override, YES);
     NSString* verdictAfter = afterDiag[@"verdict"] ?: @"";
     BOOL success = [verdictAfter isEqualToString:@"healthy_enabled"];
     if (success) {
