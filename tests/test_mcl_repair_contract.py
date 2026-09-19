@@ -171,12 +171,68 @@ class MCLRepairContractTests(unittest.TestCase):
         self.assertLess(normalize, force)
         self.assertLess(force, recheck)
 
-    def test_healthy_verdict_keeps_semantics_no_write_no_force(self):
+    def test_healthy_disabled_keeps_semantics_no_write_no_force(self):
+        # 无副作用约束（最终审查修复波复核）：healthy_disabled 是用户显式选项（OBC 关着
+        # 没坏）——kept 提前返回必须出现在任何偏好写入（normalize）与 force enable 之前，
+        # 该路径零写入零 force。
         body = function_body(self.daemon_mm, "static NSDictionary* performMCLLimitRepairInner(void) {")
-        healthy = body.index('isEqualToString:@"healthy_enabled"]')
+        disabled = body.index('isEqualToString:@"healthy_disabled"]')
+        kept = body.index('@"kept"')
+        normalize = body.index("MCLNormalizePrefsForRepair(beforePrefs)")
         force = body.index("CLMCLForceEnable()")
-        self.assertLess(healthy, force)  # 健康提前返回在 force 之前（kept 路径不触发 force/写入）
+        self.assertLess(disabled, kept)
+        self.assertLess(kept, normalize)
+        self.assertLess(kept, force)  # healthy_disabled kept 路径不触发 force/写入
         self.assertIn('@"kept"', body)
+
+    def test_healthy_enabled_kept_gated_on_execution_layer_evidence(self):
+        # 最终审查 Important：healthy_enabled 的 kept 提前返回必须以执行层在场证据为前提
+        # （evidence_grade == registry_diff 且 present == YES）。v1 层3 仅 indirect
+        # （MCLRegistryEvidenceCandidateKeys() 为空、注册表稳定键无静态候选），受损设备
+        # （偏好 MCLFeatureState=true + 代理读回 YES + 执行层断）会被判定矩阵归为
+        # healthy_enabled（行 2 需 registry_diff 证据，当前不可达）——若读回短路 kept，
+        # 修复按钮即成空操作，违背 delta spec「强制修复 80% 限制」第 1 条（不信任读回
+        # 短路，即使读回等于目标值仍 MUST 执行修复序列）。证据核对必须出现在
+        # healthy_enabled 比较与 kept 返回之间。
+        body = function_body(self.daemon_mm, "static NSDictionary* performMCLLimitRepairInner(void) {")
+        gate = body.index('isEqualToString:@"healthy_enabled"]')
+        kept = body.index('@"kept"')
+        gate_region = body[gate:kept]
+        self.assertIn("evidence_grade", gate_region)
+        self.assertIn('@"registry_diff"', gate_region)
+        self.assertIn('@"present"', gate_region)
+
+    def test_healthy_enabled_registry_diff_present_is_kept(self):
+        # healthy_enabled + registry_diff + present=YES（未来候选键填充后、执行层已被证实
+        # 在场：判定矩阵行 2 已排除 disconnected）→ 同样 kept，不做幂等重申的额外写入。
+        # 实现层面与 indirect 分流共用同一证据核对（见上一用例），本用例锁 kept 返回仍在
+        # 证据核对之后、修复序列（normalize/force）之前可达。
+        body = function_body(self.daemon_mm, "static NSDictionary* performMCLLimitRepairInner(void) {")
+        gate = body.index('isEqualToString:@"healthy_enabled"]')
+        kept = body.index('@"kept"')
+        normalize = body.index("MCLNormalizePrefsForRepair(beforePrefs)")
+        self.assertLess(gate, kept)
+        self.assertLess(kept, normalize)  # 证据证实的 healthy_enabled 在修复序列之前 kept
+
+    def test_healthy_enabled_indirect_still_reaches_repair_sequence(self):
+        # healthy_enabled + indirect（未证实）不得被 kept 短路吞掉：kept 仅是证据条件分支，
+        # 其后修复序列（规范化 → CLMCLForceEnable → 复核）仍须可达；该路径返回沿用
+        # action=repaired + verdict_before=healthy_enabled（无需新枚举）——真健康设备为
+        # 幂等重申（服务端重写 MCLFeatureState=true + 重设 limit 80，用户选项语义不变），
+        # 假健康设备才是真正修复。
+        body = function_body(self.daemon_mm, "static NSDictionary* performMCLLimitRepairInner(void) {")
+        gate = body.index('isEqualToString:@"healthy_enabled"]')
+        kept = body.index('@"kept"')
+        normalize = body.index("MCLNormalizePrefsForRepair(beforePrefs)")
+        force = body.index("CLMCLForceEnable()")
+        recheck = body.index("collectMCLDiagnosticsWithLayer3(")
+        self.assertLess(gate, kept)
+        self.assertLess(kept, normalize)
+        self.assertLess(normalize, force)
+        self.assertLess(force, recheck)
+        repaired = body.index('@"repaired"')
+        self.assertLess(force, repaired)  # 修复序列成功路径返回 action=repaired
+        self.assertIn('@"verdict_before"', body)
 
     def test_busy_guards(self):
         wrapper = function_body(self.daemon_mm, "static NSDictionary* performMCLLimitRepair(void) {")

@@ -2229,11 +2229,24 @@ static NSDictionary* performMCLLimitRepairInner(void) {
     CLMCLReadPrefs(beforePrefs);
     NSDictionary* registryBefore = MCLSnapshotRegistryNumericProps();
     NSDictionary* snapshotValues = beforePrefs[@"values"] ?: @{};
-    // ③ 健康语义判定（Design Doc 3.4-③）：healthy_disabled 保持用户选项——不写偏好、不 force
+    // ③ 健康语义判定（Design Doc 3.4-③ + 最终审查修复波）：healthy_disabled 保持用户
+    // 选项——不写偏好、不 force、零副作用。healthy_enabled 仅在执行层在场证据
+    // （evidence_grade == registry_diff 且 present == YES）证实时才同样 kept；v1 层3 只有
+    // indirect（MCLRegistryEvidenceCandidateKeys() 为空、注册表稳定键无静态候选），受损
+    // 设备（偏好 MCLFeatureState=true + 代理读回 YES + 执行层断）会被判定矩阵归为
+    // healthy_enabled（行 2 需 registry_diff 证据，当前不可达）——读回短路 kept 会让修复
+    // 按钮成空操作。按 delta spec「强制修复 80% 限制」第 1 条不信任读回短路：indirect
+    // 下的 healthy_enabled 继续走完整修复序列（真健康设备 = 幂等重申，服务端重写
+    // MCLFeatureState=true + 重设 limit 80，用户选项语义不变；假健康设备 = 真正修复），
+    // 报告沿用 action=repaired / verdict_before=healthy_enabled。
     NSDictionary* beforeDiag = collectMCLDiagnostics();
     NSString* verdictBefore = beforeDiag[@"verdict"] ?: @"";
-    if ([verdictBefore isEqualToString:@"healthy_enabled"]
-        || [verdictBefore isEqualToString:@"healthy_disabled"]) {
+    NSDictionary* layer3Before = beforeDiag[@"layer3"] ?: @{};
+    BOOL healthyEnabled = [verdictBefore isEqualToString:@"healthy_enabled"];
+    BOOL executionLayerProven = healthyEnabled
+        && [layer3Before[@"evidence_grade"] isEqualToString:@"registry_diff"]
+        && [layer3Before[@"present"] boolValue];
+    if ([verdictBefore isEqualToString:@"healthy_disabled"] || executionLayerProven) {
         NSDictionary* afterDiag = collectMCLDiagnostics();
         appendMCLRepairCoordinationEvent(@"mcl_repair_finished",
                                          @{ @"action": @"kept", @"verdict_before": verdictBefore });
