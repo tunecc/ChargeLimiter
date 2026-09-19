@@ -100,7 +100,9 @@ BOOL CLMCLReadPrefs(NSMutableDictionary* outPrefs);
 // 层1 活通道（v1.17.1 修复轮 1 回灌）：磁盘直读对 cfprefsd 缓冲态全盲——poweruiagent
 // 以 mobile 用户经 cfprefsd 写偏好，plist 可能长期不落盘甚至从不存在；"文件读不到"
 // ≠"偏好为空"≠"服务端没写"。本通道 fork 后降权为 mobile 用户执行
-// /usr/bin/defaults read <domain> 读 cfprefsd 服务端真相。
+// `defaults read <domain>` 读 cfprefsd 服务端真相；defaults 二进制按序探测
+// （v1.17.2 域定案回灌，re-notes §7）：libroothide jbroot 解析路径（运行时 dlsym
+// 弱依赖）→ /var/jb/usr/bin/defaults → /usr/bin/defaults，全部缺失才降级。
 // outLive[@"channel"]=@"ok"|@"unavailable"、@"channel_reason"（仅不可用时）、
 // @"pref_files"（Preferences 目录下 powerui|smartcharg 命中文件名字面值）、
 // @"domain"/@"values"/@"states"（语义同 CLMCLReadPrefs）、@"raw"（defaults 原始输出，截断 8KB）。

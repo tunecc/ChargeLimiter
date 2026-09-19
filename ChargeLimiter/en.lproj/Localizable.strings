@@ -492,3 +492,4 @@
 "修复完成：80% 限制已重新下发，请插电充电验证。" = "Repair finished: the 80% limit has been re-applied. Plug in to verify.";
 "修复失败。失败分支：" = "Repair failed. Failure branch: ";
 "建议：重启设备后重试。" = "Suggestion: reboot the device and retry.";
+"服务端已受理并持久化尝试，请插电充电实测 80%。" = "The server accepted the request and attempted to persist it. Plug in and charge to verify the 80% limit.";

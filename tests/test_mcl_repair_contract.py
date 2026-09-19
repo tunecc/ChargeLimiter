@@ -109,7 +109,7 @@ class MCLLivePrefsChannelContractTests(unittest.TestCase):
         self.assertIn('@"raw"', body)
 
     def test_spawn_helper_forks_as_mobile_user_with_timeout(self):
-        body = function_body(self.utils_mm, "static int CLMCLSpawnDefaultsRead(NSString* domain, NSMutableData* outData) {")
+        body = function_body(self.utils_mm, "static int CLMCLSpawnDefaultsRead(NSString* defaultsPath, NSString* domain, NSMutableData* outData) {")
         self.assertIn("fork()", body)
         self.assertIn('getpwnam("mobile")', body)
         self.assertIn("setuid(", body)
@@ -611,7 +611,7 @@ class MCLLiveSpawnHardeningContractTests(unittest.TestCase):
         cls.utils_h = UTILS_H.read_text()
 
     def _spawn_body(self):
-        return function_body(self.utils_mm, "static int CLMCLSpawnDefaultsRead(NSString* domain, NSMutableData* outData) {")
+        return function_body(self.utils_mm, "static int CLMCLSpawnDefaultsRead(NSString* defaultsPath, NSString* domain, NSMutableData* outData) {")
 
     def _live_body(self):
         return function_body(self.utils_mm, "BOOL CLMCLReadPrefsLive(NSMutableDictionary* outLive, BOOL forceRefresh) {")
@@ -690,7 +690,7 @@ class MCLLiveChannelCacheContractTests(unittest.TestCase):
     def test_cache_hit_gates_spawn_and_force_bypasses_lookup(self):
         body = self._live_body()
         bypass = body.index("forceRefresh ? nil : CLMCLLiveCacheEntry(domain)")
-        spawn = body.index("CLMCLSpawnDefaultsRead(domain, outData)")
+        spawn = body.index("CLMCLSpawnDefaultsRead(defaultsBin, domain, outData)")
         self.assertLess(bypass, spawn)   # 缓存查找在 spawn 之前门控
         self.assertIn("CLMCLLiveCacheStore(", body)   # fresh 分支统一回填
 
@@ -783,3 +783,119 @@ class MCLFeatureStateConflictRuleContractTests(unittest.TestCase):
         conflict_label = body.index('@"conflict_live_wins"')
         disk_label = body.index('@"disk"')
         self.assertLess(conflict_label, disk_label)  # 冲突标签优先于 disk/live/none
+
+
+class MCLDomainFinalizationContractTests(unittest.TestCase):
+    """任务 5.4（v1.17.2 域定案回灌，re-notes §7）：真实偏好域定案 + 活通道 exec 路径解析。
+
+    真机轮 2 定案：MCL 六键真实域 = com.apple.smartcharging.topoffprotection
+    （mobile 用户）——静态铁证（manager 单例工厂块 0x20236abd8 传给
+    initWithDefaultsDomain: 的 CFString @0x2371fd2c0，参照物校验通过）+ 真机实锤
+    （su mobile -c 'defaults read' 该域显示 MCLFeatureState=1 等）。候选域清单以
+    topoffprotection 为首位，powerui 两域降为回退。
+    roothide 下 daemon 视野不存在 /usr/bin/defaults（defaults_missing 实锤），活通道
+    defaults 二进制须按序探测：jbroot 解析路径（运行时 dlsym 函数探测，编译期弱依赖
+    roothide）→ /var/jb/usr/bin/defaults → /usr/bin/defaults，任一存在即用。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.utils_mm = UTILS_MM.read_text()
+
+    def _live_body(self):
+        return function_body(self.utils_mm, "BOOL CLMCLReadPrefsLive(NSMutableDictionary* outLive, BOOL forceRefresh) {")
+
+    def test_candidate_domains_topoffprotection_first_then_fallbacks(self):
+        body = function_body(self.utils_mm, "static NSArray<NSString*>* CLMCLCandidateDomains(void) {")
+        topoff = body.index('@"com.apple.smartcharging.topoffprotection"')
+        charging = body.index('@"com.apple.powerui.smartcharging"')
+        charge = body.index('@"com.apple.powerui.smartcharge"')
+        self.assertLess(topoff, charging)   # 静态定案域居首
+        self.assertLess(charging, charge)   # 回退域保持 smartcharging → smartcharge
+
+    def test_candidate_domains_comment_points_to_renotes_7(self):
+        body = function_body(self.utils_mm, "static NSArray<NSString*>* CLMCLCandidateDomains(void) {")
+        self.assertIn("re-notes", body)
+
+    def test_live_channel_probes_defaults_binary_jbroot_first(self):
+        body = self._live_body()
+        jbroot = body.index('resolveRoothidePathByAPI(@"/usr/bin/defaults")')
+        var_jb = body.index('fileExistsAtPath:@"/var/jb/usr/bin/defaults"')
+        plain = body.index('fileExistsAtPath:@"/usr/bin/defaults"')
+        self.assertLess(jbroot, var_jb)   # jbroot 解析（dlsym 弱依赖）最先尝试
+        self.assertLess(var_jb, plain)    # rootless bootstrap 次之，rootful 直通最后
+
+    def test_live_channel_defaults_missing_only_after_all_candidates(self):
+        body = self._live_body()
+        jbroot = body.index('resolveRoothidePathByAPI(@"/usr/bin/defaults")')
+        var_jb = body.index('fileExistsAtPath:@"/var/jb/usr/bin/defaults"')
+        plain = body.index('fileExistsAtPath:@"/usr/bin/defaults"')
+        missing = body.index('@"defaults_missing"')
+        # 全部三级候选探测完毕才允许降级 defaults_missing
+        self.assertLess(jbroot, missing)
+        self.assertLess(var_jb, missing)
+        self.assertLess(plain, missing)
+
+    def test_spawn_helper_execs_probed_binary_path(self):
+        body = function_body(self.utils_mm, "static int CLMCLSpawnDefaultsRead(NSString* defaultsPath, NSString* domain, NSMutableData* outData) {")
+        self.assertIn("execl(defaultsPathC", body)
+
+    def test_spawn_call_site_uses_resolved_binary(self):
+        body = self._live_body()
+        resolved = body.index("NSString* defaultsBin = nil;")
+        spawn = body.index("CLMCLSpawnDefaultsRead(defaultsBin, domain, outData)")
+        self.assertLess(resolved, spawn)  # 解析出的二进制路径传入 spawn
+
+
+class MCLAcceptedUnverifiedAttributionContractTests(unittest.TestCase):
+    """任务 5.4（v1.17.2 受理推断归因修正）：mcl_enabled=YES 时禁止归 gate1/gate2。
+
+    F2：层2 内存标志（strb #1,[x19+0x14]）的置位代码在 gate1/gate2 之后——
+    after.layer2.mcl_enabled=YES 即服务端已通过全部门禁并受理 enableMCL 的实锤。
+    此时双通道无法证实 MCLFeatureState 只说明 cfprefsd 持久化证据不可得，不得自相
+    矛盾地归 gate：报新分支 accepted_unverified + advice=charge_test_now；既有失败
+    分支族与默认建议（reboot_and_retry）语义不变。App 侧识别 charge_test_now 输出
+    「插电充电实测」提示，双语 strings 同步。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.daemon_mm = DAEMON_MM.read_text()
+        cls.adv_settings_m = ADV_SETTINGS_M.read_text()
+        cls.strings_en = STRINGS_EN.read_text()
+        cls.strings_zh = STRINGS_ZH.read_text()
+
+    def _inner_body(self):
+        return function_body(self.daemon_mm, "static NSDictionary* performMCLLimitRepairInner(void) {")
+
+    def test_agent_memory_flag_guard_precedes_gate_attribution(self):
+        # 层2 标志守卫位于 !featureWritten 分支内、gate 探测/归因之前
+        body = self._inner_body()
+        written = body.index("if (!featureWritten)")
+        gate_probe = body.index("MCLProbeDeviceSupports80ChargeLimit()")
+        guard_region = body[written:gate_probe]
+        self.assertIn('[afterDiag[@"layer2"][@"mcl_enabled"] boolValue]', guard_region)
+        self.assertIn('@"accepted_unverified"', guard_region)
+
+    def test_accepted_unverified_advice_is_charge_test_now(self):
+        body = self._inner_body()
+        accepted = body.index('@"accepted_unverified"')
+        advice = body.index('advice = @"charge_test_now"')
+        self.assertLess(accepted, advice)   # 受理实锤分支携带 charge_test_now 建议
+
+    def test_default_advice_and_existing_branch_family_unchanged(self):
+        body = self._inner_body()
+        for branch in ("call_error", "gate1_augury_feature", "gate2_device_gate",
+                       "qmax_neutralized", "token_zero", "still_disconnected"):
+            self.assertIn(f'@"{branch}"', body)   # 既有分支族语义不变
+        self.assertIn('NSString* advice = @"reboot_and_retry";', body)  # 默认建议不变
+        self.assertIn('@"advice": advice', body)                        # 失败报告携带 advice
+
+    def test_app_result_message_recognizes_charge_test_now(self):
+        body = function_body(self.adv_settings_m, "- (NSString *)mclRepairResultMessage:(NSDictionary *)result {")
+        self.assertIn('@"charge_test_now"', body)
+
+    def test_bilingual_strings_have_charge_test_now_entry(self):
+        key = "服务端已受理并持久化尝试，请插电充电实测 80%。"
+        self.assertIn(f'"{key}"', self.strings_en)
+        self.assertIn(f'"{key}"', self.strings_zh)

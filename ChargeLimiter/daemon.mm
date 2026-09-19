@@ -2380,6 +2380,7 @@ static NSDictionary* performMCLLimitRepairInner(void) {
     // （afterDiag.layer1 为复核重读），避免用修复前状态误判分支。
     NSString* branch = @"still_disconnected";
     NSString* branchNote = nil;
+    NSString* advice = @"reboot_and_retry";   // 默认建议；accepted_unverified 改 charge_test_now
     NSDictionary* gateEvidence = nil;
     if (!forceOK) {
         branch = @"call_error";              // enableMCL 报错/返回 NO（err 回调）
@@ -2402,14 +2403,25 @@ static NSDictionary* performMCLLimitRepairInner(void) {
             && [afterLiveValues[@"MCLFeatureState"] boolValue];
         BOOL featureWritten = diskProven || liveProven;
         if (!featureWritten) {
-            // F2：enableMCL 真正受理会在返回前自写 MCLFeatureState——修复后双通道均
-            // 无法证实写入 = 服务端在写偏好前静默 bail，归因 gate1/gate2（外部不可
-            // 直接观测，按证据推断）。
-            NSNumber* deviceGate = MCLProbeDeviceSupports80ChargeLimit();
-            gateEvidence = @{@"DeviceSupports80ChargeLimit": deviceGate ?: NSNull.null};
-            branch = (deviceGate != nil && ![deviceGate boolValue])
-                ? @"gate2_device_gate"       // 设备门为假：非内部构建下确定性 bail，优先归因
-                : @"gate1_augury_feature";   // 设备门为真/未知：剩余候选（augury feature 门）
+            // 受理推断守卫（v1.17.2 归因修正，re-notes §7 / F2）：层2 内存标志置位
+            // 代码（strb #1,[x19+0x14]）位于 gate1/gate2 之后执行——
+            // after.layer2.mcl_enabled=YES 即服务端已通过全部门禁并受理 enableMCL
+            // 的实锤，此时禁止归 gate1/gate2（自相矛盾）：双通道无法证实
+            // MCLFeatureState 只说明 cfprefsd 持久化证据不可得，不代表 bail。
+            // 报新分支 accepted_unverified，建议插电充电实测（charge_test_now）。
+            if ([afterDiag[@"layer2"][@"mcl_enabled"] boolValue]) {
+                branch = @"accepted_unverified";
+                advice = @"charge_test_now";
+            } else {
+                // F2：enableMCL 真正受理会在返回前自写 MCLFeatureState 并置位层2 标志
+                // ——双通道均无法证实写入且层2 未翻转 = 服务端在写偏好前静默 bail，
+                // 归因 gate1/gate2（外部不可直接观测，按证据推断）。
+                NSNumber* deviceGate = MCLProbeDeviceSupports80ChargeLimit();
+                gateEvidence = @{@"DeviceSupports80ChargeLimit": deviceGate ?: NSNull.null};
+                branch = (deviceGate != nil && ![deviceGate boolValue])
+                    ? @"gate2_device_gate"       // 设备门为假：非内部构建下确定性 bail，优先归因
+                    : @"gate1_augury_feature";   // 设备门为真/未知：剩余候选（augury feature 门）
+            }
         } else if (liveProven && !diskProven) {
             // 活通道证实写入已受理、仅磁盘不可读（缓冲态未落盘）：gate 未拦截。
             // 代理内存读回仍未翻转 = 层2 侧断点（写入被服务端受理、代理未加载新值）。
@@ -2458,7 +2470,7 @@ static NSDictionary* performMCLLimitRepairInner(void) {
         @"success": @NO, @"verdict_before": verdictBefore, @"verdict_after": verdictAfter,
         @"before": beforeDiag, @"after": afterDiag,
         @"normalize": normalize, @"force_enable_ok": @(forceOK), @"registry_diff": diff,
-        @"failure_branch": branch, @"advice": @"reboot_and_retry",
+        @"failure_branch": branch, @"advice": advice,
         @"rollback": @{@"attempted": @(rollbackAttempted), @"ok": @(rollbackOK),
                        @"failed": @(rollbackAttempted && !rollbackOK), @"snapshot": snapshotValues},
     }];

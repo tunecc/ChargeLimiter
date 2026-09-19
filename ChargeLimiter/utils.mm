@@ -3677,14 +3677,21 @@ NSArray<NSString*>* CLMCLPrefKeys(void) {
     return keys;
 }
 
-// 候选偏好域（Design Doc 3.1：strings 已见两个域，只读扫描，不硬编码写入猜测域）。
-// 静态证据（re-notes.md §域命中实验）：复数域 43 处代码引用、单数域 0 处；
-// 扫描顺序按 Design Doc 列出顺序，以实际命中为准，运行时以诊断报告 domain 字段为权威。
+// 候选偏好域（v1.17.2 域定案回灌）：只读扫描语义不变，运行时以诊断报告 domain 字段为权威。
 static NSArray<NSString*>* CLMCLCandidateDomains(void) {
     static NSArray<NSString*>* domains = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        domains = @[@"com.apple.powerui.smartcharge", @"com.apple.powerui.smartcharging"];
+        // 域定案（re-notes §7，真机轮 2 回灌）：MCL 六键真实域 =
+        // com.apple.smartcharging.topoffprotection（mobile 用户）——静态铁证
+        // （manager 单例工厂块 0x20236abd8 传给 initWithDefaultsDomain: 的 CFString
+        // @0x2371fd2c0，参照物校验通过）+ 真机实锤（su mobile -c 'defaults read'
+        // 该域读出 MCLFeatureState=1 等实值）。com.apple.powerui.smartcharging 是
+        // initWithDefaultsDomain: 内另一 CFPreferences 句柄（checkpoint 等用途）、
+        // com.apple.powerui.smartcharge 为通知名残留，均非 MCL 键域，降为回退。
+        domains = @[@"com.apple.smartcharging.topoffprotection",
+                    @"com.apple.powerui.smartcharging",
+                    @"com.apple.powerui.smartcharge"];
     });
     return domains;
 }
@@ -3825,20 +3832,23 @@ static void CLMCLLiveCacheStore(NSString* domain, NSData* raw, int rc, NSInteger
     }
 }
 
-// 以 mobile 用户执行 /usr/bin/defaults read <domain>（fork + setuid + execl），
-// stdout/stderr 合流入 outData。带约 3s 超时保护：poll 读 + 超时 SIGKILL 回收，
+// 以 mobile 用户执行 <defaultsPath> read <domain>（fork + setuid + execl），
+// stdout/stderr 合流入 outData。defaultsPath 由调用方按序探测解析（v1.17.2
+// re-notes §7：jbroot 解析路径 → /var/jb → /usr/bin），同样在父进程解析——
+// fork 后子进程只持有指针。带约 3s 超时保护：poll 读 + 超时 SIGKILL 回收，
 // defaults 卡死不得拖住诊断。返回 0=正常；-1=spawn 失败；-2=超时；-3=exec 失败
 // （子进程 _exit(127)）；-4=setgid/setuid 失败（子进程 _exit(126)）。
 // getpwnam 与 UTF8String 都在父进程解析——fork 后子进程只做 async-signal-safe
 // 调用（close/dup2/getdtablesize/setgid/setuid/execl/_exit），exec 失败走 _exit(127)。
-static int CLMCLSpawnDefaultsRead(NSString* domain, NSMutableData* outData) {
+static int CLMCLSpawnDefaultsRead(NSString* defaultsPath, NSString* domain, NSMutableData* outData) {
     int fds[2];
     if (pipe(fds) != 0) {
         return -1;
     }
     struct passwd* pw = getpwnam("mobile");
     const char* domainC = domain.UTF8String;
-    if (pw == NULL || domainC == NULL) {
+    const char* defaultsPathC = defaultsPath.fileSystemRepresentation;
+    if (pw == NULL || domainC == NULL || defaultsPathC == NULL) {
         close(fds[0]);
         close(fds[1]);
         return -1;
@@ -3864,7 +3874,7 @@ static int CLMCLSpawnDefaultsRead(NSString* domain, NSMutableData* outData) {
         // 活通道将静默全 Missing，复辟 gate1 误归因。
         if (setgid(pw->pw_gid) != 0) _exit(126);
         if (setuid(pw->pw_uid) != 0) _exit(126);
-        execl("/usr/bin/defaults", "defaults", "read", domainC, (char*)NULL);
+        execl(defaultsPathC, "defaults", "read", domainC, (char*)NULL);
         _exit(127);
     }
     close(fds[1]);
@@ -4000,7 +4010,29 @@ BOOL CLMCLReadPrefsLive(NSMutableDictionary* outLive, BOOL forceRefresh) {
         }
     }
     outLive[@"pref_files"] = prefFiles;
-    if (![[NSFileManager defaultManager] fileExistsAtPath:@"/usr/bin/defaults"]) {
+    // v1.17.2 域定案回灌（re-notes §7）：defaults 二进制按序探测——
+    // (1) libroothide jbroot 解析后的 /usr/bin/defaults：roothide 下 daemon 视野
+    //     不存在 /usr/bin/defaults（真机 defaults_missing 实锤），用户终端可用的
+    //     defaults 来自 jbroot PATH 重映射；经 resolveRoothidePathByAPI 运行时
+    //     dlsym/dlopen 函数探测解析（编译期弱依赖 roothide，不可用即跳过）；
+    // (2) /var/jb/usr/bin/defaults（rootless bootstrap 布局）；
+    // (3) /usr/bin/defaults（rootful 直通布局）。
+    // 任一存在即用，全部缺失才降级 defaults_missing（不崩溃、不 spawn）。
+    NSString* defaultsBin = nil;
+    NSString* jbrootDefaults = resolveRoothidePathByAPI(@"/usr/bin/defaults");
+    if (jbrootDefaults.length > 0
+        && [[NSFileManager defaultManager] fileExistsAtPath:jbrootDefaults]) {
+        defaultsBin = jbrootDefaults;
+    }
+    if (defaultsBin == nil
+        && [[NSFileManager defaultManager] fileExistsAtPath:@"/var/jb/usr/bin/defaults"]) {
+        defaultsBin = @"/var/jb/usr/bin/defaults";
+    }
+    if (defaultsBin == nil
+        && [[NSFileManager defaultManager] fileExistsAtPath:@"/usr/bin/defaults"]) {
+        defaultsBin = @"/usr/bin/defaults";
+    }
+    if (defaultsBin == nil) {
         // defaults 工具缺失：通道不可用，报告降级（不崩溃、不 spawn）
         outLive[@"channel"] = @"unavailable";
         outLive[@"channel_reason"] = @"defaults_missing";
@@ -4030,7 +4062,7 @@ BOOL CLMCLReadPrefsLive(NSMutableDictionary* outLive, BOOL forceRefresh) {
                 [domainStates addEntriesFromDictionary:cached[@"states"]];
             }
         } else {
-            rc = CLMCLSpawnDefaultsRead(domain, outData);
+            rc = CLMCLSpawnDefaultsRead(defaultsBin, domain, outData);
             if (rc == -2) {
                 // 超时：该域读取异常（区分于缺失），不参与命中
                 for (NSString* key in CLMCLPrefKeys()) {

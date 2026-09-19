@@ -1917,6 +1917,11 @@ static const NSInteger CLAdvAccChargeLPMTag = 405;
     if ([result[@"advice"] isEqualToString:@"reboot_and_retry"]) {
         msg = [msg stringByAppendingFormat:@"\n%@", CLL(@"建议：重启设备后重试。")];
     }
+    // v1.17.2 受理推断（re-notes §7）：accepted_unverified（服务端已受理、代理内存
+    // 已翻转，仅持久化证据不可得）时建议插电充电实测，而非重启。
+    if ([result[@"advice"] isEqualToString:@"charge_test_now"]) {
+        msg = [msg stringByAppendingFormat:@"\n%@", CLL(@"服务端已受理并持久化尝试，请插电充电实测 80%。")];
+    }
     // v1.17.1 回灌证据：失败分支追加两行关键证据——服务端调用受理（force_enable_ok）
     // 与代理内存标志（修复后 after.layer2.mcl_enabled），真机回传时直接判读
     // 「服务端写没写 / 代理内存翻没翻」，不再只看 failure_branch 单值。
