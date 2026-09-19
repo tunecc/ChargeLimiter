@@ -100,6 +100,10 @@ BOOL CLMCLReadPrefs(NSMutableDictionary* outPrefs);
 // 层2：OBC 状态 + MCL 支持性/读回。返回 YES=MCL 受支持。
 BOOL CLMCLReadAgentState(int* obcStatus, BOOL* mclSupported, BOOL* mclEnabled);
 
+// MCL 强制入口：无读回短路，无条件下发（修复编排专用；常规联动仍走 setSmartChargeMCLEnabled）。
+BOOL CLMCLForceEnable(void);
+BOOL CLMCLForceDisable(void);
+
 /* ---------------- App ---------------- */
 id getlocalKV(NSString* key);
 void setlocalKV(NSString* key, id val);

@@ -66,3 +66,35 @@ class MCLPrefsContractTests(unittest.TestCase):
         self.assertIn("NSArray<NSString*>* CLMCLPrefKeys(void);", self.utils_h)
         self.assertIn("BOOL CLMCLReadPrefs(NSMutableDictionary* outPrefs);", self.utils_h)
         self.assertIn("BOOL CLMCLReadAgentState(int* obcStatus, BOOL* mclSupported, BOOL* mclEnabled);", self.utils_h)
+
+
+class MCLForceEntryContractTests(unittest.TestCase):
+    """任务 3.1：强制入口无读回短路、无条件下发；既有调用方语义不变。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.utils_mm = UTILS_MM.read_text()
+        cls.utils_h = UTILS_H.read_text()
+
+    def test_force_enable_has_no_readback_shortcircuit(self):
+        body = function_body(self.utils_mm, "BOOL CLMCLForceEnable(void) {")
+        self.assertIn("[client enableMCL:&err]", body)
+        self.assertNotIn("getSmartChargeMCLEnabled() ==", body)
+
+    def test_force_disable_has_no_readback_shortcircuit(self):
+        body = function_body(self.utils_mm, "BOOL CLMCLForceDisable(void) {")
+        self.assertIn("[client disableMCL:&err]", body)
+        self.assertNotIn("getSmartChargeMCLEnabled() ==", body)
+
+    def test_legacy_set_keeps_readback_shortcircuit(self):
+        body = function_body(self.utils_mm, "BOOL setSmartChargeMCLEnabled(BOOL flag) {")
+        self.assertIn("if (getSmartChargeMCLEnabled() == flag) {", body)  # v1.16.1 语义不变
+
+    def test_both_force_entries_gated_by_capability_probe(self):
+        for fn in ("BOOL CLMCLForceEnable(void) {", "BOOL CLMCLForceDisable(void) {"):
+            body = function_body(self.utils_mm, fn)
+            self.assertIn("isSmartChargeMCLSupported()", body, msg=fn)
+
+    def test_declarations_in_header(self):
+        self.assertIn("BOOL CLMCLForceEnable(void);", self.utils_h)
+        self.assertIn("BOOL CLMCLForceDisable(void);", self.utils_h)

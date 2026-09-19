@@ -3770,6 +3770,38 @@ BOOL CLMCLReadAgentState(int* obcStatus, BOOL* mclSupported, BOOL* mclEnabled) {
     return supported;
 }
 
+// 强制修复入口（Design Doc 3.2）：不读回、不短路，直接下发 enable/disable。
+// 与 setSmartChargeMCLEnabled 的差别：后者读回等于目标即短路（v1.16.1 语义），
+// 修复被脱节破坏的设备必须绕过——层2 读回 YES 不代表层3 生效。
+// 成功只代表层1/层2 已写（F2），层3 是否生效须由调用方复核。
+BOOL CLMCLForceEnable(void) {
+    if (!isSmartChargeMCLSupported()) {
+        return NO;
+    }
+    PowerUISmartChargeClient* client = getSmartChargeClient();
+    NSError* err = nil;
+    BOOL ok = [client enableMCL:&err];
+    if (err != nil || !ok) {
+        NSLog(@"CLMCLForceEnable ok=%d err=%@", ok, err);
+        return NO;
+    }
+    return YES;
+}
+
+BOOL CLMCLForceDisable(void) {
+    if (!isSmartChargeMCLSupported()) {
+        return NO;
+    }
+    PowerUISmartChargeClient* client = getSmartChargeClient();
+    NSError* err = nil;
+    BOOL ok = [client disableMCL:&err];
+    if (err != nil || !ok) {
+        NSLog(@"CLMCLForceDisable ok=%d err=%@", ok, err);
+        return NO;
+    }
+    return YES;
+}
+
 BOOL temporarilyDisableSmartCharge() {
     PowerUISmartChargeClient* client = getSmartChargeClient();
     NSError* err = nil;
