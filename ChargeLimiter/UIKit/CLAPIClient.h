@@ -48,6 +48,9 @@ typedef void (^CLAPICallback)(NSDictionary *_Nullable response, NSError *_Nullab
 // 便捷方法 - 获取 MCL（80% 限制）全链路诊断（自包含报告，单次请求）
 - (void)getMCLDiagnosticsWithCompletion:(nullable CLAPICallback)completion;
 
+// 便捷方法 - 强制修复 MCL 80% 限制（不信任读回短路；返回前后诊断与分层成败）
+- (void)repairMCLLimitWithCompletion:(nullable CLAPICallback)completion;
+
 // 便捷方法 - 获取历史统计数据
 - (void)getStatisticsWithConf:(NSDictionary *)conf completion:(CLAPICallback)completion;
 

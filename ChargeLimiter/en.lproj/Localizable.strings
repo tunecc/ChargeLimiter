@@ -482,3 +482,13 @@
 "MCL 诊断报告已复制到剪贴板。" = "MCL diagnostics report copied to the clipboard.";
 "请等待 MCL 诊断刷新完成。" = "Please wait for the MCL diagnostics refresh to finish.";
 "「代理内存层」为系统代理读回语义，非执行层证据；判定「脱节」时可执行强制修复。" = "\"Agent memory layer\" is the system agent's readback semantics, not execution-layer evidence. Run Force Repair when the verdict is \"Disconnected\".";
+"强制修复 80% 限制" = "Force Repair 80% Limit";
+"执行修复" = "Run Repair";
+"将规范化 MCL 偏好并无条件重新下发 80% 限制。健康设备不会改变当前选项。继续？" = "This will normalize MCL preferences and unconditionally re-apply the 80% limit. Healthy devices keep their current option. Continue?";
+"修复失败" = "Repair failed";
+"修复被拒绝：有协调会话正在进行，请稍后再试。" = "Repair rejected: a coordination session is active. Try again later.";
+"设备不支持：需要 iOS 17 及以上。" = "Unsupported device: iOS 17 or later is required.";
+"设备健康：已保持当前充电优化选项，未做任何修改。" = "Device is healthy: your current Optimized Battery Charging option was kept, nothing changed.";
+"修复完成：80% 限制已重新下发，请插电充电验证。" = "Repair finished: the 80% limit has been re-applied. Plug in to verify.";
+"修复失败。失败分支：" = "Repair failed. Failure branch: ";
+"建议：重启设备后重试。" = "Suggestion: reboot the device and retry.";

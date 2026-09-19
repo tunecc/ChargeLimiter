@@ -1068,6 +1068,14 @@ static const NSInteger CLAdvAccChargeLPMTag = 405;
                               tag:930
                            target:self
                            action:@selector(copyMCLDiagnosticsTapped:)];
+    [mclCard addSeparator];
+    [mclCard addPickerRowWithIcon:@"wrench.and.screwdriver"
+                            title:CLL(@"强制修复 80% 限制")
+                            value:CLL(@"执行修复")
+                            color:[UIColor systemOrangeColor]
+                              tag:931
+                           target:self
+                           action:@selector(repairMCLLimitTapped:)];
     [self addTipRowToCard:mclCard text:CLL(@"「代理内存层」为系统代理读回语义，非执行层证据；判定「脱节」时可执行强制修复。")];
     [self.mainStack addArrangedSubview:mclCard];
 
@@ -1831,6 +1839,77 @@ static const NSInteger CLAdvAccChargeLPMTag = 405;
     NSString *text = data ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : @"";
     [UIPasteboard generalPasteboard].string = text ?: @"";
     [self presentInfoAlertWithTitle:CLL(@"已复制") message:CLL(@"MCL 诊断报告已复制到剪贴板。")];
+}
+
+// 强制修复：二次确认 → repair_mcl_limit → 分层成败反馈 + 刷新诊断（Design Doc 3.5）
+- (void)repairMCLLimitTapped:(UITapGestureRecognizer *)tap {
+    UIAlertController *confirm = [UIAlertController alertControllerWithTitle:CLL(@"强制修复 80% 限制")
+                                                                     message:CLL(@"将规范化 MCL 偏好并无条件重新下发 80% 限制。健康设备不会改变当前选项。继续？")
+                                                              preferredStyle:UIAlertControllerStyleAlert];
+    [confirm addAction:[UIAlertAction actionWithTitle:CLL(@"取消") style:UIAlertActionStyleCancel handler:nil]];
+    [confirm addAction:[UIAlertAction actionWithTitle:CLL(@"执行修复") style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+        [self runMCLRepair];
+    }]];
+    [self presentViewController:confirm animated:YES completion:nil];
+}
+
+- (void)runMCLRepair {
+    [self setMCLRepairButtonEnabled:NO];
+    __weak typeof(self) weakSelf = self;
+    [[CLAPIClient shared] repairMCLLimitWithCompletion:^(NSDictionary *response, NSError *error) {
+        __strong typeof(self) self = weakSelf;
+        if (!self) return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self setMCLRepairButtonEnabled:YES];
+            NSDictionary *result = (error == nil && [response isKindOfClass:[NSDictionary class]]) ? response[@"data"] : nil;
+            if (![result isKindOfClass:[NSDictionary class]]) {
+                [self presentInfoAlertWithTitle:CLL(@"修复失败") message:CLL(@"无法连接守护进程")];
+                return;
+            }
+            [self presentInfoAlertWithTitle:CLL(@"强制修复 80% 限制")
+                                    message:[self mclRepairResultMessage:result]];
+            [self refreshMCLDiagnostics];
+        });
+    }];
+}
+
+// 修复运行中禁点按钮（视觉反馈，与既有 daemon 修复行 tag 926 模式一致）
+- (void)setMCLRepairButtonEnabled:(BOOL)enabled {
+    for (UIView *card in self.mainStack.arrangedSubviews) {
+        if (![card isKindOfClass:[CLAdvSettingsCard class]]) continue;
+        CLAdvSettingsCard *mclCard = (CLAdvSettingsCard *)card;
+        for (UIView *row in mclCard.contentStack.arrangedSubviews) {
+            if (row.tag == 931) {
+                row.userInteractionEnabled = enabled;
+                row.alpha = enabled ? 1.0 : 0.5;
+            }
+        }
+    }
+}
+
+// 成功/失败/分支文案（Design Doc 3.4-⑥：三分支区分 + 重启建议；delta spec：分层证据展示）
+- (NSString *)mclRepairResultMessage:(NSDictionary *)result {
+    if ([result[@"unsupported"] boolValue]) {
+        return CLL(@"设备不支持：需要 iOS 17 及以上。");
+    }
+    if ([result[@"busy"] boolValue]) {
+        return CLL(@"修复被拒绝：有协调会话正在进行，请稍后再试。");
+    }
+    if ([result[@"action"] isEqualToString:@"kept"]) {
+        return CLL(@"设备健康：已保持当前充电优化选项，未做任何修改。");
+    }
+    if ([result[@"success"] boolValue]) {
+        return [NSString stringWithFormat:@"%@ (%@)",
+                CLL(@"修复完成：80% 限制已重新下发，请插电充电验证。"),
+                [self mclVerdictText:result[@"verdict_after"]]];
+    }
+    // failure_branch 为 Task 5 daemon 实际字段；failure_class 为协调上下文备份形状，回退兼容
+    NSString *branch = result[@"failure_branch"] ?: result[@"failure_class"] ?: @"unknown";
+    NSString *msg = [NSString stringWithFormat:@"%@ %@", CLL(@"修复失败。失败分支："), branch];
+    if ([result[@"advice"] isEqualToString:@"reboot_and_retry"]) {
+        msg = [msg stringByAppendingFormat:@"\n%@", CLL(@"建议：重启设备后重试。")];
+    }
+    return msg;
 }
 
 - (void)refreshEnvironmentDiagnostics {

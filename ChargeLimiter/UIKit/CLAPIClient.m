@@ -358,6 +358,12 @@ static int CLStartDaemonBestEffort(void) {
                             @"layer2": @{@"obc_status": @1, @"mcl_supported": @YES, @"mcl_enabled": @YES},
                             @"layer3": @{@"evidence_grade": @"indirect", @"present": @NO},
                             @"verdict": @"healthy_enabled"}};
+    } else if ([api isEqualToString:@"repair_mcl_limit"]) {
+        NSLog(@"[CL-Mock] 强制修复 MCL 80%% 限制");
+        return @{@"status": @0,
+                 @"data": @{@"supported": @YES, @"busy": @NO, @"action": @"repaired",
+                            @"success": @YES, @"verdict_before": @"disconnected",
+                            @"verdict_after": @"healthy_enabled"}};
     } else if ([api isEqualToString:@"clear_statistics"]) {
         NSLog(@"[CL-Mock] 清空历史统计");
         return @{@"status": @0};
@@ -634,6 +640,10 @@ static int CLStartDaemonBestEffort(void) {
 
 - (void)getMCLDiagnosticsWithCompletion:(nullable CLAPICallback)completion {
     [self sendRequest:@{@"api": @"get_mcl_diagnostics"} completion:completion];
+}
+
+- (void)repairMCLLimitWithCompletion:(nullable CLAPICallback)completion {
+    [self sendRequest:@{@"api": @"repair_mcl_limit"} completion:completion];
 }
 
 - (void)getStatisticsWithConf:(NSDictionary *)conf completion:(CLAPICallback)completion {

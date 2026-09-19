@@ -289,3 +289,58 @@ class MCLDiagnosticsUIContractTests(unittest.TestCase):
                     "MCL 诊断报告已复制到剪贴板。", "请等待 MCL 诊断刷新完成。"):
             self.assertIn(f'"{key}"', self.strings_en)
             self.assertIn(f'"{key}"', self.strings_zh)
+
+
+class MCLRepairUIContractTests(unittest.TestCase):
+    """任务 4.2：强制修复按钮——二次确认、调用、分层结果反馈、按钮互斥。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.adv_settings_m = ADV_SETTINGS_M.read_text()
+        cls.api_client_h = API_CLIENT_H.read_text()
+        cls.api_client_m = API_CLIENT_M.read_text()
+        cls.strings_en = STRINGS_EN.read_text()
+        cls.strings_zh = STRINGS_ZH.read_text()
+
+    def test_api_client_has_repair_method(self):
+        self.assertIn("repairMCLLimitWithCompletion:", self.api_client_h)
+        self.assertIn('"api": @"repair_mcl_limit"', self.api_client_m)
+        self.assertIn('@"repair_mcl_limit"', self.api_client_m)  # mock 分支
+
+    def test_repair_button_in_mcl_card(self):
+        body = function_body(self.adv_settings_m, "- (void)setupContent {")
+        self.assertIn('title:CLL(@"强制修复 80% 限制")', body)
+        self.assertIn("repairMCLLimitTapped:", body)
+        self.assertIn("tag:931", body)
+
+    def test_tap_asks_confirmation_then_runs(self):
+        body = function_body(self.adv_settings_m, "- (void)repairMCLLimitTapped:(UITapGestureRecognizer *)tap {")
+        self.assertIn("UIAlertController", body)
+        self.assertIn("runMCLRepair", body)
+
+    def test_run_calls_api_and_renders(self):
+        body = function_body(self.adv_settings_m, "- (void)runMCLRepair {")
+        self.assertIn("repairMCLLimitWithCompletion", body)
+        self.assertIn("mclRepairResultMessage", body)
+        self.assertIn("refreshMCLDiagnostics", body)
+
+    def test_result_message_maps_branches_and_busy(self):
+        body = function_body(self.adv_settings_m, "- (NSString *)mclRepairResultMessage:(NSDictionary *)result {")
+        self.assertIn('result[@"unsupported"]', body)
+        self.assertIn('result[@"busy"]', body)
+        self.assertIn('result[@"failure_branch"]', body)
+        self.assertIn('@"reboot_and_retry"', body)
+        self.assertIn('@"kept"', body)
+
+    def test_repair_button_disables_while_running(self):
+        body = function_body(self.adv_settings_m, "- (void)setMCLRepairButtonEnabled:(BOOL)enabled {")
+        self.assertIn("931", body)
+        self.assertIn("userInteractionEnabled", body)
+
+    def test_bilingual_strings_synced(self):
+        for key in ("强制修复 80% 限制", "执行修复", "修复被拒绝：有协调会话正在进行，请稍后再试。",
+                    "设备不支持：需要 iOS 17 及以上。", "设备健康：已保持当前充电优化选项，未做任何修改。",
+                    "修复完成：80% 限制已重新下发，请插电充电验证。", "修复失败。失败分支：",
+                    "建议：重启设备后重试。"):
+            self.assertIn(f'"{key}"', self.strings_en)
+            self.assertIn(f'"{key}"', self.strings_zh)
