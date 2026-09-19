@@ -2106,6 +2106,259 @@ static NSDictionary* collectMCLDiagnostics(void) {
     return collectMCLDiagnosticsWithLayer3(nil);
 }
 
+/* ---------------- iOS 17+ MCL 强制修复编排（Design Doc 3.4，tasks 3.2） ---------------- */
+
+// gate2（MobileGestalt）证据探测：re-notes F2——`DeviceSupports80ChargeLimit` 为假且
+// isInternalBuild==0 时，poweruiagent enableMCL 在写任何偏好前静默 bail（不写不报错）。
+// 返回 nil = MobileGestalt 探测不到该键，证据未知（报告 gate_evidence 以 NSNull 如实标注）。
+// extern "C" 声明与 utils.mm 既有用法一致（同一二进制已链接 libMobileGestalt）；
+// .mm 为 ObjC++，缺 extern "C" 会因 C++ 名字修饰在链接期找不到符号。
+extern "C" CFTypeRef MGCopyAnswer(CFStringRef answer);
+
+static NSNumber* MCLProbeDeviceSupports80ChargeLimit(void) {
+    CFTypeRef raw = MGCopyAnswer(CFSTR("DeviceSupports80ChargeLimit"));
+    if (raw == NULL) {
+        return nil;
+    }
+    id value = CFBridgingRelease(raw);
+    if ([value isKindOfClass:[NSNumber class]]) {
+        return value;
+    }
+    if ([value respondsToSelector:@selector(boolValue)]) {
+        return @([value boolValue]);
+    }
+    return nil;
+}
+
+// mcl_repair_* 时间线事件：MCL 修复不改 smart charge 状态，而 appendSmartChargeCoordinationEvent
+// 在 from==to 时按转移语义丢弃事件——修复留痕直写同一 policy 事件时间线，extras 字段布局与
+// 协调事件一致（smart_charge_from/to 记当前状态，协调会话在场时带 session_id）。
+static void appendMCLRepairCoordinationEvent(NSString* reason, NSDictionary* extras) {
+    NSMutableDictionary* eventExtras = [NSMutableDictionary dictionary];
+    if ([extras isKindOfClass:[NSDictionary class]]) {
+        [eventExtras addEntriesFromDictionary:extras];
+    }
+    eventExtras[@"smart_charge_from"] = @(g_smartChargeStatus);
+    eventExtras[@"smart_charge_to"] = @(g_smartChargeStatus);
+    if (g_smartChargeCoordinationSessionID.length > 0) {
+        eventExtras[@"session_id"] = g_smartChargeCoordinationSessionID;
+    }
+    appendPolicyEventHistory(@"smart_charge_event", @"", @"", reason, nil, eventExtras, time(0));
+}
+
+static BOOL g_mclRepairRunning = NO;
+
+static NSObject* MCLRepairLock(void) {
+    static NSObject* lock = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        lock = [[NSObject alloc] init];
+    });
+    return lock;
+}
+
+// ④a 偏好规范化：只写白名单键（MCLFeatureState=true；mclLimitValue/mclTargetSoC 缺失补默认 80，
+// F4 非 internal 构建 engage 固定用 80，规范化只为域内一致性）；已存在值不动（保留用户语义）。
+// best-effort：逐键结果记入报告，失败不中止修复——F2 服务端 enableMCL 受理会自写 MCLFeatureState。
+// 读取异常（ReadFailed）时跳过写入，避免用空字典覆盖损坏 plist 丢数据。
+static NSDictionary* MCLNormalizePrefsForRepair(NSMutableDictionary* layer1) {
+    NSString* domain = layer1[@"domain"] ?: @"";
+    if ([domain isEqualToString:@"unresolved"] || domain.length == 0) {
+        // Design Doc 4：域未解析 → 跳过规范化直接 force enable（engage 不依赖我们写偏好）
+        return @{@"skipped": @YES, @"reason": @"domain_unresolved"};
+    }
+    NSDictionary* states = layer1[@"states"] ?: @{};
+    for (NSString* key in CLMCLPrefKeys()) {
+        if ([states[key] intValue] == CLMCLPrefReadFailed) {
+            return @{@"skipped": @YES, @"reason": @"pref_read_failed"};
+        }
+    }
+    NSString* path = layer1[@"plist_path"] ?: @"";
+    if (path.length == 0) {
+        return @{@"skipped": @YES, @"reason": @"plist_path_missing"};
+    }
+    NSMutableDictionary* dict = [NSMutableDictionary dictionaryWithContentsOfFile:path];
+    if (dict == nil) {
+        dict = [NSMutableDictionary dictionary];
+    }
+    NSMutableDictionary* results = [NSMutableDictionary dictionary];
+    dict[@"MCLFeatureState"] = @YES;
+    results[@"MCLFeatureState"] = @YES;
+    for (NSString* key in @[@"mclLimitValue", @"mclTargetSoC"]) {
+        if ([states[key] intValue] != CLMCLPrefFound) {
+            dict[key] = @80;
+            results[key] = @YES;
+        }
+    }
+    BOOL ok = [dict writeToFile:path atomically:YES];
+    return @{@"skipped": @NO, @"ok": @(ok), @"keys": results};
+}
+
+// 失败回滚：把规范化写过的键恢复为快照原值（原不存在则移除）。返回 NO = 回滚失败。
+static BOOL MCLRollbackPrefs(NSString* plistPath, NSDictionary* snapshotValues, NSArray<NSString*>* writtenKeys) {
+    if (plistPath.length == 0 || writtenKeys.count == 0) {
+        return YES; // 无写入则无需回滚
+    }
+    NSMutableDictionary* dict = [NSMutableDictionary dictionaryWithContentsOfFile:plistPath];
+    if (dict == nil) {
+        return NO;
+    }
+    for (NSString* key in writtenKeys) {
+        id original = snapshotValues[key];
+        if (original == nil) {
+            [dict removeObjectForKey:key];
+        } else {
+            dict[key] = original;
+        }
+    }
+    return [dict writeToFile:plistPath atomically:YES];
+}
+
+static NSDictionary* performMCLLimitRepairInner(void) {
+    // ② busy 守卫：协调会话活跃拒绝（Design Doc 4：避免与 temp-disable/restore 竞争破坏 OBC 状态）
+    if (g_tempSmartChargeDisabledByCL || g_smartChargeCoordinationSessionID.length > 0) {
+        return @{@"supported": @YES, @"busy": @YES, @"verdict": @"busy",
+                 @"reason": @"coordination_session_active"};
+    }
+    appendMCLRepairCoordinationEvent(@"mcl_repair_started", @{ @"trigger": @"api_repair_mcl_limit" });
+    // ② 快照：白名单六键全量快照（供回滚）+ 层3 数值属性全量快照（供前后 diff）
+    NSMutableDictionary* beforePrefs = [NSMutableDictionary dictionary];
+    CLMCLReadPrefs(beforePrefs);
+    NSDictionary* registryBefore = MCLSnapshotRegistryNumericProps();
+    NSDictionary* snapshotValues = beforePrefs[@"values"] ?: @{};
+    // ③ 健康语义判定（Design Doc 3.4-③）：healthy_disabled 保持用户选项——不写偏好、不 force
+    NSDictionary* beforeDiag = collectMCLDiagnostics();
+    NSString* verdictBefore = beforeDiag[@"verdict"] ?: @"";
+    if ([verdictBefore isEqualToString:@"healthy_enabled"]
+        || [verdictBefore isEqualToString:@"healthy_disabled"]) {
+        NSDictionary* afterDiag = collectMCLDiagnostics();
+        appendMCLRepairCoordinationEvent(@"mcl_repair_finished",
+                                         @{ @"action": @"kept", @"verdict_before": verdictBefore });
+        return @{@"supported": @YES, @"busy": @NO, @"action": @"kept",
+                 @"success": @YES, @"verdict_before": verdictBefore,
+                 @"before": beforeDiag, @"after": afterDiag};
+    }
+    // ④ 修复序列（目标=启用）：规范化偏好 → 无条件 enableMCL（Task 3 入口，绕过读回短路）
+    NSDictionary* normalize = MCLNormalizePrefsForRepair(beforePrefs);
+    BOOL forceOK = CLMCLForceEnable();
+    // ⑤ 复核：层3 前后 diff + 重跑诊断（diff 出 limit/override 类整型变化 → layer3 升级 registry_diff）
+    NSDictionary* registryAfter = MCLSnapshotRegistryNumericProps();
+    NSDictionary* diff = MCLDiffRegistryProps(registryBefore, registryAfter);
+    NSDictionary* limitRelated = diff[@"limit_related"] ?: @{};
+    NSDictionary* layer3Override = nil;
+    if (limitRelated.count > 0) {
+        layer3Override = @{@"evidence_grade": @"registry_diff",
+                           @"present": @YES,
+                           @"diff": limitRelated};
+    }
+    NSDictionary* afterDiag = collectMCLDiagnosticsWithLayer3(layer3Override);
+    NSString* verdictAfter = afterDiag[@"verdict"] ?: @"";
+    BOOL success = [verdictAfter isEqualToString:@"healthy_enabled"];
+    if (success) {
+        appendMCLRepairCoordinationEvent(@"mcl_repair_finished",
+                                         @{ @"action": @"repaired", @"verdict_before": verdictBefore,
+                                            @"verdict_after": verdictAfter, @"success": @YES });
+        return @{@"supported": @YES, @"busy": @NO, @"action": @"repaired",
+                 @"success": @YES, @"verdict_before": verdictBefore, @"verdict_after": verdictAfter,
+                 @"before": beforeDiag, @"after": afterDiag,
+                 @"normalize": normalize, @"force_enable_ok": @(forceOK), @"registry_diff": diff};
+    }
+    // ⑥ 失败：按 re-notes F2/F4/F5 静默分支族区分证据（gate1/gate2 写前 bail + QMax 中和 +
+    // token==0 不下发 + 调用报错），给出建议并回滚 ④a 写入。判定一律用修复后快照
+    // （afterDiag.layer1 为复核重读），避免用修复前状态误判分支。
+    NSString* branch = @"still_disconnected";
+    NSDictionary* gateEvidence = nil;
+    if (!forceOK) {
+        branch = @"call_error";              // enableMCL 报错/返回 NO（err 回调）
+    } else {
+        NSDictionary* afterStates = afterDiag[@"layer1"][@"states"] ?: @{};
+        NSDictionary* afterValues = afterDiag[@"layer1"][@"values"] ?: @{};
+        int featureState = [afterStates[@"MCLFeatureState"] intValue];
+        BOOL featureWritten = (featureState == CLMCLPrefFound) && [afterValues[@"MCLFeatureState"] boolValue];
+        if (!featureWritten) {
+            // F2：enableMCL 真正受理会在返回前自写 MCLFeatureState——修复后仍未写成
+            // = 服务端在写偏好前静默 bail，归因 gate1/gate2（外部不可直接观测，按证据推断）。
+            NSNumber* deviceGate = MCLProbeDeviceSupports80ChargeLimit();
+            gateEvidence = @{@"DeviceSupports80ChargeLimit": deviceGate ?: NSNull.null};
+            branch = (deviceGate != nil && ![deviceGate boolValue])
+                ? @"gate2_device_gate"       // 设备门为假：非内部构建下确定性 bail，优先归因
+                : @"gate1_augury_feature";   // 设备门为真/未知：剩余候选（augury feature 门）
+        } else {
+            BOOL qmaxNeutralized = NO;
+            for (NSString* key in limitRelated) {
+                NSInteger afterValue = [limitRelated[key][@"after"] integerValue];
+                if (afterValue == 101 || afterValue == 0) {   // F4：0x65=101=不限制
+                    qmaxNeutralized = YES;
+                    break;
+                }
+            }
+            if (qmaxNeutralized) {
+                branch = @"qmax_neutralized";   // QMax 未就绪 → 限制值被中和，不下发限制
+            } else {
+                // F5：engage 会自动创建并持久化 token（缺失不是断点）；修复后仍缺失/为 0
+                // 才是 "Charge token is 0, do not engage charge limit" 分支。
+                int tokenState = [afterStates[@"chargeLimitToken"] intValue];
+                id tokenValue = afterValues[@"chargeLimitToken"];
+                NSInteger tokenNumeric = [tokenValue respondsToSelector:@selector(integerValue)]
+                    ? [tokenValue integerValue] : 0;
+                if (tokenState != CLMCLPrefFound || tokenNumeric == 0) {
+                    branch = @"token_zero";
+                }
+            }
+        }
+    }
+    NSArray<NSString*>* writtenKeys = [normalize[@"keys"] allKeys] ?: @[];
+    BOOL rollbackAttempted = ![normalize[@"skipped"] boolValue] && writtenKeys.count > 0;
+    BOOL rollbackOK = rollbackAttempted
+        ? MCLRollbackPrefs(beforePrefs[@"plist_path"], snapshotValues, writtenKeys)
+        : YES;
+    appendMCLRepairCoordinationEvent(@"mcl_repair_finished",
+                                     @{ @"action": @"repaired", @"verdict_before": verdictBefore,
+                                        @"verdict_after": verdictAfter, @"success": @NO,
+                                        @"failure_branch": branch });
+    NSMutableDictionary* failure = [NSMutableDictionary dictionaryWithDictionary:@{
+        @"supported": @YES, @"busy": @NO, @"action": @"repaired",
+        @"success": @NO, @"verdict_before": verdictBefore, @"verdict_after": verdictAfter,
+        @"before": beforeDiag, @"after": afterDiag,
+        @"normalize": normalize, @"force_enable_ok": @(forceOK), @"registry_diff": diff,
+        @"failure_branch": branch, @"advice": @"reboot_and_retry",
+        @"rollback": @{@"attempted": @(rollbackAttempted), @"ok": @(rollbackOK),
+                       @"failed": @(rollbackAttempted && !rollbackOK), @"snapshot": snapshotValues},
+    }];
+    if (gateEvidence != nil) {
+        failure[@"gate_evidence"] = gateEvidence;
+    }
+    return failure;
+}
+
+static NSDictionary* performMCLLimitRepair(void) {
+    // ① 门控：iOS < 17 → unsupported，零写入零 MCL XPC 调用（Design Doc 4：旧系统零成本）
+    if (@available(iOS 17.0, *)) {
+        // 继续
+    } else {
+        return @{@"supported": @NO, @"unsupported": @YES, @"verdict": @"unsupported"};
+    }
+    if (!isSmartChargeMCLSupported()) {
+        return @{@"supported": @NO, @"unsupported": @YES, @"verdict": @"unsupported"};
+    }
+    // ② 修复互斥（与 smart charge 协调会话的并发守卫见 Inner 内协调会话检查）
+    @synchronized (MCLRepairLock()) {
+        if (g_mclRepairRunning) {
+            return @{@"supported": @YES, @"busy": @YES, @"verdict": @"busy"};
+        }
+        g_mclRepairRunning = YES;
+    }
+    NSDictionary* result = nil;
+    @try {
+        result = performMCLLimitRepairInner();
+    } @finally {
+        @synchronized (MCLRepairLock()) {
+            g_mclRepairRunning = NO;
+        }
+    }
+    return result;
+}
+
 static void restoreSmartChargeForReset(NSString* reason) {
     loadSmartChargeCoordinationRuntimeState();
     tryRestoreSmartChargeAfterCoordination(reason ?: @"reset");
@@ -4118,6 +4371,13 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
         // App「还原系统优化充电」入口：清除本工具残留并强制恢复系统优化充电。
         NSDictionary* result = performFullSmartChargeRestore(@"api_restore_smart_charge");
         refreshBatteryStateAndApplyPolicy();
+        return @{
+            @"status": @0,
+            @"data": result,
+        };
+    } else if ([api isEqualToString:@"repair_mcl_limit"]) {
+        // App「强制修复 80% 限制」入口（Design Doc 3.4）：不信任读回短路的修复编排。
+        NSDictionary* result = performMCLLimitRepair();
         return @{
             @"status": @0,
             @"data": result,

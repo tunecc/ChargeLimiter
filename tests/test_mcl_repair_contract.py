@@ -139,3 +139,87 @@ class MCLDiagnosticsContractTests(unittest.TestCase):
         body = function_body(self.daemon_mm, "static NSDictionary* MCLLayer3EvidenceStandalone(void) {")
         self.assertIn('@"indirect"', body)
         self.assertIn("MCLRegistryEvidenceCandidateKeys()", body)
+
+
+class MCLRepairContractTests(unittest.TestCase):
+    """任务 3.2：修复编排——调用序列、busy 守卫、健康无副作用、iOS 16 零写入、回滚。
+
+    相对 brief 测试代码的两处扩展（跨任务协调上下文要求）：
+    1. 失败分支含 gate1/gate2 四分类：re-notes F2 新发现——enableMCL 在写偏好前有
+       两个静默 bail 门（gate1 augury feature；gate2 DeviceSupports80ChargeLimit
+       为假且非内部构建），报告须能区分（gate_evidence 携带 MobileGestalt 原始值）。
+    2. mcl_repair_* 时间线事件经 appendMCLRepairCoordinationEvent 直写 policy 事件
+       时间线：appendSmartChargeCoordinationEvent 在 from==to 时丢弃事件（daemon.mm
+       转移过滤），而 MCL 修复不改充电状态，brief 参考代码的调用会被静默吞掉。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.daemon_mm = DAEMON_MM.read_text()
+
+    def test_repair_dispatched_via_post_api(self):
+        self.assertIn('"repair_mcl_limit"', self.daemon_mm)
+        self.assertIn("performMCLLimitRepair()", self.daemon_mm)
+
+    def test_sequence_snapshot_then_normalize_then_force_then_recheck(self):
+        body = function_body(self.daemon_mm, "static NSDictionary* performMCLLimitRepairInner(void) {")
+        snap = body.index("CLMCLReadPrefs(beforePrefs)")
+        normalize = body.index("MCLNormalizePrefsForRepair(beforePrefs)")
+        force = body.index("CLMCLForceEnable()")
+        recheck = body.index("collectMCLDiagnosticsWithLayer3(")
+        self.assertLess(snap, normalize)
+        self.assertLess(normalize, force)
+        self.assertLess(force, recheck)
+
+    def test_healthy_verdict_keeps_semantics_no_write_no_force(self):
+        body = function_body(self.daemon_mm, "static NSDictionary* performMCLLimitRepairInner(void) {")
+        healthy = body.index('isEqualToString:@"healthy_enabled"]')
+        force = body.index("CLMCLForceEnable()")
+        self.assertLess(healthy, force)  # 健康提前返回在 force 之前（kept 路径不触发 force/写入）
+        self.assertIn('@"kept"', body)
+
+    def test_busy_guards(self):
+        wrapper = function_body(self.daemon_mm, "static NSDictionary* performMCLLimitRepair(void) {")
+        self.assertIn("g_mclRepairRunning", wrapper)
+        self.assertIn("MCLRepairLock()", wrapper)
+        inner = function_body(self.daemon_mm, "static NSDictionary* performMCLLimitRepairInner(void) {")
+        self.assertIn("g_tempSmartChargeDisabledByCL", inner)  # 协调会话活跃拒绝
+        self.assertIn('@"coordination_session_active"', inner)
+
+    def test_ios16_zero_write_gate_in_wrapper(self):
+        wrapper = function_body(self.daemon_mm, "static NSDictionary* performMCLLimitRepair(void) {")
+        gate = wrapper.index("@available(iOS 17.0, *)")
+        lock = wrapper.index("MCLRepairLock()")
+        self.assertLess(gate, lock)  # 旧系统在加锁/任何写入之前退出
+        self.assertIn('@"unsupported"', wrapper)
+
+    def test_failure_rolls_back_snapshot_and_reports_branch(self):
+        body = function_body(self.daemon_mm, "static NSDictionary* performMCLLimitRepairInner(void) {")
+        self.assertIn("MCLRollbackPrefs(", body)
+        for branch in ("call_error", "gate1_augury_feature", "gate2_device_gate",
+                       "qmax_neutralized", "token_zero", "still_disconnected"):
+            self.assertIn(f'@"{branch}"', body)
+        self.assertIn("DeviceSupports80ChargeLimit", body)   # gate2 MobileGestalt 证据探测
+        self.assertIn('@"gate_evidence"', body)              # gate1/gate2 可区分的原始证据
+        self.assertIn('@"reboot_and_retry"', body)
+        self.assertIn('@"rollback"', body)
+
+    def test_whitelist_only_normalization(self):
+        body = function_body(self.daemon_mm, "static NSDictionary* MCLNormalizePrefsForRepair(NSMutableDictionary* layer1) {")
+        for key in ("MCLFeatureState", "mclLimitValue", "mclTargetSoC"):
+            self.assertIn(f'@"{key}"', body)
+        self.assertNotIn('@"currentState"', body)          # 服务端自有键不写
+        self.assertNotIn('@"chargeLimitToken"', body)      # token 生命周期归服务端（F5）
+
+    def test_coordination_timeline_events(self):
+        body = function_body(self.daemon_mm, "static NSDictionary* performMCLLimitRepairInner(void) {")
+        self.assertIn('@"mcl_repair_started"', body)
+        self.assertIn('@"mcl_repair_finished"', body)
+        self.assertIn("appendMCLRepairCoordinationEvent", body)
+        helper = function_body(self.daemon_mm, "static void appendMCLRepairCoordinationEvent(NSString* reason, NSDictionary* extras) {")
+        self.assertIn("appendPolicyEventHistory", helper)   # 与协调事件同一 policy 事件时间线
+
+    def test_no_daemon_restart_in_repair(self):
+        body = function_body(self.daemon_mm, "static NSDictionary* performMCLLimitRepairInner(void) {")
+        self.assertNotIn("killall", body)
+        self.assertNotIn("launchctl", body)   # Design Doc：不重启 poweruiagent
