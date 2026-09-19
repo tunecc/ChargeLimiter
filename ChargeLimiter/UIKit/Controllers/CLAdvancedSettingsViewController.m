@@ -901,6 +901,7 @@ static const NSInteger CLAdvAccChargeLPMTag = 405;
 @property (nonatomic, strong, nullable) CLDiagnosticReport *lastDiagReport;
 @property (nonatomic, copy, nullable) NSDictionary *lastRepairResult;
 @property (nonatomic, strong, nullable) CLAdvSettingsCard *repairCard;
+@property (nonatomic, copy, nullable) NSDictionary *lastMCLDiagnostics;
 @end
 
 @implementation CLPolicyDiagnosticsViewController
@@ -944,6 +945,7 @@ static const NSInteger CLAdvAccChargeLPMTag = 405;
     [super viewWillAppear:animated];
     [self updateDiagnosticValues];
     [self refreshEnvironmentDiagnostics];
+    [self refreshMCLDiagnostics];
 }
 
 - (void)dealloc {
@@ -1041,6 +1043,33 @@ static const NSInteger CLAdvAccChargeLPMTag = 405;
     [self addDiagnosticRowToCard:envCard key:@"diag_iokit" icon:@"wrench" title:CLL(@"IOKit 返回值") color:[UIColor systemTealColor]];
     [self addTipRowToCard:envCard text:CLL(@"上方按钮复制完整诊断（环境+连通性+读电量+策略）。roothide 下 libjailbreak 失败多为预期。")];
     [self.mainStack addArrangedSubview:envCard];
+
+    // —— MCL 80% 限制诊断（Design Doc 3.5）：三层状态 + 判定徽章 + 复制导出 ——
+    CLAdvSettingsCard *mclCard = [[CLAdvSettingsCard alloc] init];
+    [mclCard addSectionHeader:CLL(@"MCL 80% 限制诊断")];
+    [self addDiagnosticRowToCard:mclCard key:@"mcl_verdict" icon:@"checkmark.seal" title:CLL(@"一致性判定") color:[UIColor systemBlueColor]];
+    [mclCard addSeparator];
+    [self addDiagnosticRowToCard:mclCard key:@"mcl_domain" icon:@"externaldrive" title:CLL(@"偏好域") color:[UIColor systemGrayColor]];
+    [mclCard addSeparator];
+    [self addDiagnosticRowToCard:mclCard key:@"mcl_l1_feature" icon:@"list.bullet" title:CLL(@"偏好层 MCLFeatureState") color:[UIColor systemTealColor]];
+    [mclCard addSeparator];
+    [self addDiagnosticRowToCard:mclCard key:@"mcl_l1_token" icon:@"list.bullet" title:CLL(@"偏好层 chargeLimitToken") color:[UIColor systemTealColor]];
+    [mclCard addSeparator];
+    [self addDiagnosticRowToCard:mclCard key:@"mcl_l1_limit" icon:@"list.bullet" title:CLL(@"偏好层限制值/目标") color:[UIColor systemTealColor]];
+    [mclCard addSeparator];
+    [self addDiagnosticRowToCard:mclCard key:@"mcl_l2" icon:@"memorychip" title:CLL(@"代理内存层读回") color:[UIColor systemIndigoColor]];
+    [mclCard addSeparator];
+    [self addDiagnosticRowToCard:mclCard key:@"mcl_l3" icon:@"waveform.path" title:CLL(@"执行层证据") color:[UIColor systemOrangeColor]];
+    [mclCard addSeparator];
+    [mclCard addPickerRowWithIcon:@"doc.on.doc"
+                            title:CLL(@"复制 MCL 诊断报告")
+                            value:CLL(@"复制")
+                            color:[UIColor systemBlueColor]
+                              tag:930
+                           target:self
+                           action:@selector(copyMCLDiagnosticsTapped:)];
+    [self addTipRowToCard:mclCard text:CLL(@"「代理内存层」为系统代理读回语义，非执行层证据；判定「脱节」时可执行强制修复。")];
+    [self.mainStack addArrangedSubview:mclCard];
 
     CLAdvSettingsCard *runtimeCard = [[CLAdvSettingsCard alloc] init];
     [runtimeCard addSectionHeader:CLL(@"策略运行时")];
@@ -1719,6 +1748,89 @@ static const NSInteger CLAdvAccChargeLPMTag = 405;
     NSString *summary = [self calibrationChecklistTextForManager:[CLBatteryManager shared]];
     [UIPasteboard generalPasteboard].string = summary ?: @"";
     [self presentInfoAlertWithTitle:CLL(@"已复制") message:CLL(@"真机长测与校准模板已复制到剪贴板。")];
+}
+
+#pragma mark - MCL 诊断（iOS 17+ 80% 限制）
+
+- (void)refreshMCLDiagnostics {
+    __weak typeof(self) weakSelf = self;
+    [[CLAPIClient shared] getMCLDiagnosticsWithCompletion:^(NSDictionary *response, NSError *error) {
+        __strong typeof(self) self = weakSelf;
+        if (!self) return;
+        if (error != nil || ![response isKindOfClass:[NSDictionary class]]) {
+            return;
+        }
+        NSDictionary *diag = response[@"data"];
+        if (![diag isKindOfClass:[NSDictionary class]]) {
+            return;
+        }
+        self.lastMCLDiagnostics = diag;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self applyMCLDiagnosticsToLabels:diag];
+        });
+    }];
+}
+
+- (NSString *)mclVerdictText:(NSString *)verdict {
+    if ([verdict isEqualToString:@"healthy_enabled"]) return CLL(@"一致启用（健康）");
+    if ([verdict isEqualToString:@"healthy_disabled"]) return CLL(@"一致停用（健康）");
+    if ([verdict isEqualToString:@"disconnected"]) return CLL(@"脱节");
+    if ([verdict isEqualToString:@"pref_lost"]) return CLL(@"偏好丢失");
+    if ([verdict isEqualToString:@"unsupported"]) return CLL(@"不支持");
+    return verdict.length ? verdict : @"--";
+}
+
+// 层1 单键渲染：显式区分「键不存在」与「读取失败」（delta spec 场景 2）
+- (NSString *)mclLayer1KeyText:(NSDictionary *)diag key:(NSString *)key {
+    NSDictionary *layer1 = diag[@"layer1"] ?: @{};
+    NSDictionary *states = layer1[@"states"] ?: @{};
+    NSDictionary *values = layer1[@"values"] ?: @{};
+    int state = [states[key] intValue];   // 0=missing 1=found 2=read_failed（CLMCLPrefReadState）
+    if (state == 2) return CLL(@"读取失败");
+    if (state == 0) return CLL(@"键不存在");
+    id value = values[key];
+    if (value == nil) return @"--";
+    return [NSString stringWithFormat:@"%@", value];
+}
+
+- (void)applyMCLDiagnosticsToLabels:(NSDictionary *)diag {
+    if (![diag[@"supported"] boolValue]) {
+        [self updateDiagnosticValue:CLL(@"不支持") forKey:@"mcl_verdict"];
+        for (NSString *key in @[@"mcl_domain", @"mcl_l1_feature", @"mcl_l1_token", @"mcl_l1_limit", @"mcl_l2", @"mcl_l3"]) {
+            [self updateDiagnosticValue:@"--" forKey:key];
+        }
+        return;
+    }
+    [self updateDiagnosticValue:[self mclVerdictText:diag[@"verdict"]] forKey:@"mcl_verdict"];
+    [self updateDiagnosticValue:(diag[@"domain"] ?: @"--") forKey:@"mcl_domain"];
+    [self updateDiagnosticValue:[self mclLayer1KeyText:diag key:@"MCLFeatureState"] forKey:@"mcl_l1_feature"];
+    [self updateDiagnosticValue:[self mclLayer1KeyText:diag key:@"chargeLimitToken"] forKey:@"mcl_l1_token"];
+    NSString *limits = [NSString stringWithFormat:@"%@ / %@",
+                        [self mclLayer1KeyText:diag key:@"mclLimitValue"],
+                        [self mclLayer1KeyText:diag key:@"mclTargetSoC"]];
+    [self updateDiagnosticValue:limits forKey:@"mcl_l1_limit"];
+    NSDictionary *layer2 = diag[@"layer2"] ?: @{};
+    NSString *l2 = [NSString stringWithFormat:@"MCL=%@ OBC=%d",
+                    [layer2[@"mcl_enabled"] boolValue] ? @"YES" : @"NO",
+                    [layer2[@"obc_status"] intValue]];
+    [self updateDiagnosticValue:l2 forKey:@"mcl_l2"];
+    NSDictionary *layer3 = diag[@"layer3"] ?: @{};
+    NSString *l3 = [NSString stringWithFormat:@"%@%@",
+                    layer3[@"evidence_grade"] ?: @"--",
+                    [layer3[@"present"] boolValue] ? @" (present)" : @""];
+    [self updateDiagnosticValue:l3 forKey:@"mcl_l3"];
+}
+
+- (void)copyMCLDiagnosticsTapped:(UITapGestureRecognizer *)tap {
+    NSDictionary *diag = self.lastMCLDiagnostics;
+    if (diag == nil) {
+        [self presentInfoAlertWithTitle:CLL(@"尚无结果") message:CLL(@"请等待 MCL 诊断刷新完成。")];
+        return;
+    }
+    NSData *data = [NSJSONSerialization dataWithJSONObject:diag options:NSJSONWritingPrettyPrinted error:nil];
+    NSString *text = data ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : @"";
+    [UIPasteboard generalPasteboard].string = text ?: @"";
+    [self presentInfoAlertWithTitle:CLL(@"已复制") message:CLL(@"MCL 诊断报告已复制到剪贴板。")];
 }
 
 - (void)refreshEnvironmentDiagnostics {

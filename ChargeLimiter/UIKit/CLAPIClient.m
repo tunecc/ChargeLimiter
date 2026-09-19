@@ -343,6 +343,21 @@ static int CLStartDaemonBestEffort(void) {
                             @"after_status": @1,
                             @"session_cleared": @YES,
                             @"cleared_permanent_disable": @NO}};
+    } else if ([api isEqualToString:@"get_mcl_diagnostics"]) {
+        NSLog(@"[CL-Mock] MCL 诊断");
+        return @{@"status": @0,
+                 @"data": @{@"supported": @YES,
+                            @"collectedAt": @(0),
+                            @"domain": @"com.apple.powerui.smartcharging",
+                            @"layer1": @{@"domain": @"com.apple.powerui.smartcharging",
+                                         @"plist_path": @"",
+                                         @"values": @{@"MCLFeatureState": @YES, @"mclLimitValue": @80},
+                                         @"states": @{@"MCLFeatureState": @1, @"currentState": @0,
+                                                      @"chargeLimitToken": @0, @"mclLimitValue": @1,
+                                                      @"mclTargetSoC": @0, @"allowMCLOverride": @0}},
+                            @"layer2": @{@"obc_status": @1, @"mcl_supported": @YES, @"mcl_enabled": @YES},
+                            @"layer3": @{@"evidence_grade": @"indirect", @"present": @NO},
+                            @"verdict": @"healthy_enabled"}};
     } else if ([api isEqualToString:@"clear_statistics"]) {
         NSLog(@"[CL-Mock] 清空历史统计");
         return @{@"status": @0};
@@ -615,6 +630,10 @@ static int CLStartDaemonBestEffort(void) {
 
 - (void)restoreSmartChargeWithCompletion:(nullable CLAPICallback)completion {
     [self sendRequest:@{@"api": @"restore_smart_charge"} completion:completion];
+}
+
+- (void)getMCLDiagnosticsWithCompletion:(nullable CLAPICallback)completion {
+    [self sendRequest:@{@"api": @"get_mcl_diagnostics"} completion:completion];
 }
 
 - (void)getStatisticsWithConf:(NSDictionary *)conf completion:(CLAPICallback)completion {

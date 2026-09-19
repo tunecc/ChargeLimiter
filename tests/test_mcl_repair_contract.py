@@ -235,3 +235,57 @@ class MCLRepairContractTests(unittest.TestCase):
         body = function_body(self.daemon_mm, "static NSDictionary* performMCLLimitRepairInner(void) {")
         self.assertNotIn("killall", body)
         self.assertNotIn("launchctl", body)   # Design Doc：不重启 poweruiagent
+
+
+class MCLDiagnosticsUIContractTests(unittest.TestCase):
+    """任务 4.1：MCL 诊断区块、复制导出、双语资源同步、API client。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.adv_settings_m = ADV_SETTINGS_M.read_text()
+        cls.api_client_h = API_CLIENT_H.read_text()
+        cls.api_client_m = API_CLIENT_M.read_text()
+        cls.strings_en = STRINGS_EN.read_text()
+        cls.strings_zh = STRINGS_ZH.read_text()
+
+    def test_api_client_has_diagnostics_method(self):
+        self.assertIn("getMCLDiagnosticsWithCompletion:", self.api_client_h)
+        self.assertIn('"api": @"get_mcl_diagnostics"', self.api_client_m)
+        self.assertIn('@"get_mcl_diagnostics"', self.api_client_m)  # mock 分支
+
+    def test_setup_content_has_mcl_card(self):
+        body = function_body(self.adv_settings_m, "- (void)setupContent {")
+        self.assertIn('addSectionHeader:CLL(@"MCL 80% 限制诊断")', body)
+        for label_key in ("mcl_verdict", "mcl_domain", "mcl_l1_feature", "mcl_l1_token",
+                          "mcl_l1_limit", "mcl_l2", "mcl_l3"):
+            self.assertIn(f'@"{label_key}"', body)
+        self.assertIn("copyMCLDiagnosticsTapped:", body)
+
+    def test_copy_exports_full_report_json(self):
+        body = function_body(self.adv_settings_m, "- (void)copyMCLDiagnosticsTapped:(UITapGestureRecognizer *)tap {")
+        self.assertIn("NSJSONSerialization", body)
+        self.assertIn("UIPasteboard generalPasteboard].string", body)
+        self.assertIn("lastMCLDiagnostics", body)
+
+    def test_viewWillAppear_refreshes_mcl(self):
+        body = function_body(self.adv_settings_m, "- (void)viewWillAppear:(BOOL)animated {")
+        self.assertIn("refreshMCLDiagnostics", body)
+
+    def test_verdict_mapping_covers_all_states(self):
+        body = function_body(self.adv_settings_m, "- (NSString *)mclVerdictText:(NSString *)verdict {")
+        for verdict in ("healthy_enabled", "healthy_disabled", "disconnected", "pref_lost", "unsupported"):
+            self.assertIn(f'@"{verdict}"', body)
+
+    def test_layer1_state_labels_distinguish_missing_vs_failed(self):
+        body = function_body(self.adv_settings_m, "- (NSString *)mclLayer1KeyText:(NSDictionary *)diag key:(NSString *)key {")
+        self.assertIn("键不存在", body)
+        self.assertIn("读取失败", body)
+
+    def test_bilingual_strings_synced(self):
+        for key in ("MCL 80% 限制诊断", "一致性判定", "偏好域", "偏好层 MCLFeatureState",
+                    "偏好层 chargeLimitToken", "偏好层限制值/目标", "代理内存层读回",
+                    "执行层证据", "复制 MCL 诊断报告", "键不存在", "读取失败",
+                    "一致启用（健康）", "一致停用（健康）", "脱节", "偏好丢失", "不支持",
+                    "MCL 诊断报告已复制到剪贴板。", "请等待 MCL 诊断刷新完成。"):
+            self.assertIn(f'"{key}"', self.strings_en)
+            self.assertIn(f'"{key}"', self.strings_zh)
