@@ -68,6 +68,163 @@ class MCLPrefsContractTests(unittest.TestCase):
         self.assertIn("BOOL CLMCLReadAgentState(int* obcStatus, BOOL* mclSupported, BOOL* mclEnabled);", self.utils_h)
 
 
+class MCLLivePrefsChannelContractTests(unittest.TestCase):
+    """任务 5.3：层1 活通道——cfprefsd 服务端缓冲直读，补磁盘直读盲区。
+
+    真机轮 1 根因：poweruiagent 以 mobile 用户经 cfprefsd 写偏好，plist 可能长期
+    不落盘甚至从不存在；「文件读不到」≠「偏好为空」≠「服务端没写」。活通道以
+    mobile 用户运行 /usr/bin/defaults read 读 cfprefsd 真相，通道不可用时报告
+    降级（unavailable + 原因），不崩溃。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.utils_mm = UTILS_MM.read_text()
+        cls.utils_h = UTILS_H.read_text()
+
+    def test_live_declaration_in_header(self):
+        self.assertIn("BOOL CLMCLReadPrefsLive(NSMutableDictionary* outLive);", self.utils_h)
+
+    def test_live_channel_enumerates_pref_files_case_insensitive(self):
+        body = function_body(self.utils_mm, "BOOL CLMCLReadPrefsLive(NSMutableDictionary* outLive) {")
+        self.assertIn("/var/mobile/Library/Preferences/", body)
+        self.assertIn('@"pref_files"', body)
+        self.assertIn("NSCaseInsensitiveSearch", body)
+        self.assertIn("powerui", body)
+        self.assertIn("smartcharg", body)
+
+    def test_live_channel_reports_channel_status(self):
+        body = function_body(self.utils_mm, "BOOL CLMCLReadPrefsLive(NSMutableDictionary* outLive) {")
+        self.assertIn('@"channel"', body)
+        self.assertIn('@"ok"', body)
+        self.assertIn('@"unavailable"', body)
+        self.assertIn('@"defaults_missing"', body)   # /usr/bin/defaults 缺失原因
+        self.assertIn('@"spawn_failed"', body)       # spawn 失败原因
+        self.assertIn('@"unresolved"', body)         # 两候选域均未命中
+
+    def test_live_channel_spawns_defaults_per_candidate_domain(self):
+        body = function_body(self.utils_mm, "BOOL CLMCLReadPrefsLive(NSMutableDictionary* outLive) {")
+        self.assertIn("/usr/bin/defaults", body)
+        self.assertIn("CLMCLSpawnDefaultsRead(", body)
+        self.assertIn('@"raw"', body)
+
+    def test_spawn_helper_forks_as_mobile_user_with_timeout(self):
+        body = function_body(self.utils_mm, "static int CLMCLSpawnDefaultsRead(NSString* domain, NSMutableData* outData) {")
+        self.assertIn("fork()", body)
+        self.assertIn('getpwnam("mobile")', body)
+        self.assertIn("setuid(", body)
+        self.assertIn("execl(", body)
+        self.assertIn("poll(", body)
+        self.assertIn("3000", body)      # 超时保护约 3s
+        self.assertIn("SIGKILL", body)   # 超时回收子进程，不卡诊断
+
+    def test_parse_helper_distinguishes_domain_missing_readfailed_found(self):
+        body = function_body(self.utils_mm, "static NSInteger CLMCLParseDefaultsDomainOutput(NSString* text, NSMutableDictionary* values, NSMutableDictionary* states) {")
+        self.assertIn("does not exist", body)        # 活通道域不存在 → Missing
+        self.assertIn("CLMCLPrefMissing", body)
+        self.assertIn("CLMCLPrefFound", body)
+        self.assertIn("CLMCLPrefReadFailed", body)   # 有输出但解析失败
+        self.assertIn("NSPropertyListSerialization", body)
+
+    def test_raw_output_truncated_at_8k(self):
+        body = function_body(self.utils_mm, "static NSString* CLMCLTruncateRawData(NSData* data) {")
+        self.assertIn("8192", body)
+
+
+class MCLLiveFirstVerdictContractTests(unittest.TestCase):
+    """任务 5.3：诊断判定活通道优先——磁盘 Missing/ReadFailed 时用 live 值判定。
+
+    pref_lost 仅在双通道（磁盘 + 活通道）都无法证实 MCLFeatureState=true 时给出；
+    verdict 枚举不变，报告标注判定生效通道（effective_channel）。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.daemon_mm = DAEMON_MM.read_text()
+
+    def test_layer1_embeds_live_subdict_after_disk_read(self):
+        body = function_body(self.daemon_mm, "static NSDictionary* collectMCLDiagnosticsWithLayer3(NSDictionary* layer3Override) {")
+        disk = body.index("CLMCLReadPrefs(layer1)")
+        live = body.index("CLMCLReadPrefsLive(live)")
+        embed = body.index('layer1[@"live"]')
+        self.assertLess(disk, live)      # 磁盘快照在前，活通道紧随其后补盲
+        self.assertLess(live, embed)
+
+    def test_verdict_call_uses_live_first_merged_view(self):
+        body = function_body(self.daemon_mm, "static NSDictionary* collectMCLDiagnosticsWithLayer3(NSDictionary* layer3Override) {")
+        self.assertIn("MCLLiveFirstLayer1(", body)
+        self.assertIn("MCLVerdictFromDiagnostics(mclSupported, verdictLayer1", body)
+        # 原始磁盘 layer1 不得直接作为判定输入
+        self.assertNotIn("MCLVerdictFromDiagnostics(mclSupported, layer1", body)
+
+    def test_effective_channel_annotated_in_report(self):
+        body = function_body(self.daemon_mm, "static NSDictionary* collectMCLDiagnosticsWithLayer3(NSDictionary* layer3Override) {")
+        self.assertIn('layer1[@"effective_channel"]', body)
+
+    def test_merge_helper_disk_first_live_fallback(self):
+        # 活通道优先 = 仅磁盘 Missing/ReadFailed 的键采用 live 值；磁盘可读时磁盘优先
+        body = function_body(self.daemon_mm, "static NSDictionary* MCLLiveFirstLayer1(NSDictionary* layer1, NSString** effectiveChannel) {")
+        disk_check = body.index("diskState == CLMCLPrefFound")
+        live_check = body.index("liveState == CLMCLPrefFound")
+        self.assertLess(disk_check, live_check)
+        self.assertIn('@"disk"', body)
+        self.assertIn('@"live"', body)
+        self.assertIn('@"none"', body)   # 双通道均未证实
+
+    def test_verdict_enums_unchanged(self):
+        body = function_body(self.daemon_mm, "static NSString* MCLVerdictFromDiagnostics(BOOL mclSupported, NSDictionary* layer1, BOOL agentEnabled, NSDictionary* layer3) {")
+        for verdict in ("healthy_enabled", "healthy_disabled", "disconnected", "pref_lost", "unsupported"):
+            self.assertIn(f'@"{verdict}"', body)
+
+
+class MCLRepairAttributionGuardContractTests(unittest.TestCase):
+    """任务 5.3：修复归因守卫——活通道证实写入则不得归 gate1/gate2。
+
+    真机轮 1：mcl_supported=true 已证 augury 门是开的，仅凭磁盘读不到（cfprefsd
+    缓冲态不落盘）归因 gate1_augury_feature 自相矛盾。归因改为磁盘读或活通道任一
+    证实 MCLFeatureState=true 即算写入；两通道都证伪才归 gate1/gate2。活通道证实
+    已写但 after.layer2.mcl_enabled=false → still_disconnected + note。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.daemon_mm = DAEMON_MM.read_text()
+
+    def _inner_body(self):
+        return function_body(self.daemon_mm, "static NSDictionary* performMCLLimitRepairInner(void) {")
+
+    def test_feature_written_accepts_live_channel_proof(self):
+        body = self._inner_body()
+        disk = body.index("BOOL diskProven")
+        live = body.index("BOOL liveProven")
+        written = body.index("featureWritten = diskProven || liveProven")
+        self.assertLess(disk, live)
+        self.assertLess(live, written)
+        self.assertIn('afterDiag[@"layer1"][@"live"]', body)
+
+    def test_gate_attribution_only_when_both_channels_disprove(self):
+        body = self._inner_body()
+        live_proven = body.index("BOOL liveProven")
+        gate_branch = body.index("if (!featureWritten)")
+        gate1 = body.index('@"gate1_augury_feature"')
+        # gate 归因必须位于双通道均证伪（!featureWritten）分支内，且在活通道证实逻辑之后
+        self.assertLess(live_proven, gate_branch)
+        self.assertLess(gate_branch, gate1)
+
+    def test_live_proven_agent_not_flipped_maps_to_still_disconnected_with_note(self):
+        body = self._inner_body()
+        self.assertIn('[afterDiag[@"layer2"][@"mcl_enabled"]', body)
+        note = body.index("mcl_feature_state_confirmed_by_live_channel")
+        gate1 = body.index('@"gate1_augury_feature"')
+        self.assertGreater(note, gate1)   # note 属于活通道证实路径，不属 gate 分支
+        self.assertIn('@"note"', body)
+
+    def test_advice_stays_reboot_and_retry(self):
+        body = self._inner_body()
+        self.assertIn('@"reboot_and_retry"', body)
+        self.assertIn("MCLRollbackPrefs(", body)   # 回滚语义不变
+
+
 class MCLForceEntryContractTests(unittest.TestCase):
     """任务 3.1：强制入口无读回短路、无条件下发；既有调用方语义不变。"""
 
@@ -400,3 +557,37 @@ class MCLRepairUIContractTests(unittest.TestCase):
                     "建议：重启设备后重试。"):
             self.assertIn(f'"{key}"', self.strings_en)
             self.assertIn(f'"{key}"', self.strings_zh)
+
+
+class MCLRepairFeedbackEvidenceContractTests(unittest.TestCase):
+    """任务 5.3：App 修复反馈回灌——失败分支附关键证据两行 + 复制导出追加 last_repair。
+
+    真机轮 1 需要直接判读「服务端写没写（force_enable_ok）/ 代理内存翻没翻
+    （after.layer2.mcl_enabled）」；复制导出在 MCL 诊断 JSON 后附最近一次修复
+    完整响应（键名 last_repair），供无直连设备手动回传。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.adv_settings_m = ADV_SETTINGS_M.read_text()
+
+    def test_result_message_failure_branch_appends_evidence_lines(self):
+        body = function_body(self.adv_settings_m, "- (NSString *)mclRepairResultMessage:(NSDictionary *)result {")
+        branch = body.index('result[@"failure_branch"]')
+        force_ok = body.index("force_enable_ok")
+        mcl_enabled = body.index("after.layer2.mcl_enabled")
+        self.assertLess(branch, force_ok)     # 证据行属失败分支，非全局追加
+        self.assertLess(branch, mcl_enabled)
+        self.assertIn('result[@"force_enable_ok"]', body)
+        self.assertIn('result[@"after"][@"layer2"][@"mcl_enabled"]', body)
+
+    def test_run_stores_mcl_repair_result(self):
+        body = function_body(self.adv_settings_m, "- (void)runMCLRepair {")
+        self.assertIn("lastMCLRepairResult", body)
+
+    def test_copy_export_appends_last_repair_json(self):
+        body = function_body(self.adv_settings_m, "- (void)copyMCLDiagnosticsTapped:(UITapGestureRecognizer *)tap {")
+        self.assertIn('@"last_repair"', body)
+        self.assertIn("lastMCLRepairResult", body)
+        self.assertIn("lastMCLDiagnostics", body)   # 诊断 JSON 仍是导出主体
+        self.assertIn("NSJSONSerialization", body)

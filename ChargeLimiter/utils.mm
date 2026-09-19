@@ -2,7 +2,9 @@
 #import "CLLocalization.h"
 #include <errno.h>
 #include <limits.h>
+#include <poll.h>
 #include <pwd.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <sys/wait.h>
 #include <sys/utsname.h>
@@ -3752,6 +3754,244 @@ BOOL CLMCLReadPrefs(NSMutableDictionary* outPrefs) {
     outPrefs[@"values"] = values;
     outPrefs[@"states"] = states;
     return (resolvedDomain != nil);
+}
+
+/* ---------------- 层1 活通道（v1.17.1 修复轮 1 回灌） ---------------- */
+
+// raw 截断（8KB）：defaults 全量输出直接入报告，超限按 UTF-8 字节截断。
+static NSString* CLMCLTruncateRawData(NSData* data) {
+    if (data.length > 8192) {
+        data = [data subdataWithRange:NSMakeRange(0, 8192)];
+    }
+    NSString* text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    if (text == nil) {
+        // 截断落在多字节序列中间等场景：Latin-1 兜底解码（永不失败，best-effort）
+        text = [[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding];
+    }
+    return text ?: @"";
+}
+
+// 以 mobile 用户执行 /usr/bin/defaults read <domain>（fork + setuid + execl），
+// stdout/stderr 合流入 outData。带约 3s 超时保护：poll 读 + 超时 SIGKILL 回收，
+// defaults 卡死不得拖住诊断。返回 0=正常；-1=spawn 失败；-2=超时。
+// getpwnam 与 UTF8String 都在父进程解析——fork 后子进程只做 async-signal-safe
+// 调用（close/dup2/setgid/setuid/execl/_exit），exec 失败走 _exit(127)。
+static int CLMCLSpawnDefaultsRead(NSString* domain, NSMutableData* outData) {
+    int fds[2];
+    if (pipe(fds) != 0) {
+        return -1;
+    }
+    struct passwd* pw = getpwnam("mobile");
+    const char* domainC = domain.UTF8String;
+    if (pw == NULL || domainC == NULL) {
+        close(fds[0]);
+        close(fds[1]);
+        return -1;
+    }
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(fds[0]);
+        close(fds[1]);
+        return -1;
+    }
+    if (pid == 0) {
+        close(fds[0]);
+        dup2(fds[1], STDOUT_FILENO);
+        dup2(fds[1], STDERR_FILENO);
+        close(fds[1]);
+        setgid(pw->pw_gid);
+        setuid(pw->pw_uid);
+        execl("/usr/bin/defaults", "defaults", "read", domainC, (char*)NULL);
+        _exit(127);
+    }
+    close(fds[1]);
+    int rc = 0;
+    char buf[4096];
+    int remainMs = 3000; // 活通道读超时（约 3s）
+    for (;;) {
+        struct pollfd pfd;
+        pfd.fd = fds[0];
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+        int pr = poll(&pfd, 1, remainMs);
+        if (pr < 0) {
+            if (errno == EINTR) continue;
+            rc = -2;
+            break;
+        }
+        if (pr == 0) {
+            rc = -2; // 超时
+            break;
+        }
+        ssize_t n = read(fds[0], buf, sizeof(buf));
+        if (n > 0) {
+            [outData appendBytes:buf length:(NSUInteger)n];
+            continue;
+        }
+        if (n == 0) break; // EOF
+        if (errno == EINTR) continue;
+        rc = -2;
+        break;
+    }
+    close(fds[0]);
+    if (rc == -2) {
+        kill(pid, SIGKILL); // 超时回收，避免僵尸进程
+    }
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+    return rc;
+}
+
+// defaults read 输出 best-effort 解析六键（outValues/outStates 语义同 CLMCLReadPrefs）：
+// 输出含 "does not exist" → 域在活通道不存在，六键 Missing；OpenStep 老式 plist
+// 解析成功 → 逐键 Found/Missing（值原样入 values）；有输出但解析失败 → 六键 ReadFailed。
+// 返回 Found 的白名单键数。
+static NSInteger CLMCLParseDefaultsDomainOutput(NSString* text, NSMutableDictionary* values, NSMutableDictionary* states) {
+    for (NSString* key in CLMCLPrefKeys()) {
+        states[key] = @(CLMCLPrefMissing);
+    }
+    if (text.length == 0) {
+        return 0;
+    }
+    if ([text rangeOfString:@"does not exist" options:NSCaseInsensitiveSearch].location != NSNotFound) {
+        return 0; // 域在活通道不存在（cfprefsd 无此域）：states 保持 Missing
+    }
+    NSData* data = [text dataUsingEncoding:NSUTF8StringEncoding];
+    if (data != nil) {
+        NSPropertyListFormat fmt = NSPropertyListOpenStepFormat;
+        id plist = [NSPropertyListSerialization propertyListWithData:data
+                                                             options:NSPropertyListImmutable
+                                                              format:&fmt
+                                                               error:nil];
+        if (plist != nil && ![plist isKindOfClass:[NSDictionary class]]) {
+            plist = nil; // 域读出非字典形状：按解析失败处理
+        }
+        if (plist == nil) {
+            // 新 API 未识别 OpenStep 老式 plist 时退回经典解析（同一套 CF 底层）
+            #pragma clang diagnostic push
+            #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+            NSString* parseErr = nil;
+            plist = [NSPropertyListSerialization propertyListFromData:data
+                                                     mutabilityOption:NSPropertyListImmutable
+                                                               format:&fmt
+                                                     errorDescription:&parseErr];
+            #pragma clang diagnostic pop
+            if (plist != nil && ![plist isKindOfClass:[NSDictionary class]]) {
+                plist = nil;
+            }
+        }
+        if ([plist isKindOfClass:[NSDictionary class]]) {
+            NSInteger found = 0;
+            for (NSString* key in CLMCLPrefKeys()) {
+                id value = plist[key];
+                if (value != nil) {
+                    values[key] = value;
+                    states[key] = @(CLMCLPrefFound);
+                    found++;
+                }
+            }
+            return found;
+        }
+    }
+    // 有输出但结构解析失败：六键 ReadFailed（区分于缺失）
+    for (NSString* key in CLMCLPrefKeys()) {
+        states[key] = @(CLMCLPrefReadFailed);
+    }
+    return 0;
+}
+
+BOOL CLMCLReadPrefsLive(NSMutableDictionary* outLive) {
+    if (outLive == nil) {
+        return NO;
+    }
+    [outLive removeAllObjects];
+    NSMutableDictionary* values = [NSMutableDictionary dictionary];
+    NSMutableDictionary* states = [NSMutableDictionary dictionary];
+    for (NSString* key in CLMCLPrefKeys()) {
+        states[key] = @(CLMCLPrefMissing);
+    }
+    outLive[@"pref_files"] = [NSArray array];
+    outLive[@"domain"] = @"unresolved";
+    outLive[@"values"] = values;
+    outLive[@"states"] = states;
+    outLive[@"raw"] = @"";
+    // 目录证据先行：即使通道不可用，报告也携带 powerui/smartcharg 命中文件名字面值
+    NSArray* entries = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:@"/var/mobile/Library/Preferences/" error:nil];
+    NSMutableArray* prefFiles = [NSMutableArray array];
+    for (NSString* name in entries) {
+        if ([name rangeOfString:@"powerui" options:NSCaseInsensitiveSearch].location != NSNotFound
+            || [name rangeOfString:@"smartcharg" options:NSCaseInsensitiveSearch].location != NSNotFound) {
+            [prefFiles addObject:name];
+        }
+    }
+    outLive[@"pref_files"] = prefFiles;
+    if (![[NSFileManager defaultManager] fileExistsAtPath:@"/usr/bin/defaults"]) {
+        // defaults 工具缺失：通道不可用，报告降级（不崩溃、不 spawn）
+        outLive[@"channel"] = @"unavailable";
+        outLive[@"channel_reason"] = @"defaults_missing";
+        return NO;
+    }
+    NSMutableData* raw = [NSMutableData data];
+    NSString* resolvedDomain = nil;
+    NSString* failedDomain = nil;
+    BOOL liveHit = NO;
+    for (NSString* domain in CLMCLCandidateDomains()) {
+        NSMutableData* outData = [NSMutableData data];
+        int rc = CLMCLSpawnDefaultsRead(domain, outData);
+        [raw appendData:[[NSString stringWithFormat:@"=== %@ ===\n", domain] dataUsingEncoding:NSUTF8StringEncoding]];
+        [raw appendData:outData];
+        [raw appendData:[@"\n" dataUsingEncoding:NSUTF8StringEncoding]];
+        if (rc == -1) {
+            outLive[@"channel"] = @"unavailable";
+            outLive[@"channel_reason"] = @"spawn_failed";
+            outLive[@"raw"] = CLMCLTruncateRawData(raw);
+            return NO;
+        }
+        NSMutableDictionary* domainValues = [NSMutableDictionary dictionary];
+        NSMutableDictionary* domainStates = [NSMutableDictionary dictionary];
+        NSInteger found = 0;
+        if (rc == -2) {
+            // 超时：该域读取异常（区分于缺失），不参与命中
+            for (NSString* key in CLMCLPrefKeys()) {
+                domainStates[key] = @(CLMCLPrefReadFailed);
+            }
+        } else {
+            found = CLMCLParseDefaultsDomainOutput(CLMCLTruncateRawData(outData), domainValues, domainStates);
+        }
+        if (found > 0) {
+            if (!liveHit) {
+                // 与磁盘层同规则：第一个命中白名单键的候选域为活通道主域
+                liveHit = YES;
+                resolvedDomain = domain;
+                [values addEntriesFromDictionary:domainValues];
+                [states addEntriesFromDictionary:domainStates];
+            }
+        } else {
+            BOOL allReadFailed = YES;
+            for (NSString* key in CLMCLPrefKeys()) {
+                if ([domainStates[key] intValue] != CLMCLPrefReadFailed) {
+                    allReadFailed = NO;
+                    break;
+                }
+            }
+            if (allReadFailed && failedDomain == nil) {
+                failedDomain = domain; // 域输出存在但解析异常：兜底记录（镜像磁盘层）
+            }
+        }
+    }
+    if (!liveHit && failedDomain != nil) {
+        // 两候选域均无命中键、但存在解析异常域：与磁盘层一致报 read_failed
+        resolvedDomain = failedDomain;
+        for (NSString* key in CLMCLPrefKeys()) {
+            states[key] = @(CLMCLPrefReadFailed);
+        }
+    }
+    outLive[@"channel"] = @"ok";
+    outLive[@"domain"] = resolvedDomain ?: @"unresolved";
+    outLive[@"values"] = values;
+    outLive[@"states"] = states;
+    outLive[@"raw"] = CLMCLTruncateRawData(raw);
+    return liveHit;
 }
 
 // 层2（agent 内存层，F1 语义）：OBC 状态 + MCL 支持性/读回，全部复用既有 XPC 读回通道。

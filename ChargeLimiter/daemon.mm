@@ -2030,8 +2030,64 @@ static NSDictionary* MCLLayer3EvidenceStandalone(void) {
              @"note": @"candidate_keys_absent"};
 }
 
+// 活通道优先合并（v1.17.1 修复轮 1 回灌）：磁盘直读对 cfprefsd 缓冲态全盲（plist
+// 可能长期不落盘甚至从不存在），磁盘 Missing/ReadFailed 的键以活通道值为准；磁盘
+// 可读时磁盘优先（持久层真相）。返回合并视图供判定，报告层1 原样保留磁盘真值 +
+// live 子字典；*effectiveChannel 输出 MCLFeatureState 判定生效通道：disk=磁盘可读、
+// live=活通道补盲、none=双通道均未证实。
+static NSDictionary* MCLLiveFirstLayer1(NSDictionary* layer1, NSString** effectiveChannel) {
+    NSDictionary* states = layer1[@"states"] ?: @{};
+    NSDictionary* values = layer1[@"values"] ?: @{};
+    NSDictionary* live = [layer1[@"live"] isKindOfClass:[NSDictionary class]] ? layer1[@"live"] : @{};
+    NSDictionary* liveStates = [live[@"states"] isKindOfClass:[NSDictionary class]] ? live[@"states"] : @{};
+    NSDictionary* liveValues = [live[@"values"] isKindOfClass:[NSDictionary class]] ? live[@"values"] : @{};
+    NSMutableDictionary* mergedValues = [NSMutableDictionary dictionary];
+    NSMutableDictionary* mergedStates = [NSMutableDictionary dictionary];
+    BOOL featureDisk = NO;
+    BOOL featureLive = NO;
+    for (NSString* key in CLMCLPrefKeys()) {
+        int diskState = [states[key] intValue];
+        int liveState = [liveStates[key] intValue];
+        if (diskState == CLMCLPrefFound) {
+            id value = values[key];
+            if (value != nil) {
+                mergedValues[key] = value;
+            }
+            mergedStates[key] = @(CLMCLPrefFound);
+            if ([key isEqualToString:@"MCLFeatureState"]) {
+                featureDisk = YES;
+            }
+        } else if (liveState == CLMCLPrefFound) {
+            id value = liveValues[key];
+            if (value != nil) {
+                mergedValues[key] = value;
+            }
+            mergedStates[key] = @(CLMCLPrefFound);
+            if ([key isEqualToString:@"MCLFeatureState"]) {
+                featureLive = YES;
+            }
+        } else {
+            // 双通道均未证实：保留磁盘 Missing/ReadFailed 原状（判定走既有歧义行）
+            mergedStates[key] = @(diskState);
+        }
+    }
+    if (featureDisk) {
+        if (effectiveChannel != NULL) *effectiveChannel = @"disk";
+    } else if (featureLive) {
+        if (effectiveChannel != NULL) *effectiveChannel = @"live";
+    } else {
+        if (effectiveChannel != NULL) *effectiveChannel = @"none";
+    }
+    return @{@"domain": layer1[@"domain"] ?: @"unresolved",
+             @"plist_path": layer1[@"plist_path"] ?: @"",
+             @"values": mergedValues,
+             @"states": mergedStates};
+}
+
 // 派生判定（Design Doc 3.3 判定矩阵 v1；歧义行按 Global Constraints 的 V1–V3 优先级定案）。
 // read_failed 的 MCLFeatureState 视同 missing 走 V3：报告原样携带 states 供人工判读。
+// v1.17.1：入参 layer1 为活通道优先合并视图（collect 阶段合成），判定矩阵与枚举不变——
+// 合并视图 missing = 双通道均无法证实，pref_lost 仅在该情形给出。
 static NSString* MCLVerdictFromDiagnostics(BOOL mclSupported, NSDictionary* layer1, BOOL agentEnabled, NSDictionary* layer3) {
     if (!mclSupported) {
         return @"unsupported";
@@ -2087,6 +2143,13 @@ static NSDictionary* collectMCLDiagnosticsWithLayer3(NSDictionary* layer3Overrid
     NSMutableDictionary* layer1 = [NSMutableDictionary dictionary];
     CLMCLReadPrefs(layer1);
     report[@"domain"] = layer1[@"domain"];
+    // 层1 活通道（v1.17.1 修复轮 1 回灌）：磁盘直读对 cfprefsd 缓冲态全盲——
+    // poweruiagent 以 mobile 用户经 cfprefsd 写偏好，plist 可能长期不落盘甚至从
+    // 不存在；"文件读不到"≠"偏好为空"≠"服务端没写"。live 子字典携带通道状态
+    // （channel/channel_reason）、目录证据（pref_files）、六键解析与 defaults 原始输出（raw）。
+    NSMutableDictionary* live = [NSMutableDictionary dictionary];
+    CLMCLReadPrefsLive(live);
+    layer1[@"live"] = live;
     report[@"layer1"] = layer1;
     // 层2：agent 内存层读回（复用既有 XPC 通道，F1 语义）。
     int obcStatus = -1;
@@ -2098,7 +2161,13 @@ static NSDictionary* collectMCLDiagnosticsWithLayer3(NSDictionary* layer3Overrid
                           @"mcl_enabled": @(agentEnabled)};
     // 层3：执行层证据（repair 编排可传前后 diff 覆盖；独立诊断走候选键探测）。
     report[@"layer3"] = layer3Override ?: MCLLayer3EvidenceStandalone();
-    report[@"verdict"] = MCLVerdictFromDiagnostics(mclSupported, layer1, agentEnabled, report[@"layer3"]);
+    // 判定活通道优先（v1.17.1）：磁盘 Missing/ReadFailed 的键以活通道值为准合成
+    // 判定视图；pref_lost 仅在双通道均无法证实 MCLFeatureState=true 时给出。
+    // 报告 layer1 保留磁盘真值 + live 子字典，effective_channel 标注判定生效通道。
+    NSString* effectiveChannel = nil;
+    NSDictionary* verdictLayer1 = MCLLiveFirstLayer1(layer1, &effectiveChannel);
+    layer1[@"effective_channel"] = effectiveChannel ?: @"none";
+    report[@"verdict"] = MCLVerdictFromDiagnostics(mclSupported, verdictLayer1, agentEnabled, report[@"layer3"]);
     return report;
 }
 
@@ -2283,6 +2352,7 @@ static NSDictionary* performMCLLimitRepairInner(void) {
     // token==0 不下发 + 调用报错），给出建议并回滚 ④a 写入。判定一律用修复后快照
     // （afterDiag.layer1 为复核重读），避免用修复前状态误判分支。
     NSString* branch = @"still_disconnected";
+    NSString* branchNote = nil;
     NSDictionary* gateEvidence = nil;
     if (!forceOK) {
         branch = @"call_error";              // enableMCL 报错/返回 NO（err 回调）
@@ -2290,15 +2360,39 @@ static NSDictionary* performMCLLimitRepairInner(void) {
         NSDictionary* afterStates = afterDiag[@"layer1"][@"states"] ?: @{};
         NSDictionary* afterValues = afterDiag[@"layer1"][@"values"] ?: @{};
         int featureState = [afterStates[@"MCLFeatureState"] intValue];
-        BOOL featureWritten = (featureState == CLMCLPrefFound) && [afterValues[@"MCLFeatureState"] boolValue];
+        BOOL diskProven = (featureState == CLMCLPrefFound) && [afterValues[@"MCLFeatureState"] boolValue];
+        // 活通道证实（v1.17.1 修复轮 1 回灌）：磁盘直读对 cfprefsd 缓冲态全盲——
+        // poweruiagent 经 cfprefsd 写偏好可能长期不落盘，"磁盘读不到"≠"服务端没写"。
+        // mcl_supported=true 已证 augury 门是开的，仅凭磁盘单通道证伪归 gate1 自相
+        // 矛盾。归因改为双通道任一证实 MCLFeatureState=true 即算写入；两通道都无法
+        // 证实才归 gate1/gate2。
+        NSDictionary* afterLive = [afterDiag[@"layer1"][@"live"] isKindOfClass:[NSDictionary class]]
+            ? afterDiag[@"layer1"][@"live"] : @{};
+        NSDictionary* afterLiveStates = [afterLive[@"states"] isKindOfClass:[NSDictionary class]] ? afterLive[@"states"] : @{};
+        NSDictionary* afterLiveValues = [afterLive[@"values"] isKindOfClass:[NSDictionary class]] ? afterLive[@"values"] : @{};
+        BOOL liveProven = [afterLive[@"channel"] isEqualToString:@"ok"]
+            && [afterLiveStates[@"MCLFeatureState"] intValue] == CLMCLPrefFound
+            && [afterLiveValues[@"MCLFeatureState"] boolValue];
+        BOOL featureWritten = diskProven || liveProven;
         if (!featureWritten) {
-            // F2：enableMCL 真正受理会在返回前自写 MCLFeatureState——修复后仍未写成
-            // = 服务端在写偏好前静默 bail，归因 gate1/gate2（外部不可直接观测，按证据推断）。
+            // F2：enableMCL 真正受理会在返回前自写 MCLFeatureState——修复后双通道均
+            // 无法证实写入 = 服务端在写偏好前静默 bail，归因 gate1/gate2（外部不可
+            // 直接观测，按证据推断）。
             NSNumber* deviceGate = MCLProbeDeviceSupports80ChargeLimit();
             gateEvidence = @{@"DeviceSupports80ChargeLimit": deviceGate ?: NSNull.null};
             branch = (deviceGate != nil && ![deviceGate boolValue])
                 ? @"gate2_device_gate"       // 设备门为假：非内部构建下确定性 bail，优先归因
                 : @"gate1_augury_feature";   // 设备门为真/未知：剩余候选（augury feature 门）
+        } else if (liveProven && !diskProven) {
+            // 活通道证实写入已受理、仅磁盘不可读（缓冲态未落盘）：gate 未拦截。
+            // 代理内存读回仍未翻转 = 层2 侧断点（写入被服务端受理、代理未加载新值）。
+            if (![afterDiag[@"layer2"][@"mcl_enabled"] boolValue]) {
+                branch = @"still_disconnected";
+                branchNote = @"mcl_feature_state_confirmed_by_live_channel; "
+                             "agent_memory_mcl_enabled_false (write accepted by cfprefsd, agent not flipped)";
+            }
+            // 代理内存已翻转但判定仍不健康（罕见：执行层证据缺失行），branch 保持
+            // still_disconnected——写入已被证实，断点在层2/层3 侧。
         } else {
             BOOL qmaxNeutralized = NO;
             for (NSString* key in limitRelated) {
@@ -2343,6 +2437,9 @@ static NSDictionary* performMCLLimitRepairInner(void) {
     }];
     if (gateEvidence != nil) {
         failure[@"gate_evidence"] = gateEvidence;
+    }
+    if (branchNote != nil) {
+        failure[@"note"] = branchNote;   // 活通道证实写入/代理未翻转等归因注记
     }
     return failure;
 }

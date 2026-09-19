@@ -97,6 +97,15 @@ NSArray<NSString*>* CLMCLPrefKeys(void);
 // 层1 快照：outPrefs[@"domain"]/@"plist_path"/@"values"/@"states"（states 值为 CLMCLPrefReadState）。
 // 返回 YES=主域已命中；NO=unresolved（两候选域均无白名单键且无读取异常域）。
 BOOL CLMCLReadPrefs(NSMutableDictionary* outPrefs);
+// 层1 活通道（v1.17.1 修复轮 1 回灌）：磁盘直读对 cfprefsd 缓冲态全盲——poweruiagent
+// 以 mobile 用户经 cfprefsd 写偏好，plist 可能长期不落盘甚至从不存在；"文件读不到"
+// ≠"偏好为空"≠"服务端没写"。本通道 fork 后降权为 mobile 用户执行
+// /usr/bin/defaults read <domain> 读 cfprefsd 服务端真相。
+// outLive[@"channel"]=@"ok"|@"unavailable"、@"channel_reason"（仅不可用时）、
+// @"pref_files"（Preferences 目录下 powerui|smartcharg 命中文件名字面值）、
+// @"domain"/@"values"/@"states"（语义同 CLMCLReadPrefs）、@"raw"（defaults 原始输出，截断 8KB）。
+// 返回 YES=活通道命中任一白名单键；NO=通道不可用或两候选域均未命中。
+BOOL CLMCLReadPrefsLive(NSMutableDictionary* outLive);
 // 层2：OBC 状态 + MCL 支持性/读回。返回 YES=MCL 受支持。
 BOOL CLMCLReadAgentState(int* obcStatus, BOOL* mclSupported, BOOL* mclEnabled);
 

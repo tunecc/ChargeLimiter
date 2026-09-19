@@ -902,6 +902,7 @@ static const NSInteger CLAdvAccChargeLPMTag = 405;
 @property (nonatomic, copy, nullable) NSDictionary *lastRepairResult;
 @property (nonatomic, strong, nullable) CLAdvSettingsCard *repairCard;
 @property (nonatomic, copy, nullable) NSDictionary *lastMCLDiagnostics;
+@property (nonatomic, copy, nullable) NSDictionary *lastMCLRepairResult; // 最近一次 MCL 强制修复响应（复制导出附 last_repair）
 @end
 
 @implementation CLPolicyDiagnosticsViewController
@@ -1835,7 +1836,13 @@ static const NSInteger CLAdvAccChargeLPMTag = 405;
         [self presentInfoAlertWithTitle:CLL(@"尚无结果") message:CLL(@"请等待 MCL 诊断刷新完成。")];
         return;
     }
-    NSData *data = [NSJSONSerialization dataWithJSONObject:diag options:NSJSONWritingPrettyPrinted error:nil];
+    // v1.17.1 回灌：MCL 诊断 JSON 内附最近一次强制修复完整响应（键名 last_repair），
+    // 失败分支的 before/after/force_enable_ok/layer2 读回一并随报告回传。
+    NSMutableDictionary *payload = [diag mutableCopy];
+    if (self.lastMCLRepairResult != nil) {
+        payload[@"last_repair"] = self.lastMCLRepairResult;
+    }
+    NSData *data = [NSJSONSerialization dataWithJSONObject:payload options:NSJSONWritingPrettyPrinted error:nil];
     NSString *text = data ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : @"";
     [UIPasteboard generalPasteboard].string = text ?: @"";
     [self presentInfoAlertWithTitle:CLL(@"已复制") message:CLL(@"MCL 诊断报告已复制到剪贴板。")];
@@ -1866,6 +1873,7 @@ static const NSInteger CLAdvAccChargeLPMTag = 405;
                 [self presentInfoAlertWithTitle:CLL(@"修复失败") message:CLL(@"无法连接守护进程")];
                 return;
             }
+            self.lastMCLRepairResult = result;   // 供复制导出附 last_repair（v1.17.1 回灌）
             [self presentInfoAlertWithTitle:CLL(@"强制修复 80% 限制")
                                     message:[self mclRepairResultMessage:result]];
             [self refreshMCLDiagnostics];
@@ -1909,6 +1917,12 @@ static const NSInteger CLAdvAccChargeLPMTag = 405;
     if ([result[@"advice"] isEqualToString:@"reboot_and_retry"]) {
         msg = [msg stringByAppendingFormat:@"\n%@", CLL(@"建议：重启设备后重试。")];
     }
+    // v1.17.1 回灌证据：失败分支追加两行关键证据——服务端调用受理（force_enable_ok）
+    // 与代理内存标志（修复后 after.layer2.mcl_enabled），真机回传时直接判读
+    // 「服务端写没写 / 代理内存翻没翻」，不再只看 failure_branch 单值。
+    msg = [msg stringByAppendingFormat:@"\nforce_enable_ok=%@\nafter.layer2.mcl_enabled=%@",
+          [result[@"force_enable_ok"] boolValue] ? @"YES" : @"NO",
+          [result[@"after"][@"layer2"][@"mcl_enabled"] boolValue] ? @"YES" : @"NO"];
     return msg;
 }
 
