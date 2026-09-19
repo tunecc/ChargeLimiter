@@ -211,6 +211,18 @@ class MCLRepairContractTests(unittest.TestCase):
         self.assertNotIn('@"currentState"', body)          # 服务端自有键不写
         self.assertNotIn('@"chargeLimitToken"', body)      # token 生命周期归服务端（F5）
 
+    def test_normalize_skips_when_plist_unreadable_at_write(self):
+        # 修复轮 1（审查 Important）：CLMCLReadPrefs 快照与 normalize 重读之间存在 TOCTOU——
+        # states 检查只保证快照时刻可解析，重读失败（文件被删/损坏）时若以空字典继续写，
+        # 会整体覆盖 plist、丢掉全部非白名单键。重读 nil 必须 skip 零写入。
+        body = function_body(self.daemon_mm, "static NSDictionary* MCLNormalizePrefsForRepair(NSMutableDictionary* layer1) {")
+        reread = body.index("dictionaryWithContentsOfFile:path")
+        nil_skip = body.index('@"plist_unreadable_at_write"')
+        write = body.index("writeToFile:path")
+        self.assertLess(reread, nil_skip)    # 重读 nil 分支即返回 skip
+        self.assertLess(nil_skip, write)     # skip 在任何 writeToFile 之前
+        self.assertNotIn("dict = [NSMutableDictionary dictionary]", body)  # 空字典兜底已移除
+
     def test_coordination_timeline_events(self):
         body = function_body(self.daemon_mm, "static NSDictionary* performMCLLimitRepairInner(void) {")
         self.assertIn('@"mcl_repair_started"', body)

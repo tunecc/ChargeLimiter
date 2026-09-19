@@ -2160,7 +2160,7 @@ static NSObject* MCLRepairLock(void) {
 // ④a 偏好规范化：只写白名单键（MCLFeatureState=true；mclLimitValue/mclTargetSoC 缺失补默认 80，
 // F4 非 internal 构建 engage 固定用 80，规范化只为域内一致性）；已存在值不动（保留用户语义）。
 // best-effort：逐键结果记入报告，失败不中止修复——F2 服务端 enableMCL 受理会自写 MCLFeatureState。
-// 读取异常（ReadFailed）时跳过写入，避免用空字典覆盖损坏 plist 丢数据。
+// 读取异常（ReadFailed）或重读失败（TOCTOU：快照后文件被删/损坏）时跳过写入，避免覆盖丢失非白名单键。
 static NSDictionary* MCLNormalizePrefsForRepair(NSMutableDictionary* layer1) {
     NSString* domain = layer1[@"domain"] ?: @"";
     if ([domain isEqualToString:@"unresolved"] || domain.length == 0) {
@@ -2179,7 +2179,10 @@ static NSDictionary* MCLNormalizePrefsForRepair(NSMutableDictionary* layer1) {
     }
     NSMutableDictionary* dict = [NSMutableDictionary dictionaryWithContentsOfFile:path];
     if (dict == nil) {
-        dict = [NSMutableDictionary dictionary];
+        // TOCTOU 加固（修复轮 1）：states 检查仅保证快照时刻可解析；重读失败（文件被删/
+        // 损坏）时若以空字典继续写会整体覆盖 plist、丢掉全部非白名单键——跳过零写入，
+        // 修复实质交由 force enable 路径兜底（F2 服务端受理自写偏好）。
+        return @{@"skipped": @YES, @"reason": @"plist_unreadable_at_write"};
     }
     NSMutableDictionary* results = [NSMutableDictionary dictionary];
     dict[@"MCLFeatureState"] = @YES;
