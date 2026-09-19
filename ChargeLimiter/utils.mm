@@ -3662,6 +3662,114 @@ BOOL setSmartChargeMCLEnabled(BOOL flag) {
     return YES;
 }
 
+/* ---------------- iOS 17+ MCL 诊断读取层（Design Doc 3.1） ---------------- */
+
+// MCL 白名单偏好键（F7）。诊断与修复只允许触达这六键；新增键必须先补逆向证据。
+NSArray<NSString*>* CLMCLPrefKeys(void) {
+    static NSArray<NSString*>* keys = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        keys = @[@"MCLFeatureState", @"currentState", @"chargeLimitToken",
+                 @"mclLimitValue", @"mclTargetSoC", @"allowMCLOverride"];
+    });
+    return keys;
+}
+
+// 候选偏好域（Design Doc 3.1：strings 已见两个域，只读扫描，不硬编码写入猜测域）。
+// 静态证据（re-notes.md §域命中实验）：复数域 43 处代码引用、单数域 0 处；
+// 扫描顺序按 Design Doc 列出顺序，以实际命中为准，运行时以诊断报告 domain 字段为权威。
+static NSArray<NSString*>* CLMCLCandidateDomains(void) {
+    static NSArray<NSString*>* domains = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        domains = @[@"com.apple.powerui.smartcharge", @"com.apple.powerui.smartcharging"];
+    });
+    return domains;
+}
+
+// 层1 偏好落盘位置：poweruiagent 以 mobile 用户经 cfprefsd 写 /var/mobile 域。
+// daemon 以 root 运行，CFPreferences 的 per-user 语义会解析到 /var/root 域读不到
+// mobile 用户数据，因此层1 快照直接读 plist 文件（持久层真相，免缓存歧义，
+// 且天然区分「键不存在 / 域存在但读取异常」两种标记）。
+static NSString* CLMCLDomainPlistPath(NSString* domain) {
+    return [@"/var/mobile/Library/Preferences/" stringByAppendingString:
+            [domain stringByAppendingString:@".plist"]];
+}
+
+BOOL CLMCLReadPrefs(NSMutableDictionary* outPrefs) {
+    if (outPrefs == nil) {
+        return NO;
+    }
+    [outPrefs removeAllObjects];
+    NSMutableDictionary* values = [NSMutableDictionary dictionary];
+    NSMutableDictionary* states = [NSMutableDictionary dictionary];
+    for (NSString* key in CLMCLPrefKeys()) {
+        states[key] = @(CLMCLPrefMissing);
+    }
+    NSString* failedDomain = nil;   // 域文件存在但解析异常的兜底记录
+    NSString* failedPath = @"";
+    NSString* resolvedDomain = nil;
+    NSString* resolvedPath = @"";
+    for (NSString* domain in CLMCLCandidateDomains()) {
+        NSString* path = CLMCLDomainPlistPath(domain);
+        if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
+            continue; // 域未落盘：全部 Missing，不算命中
+        }
+        NSDictionary* dict = [NSDictionary dictionaryWithContentsOfFile:path];
+        if (dict == nil) {
+            if (failedDomain == nil) {
+                failedDomain = domain; // 文件存在但读取异常：区分于缺失（Design Doc 3.1）
+                failedPath = path;
+            }
+            continue;
+        }
+        BOOL anyFound = NO;
+        for (NSString* key in CLMCLPrefKeys()) {
+            id value = dict[key];
+            if (value != nil) {
+                values[key] = value;
+                states[key] = @(CLMCLPrefFound);
+                anyFound = YES;
+            }
+        }
+        if (anyFound) {
+            resolvedDomain = domain; // Design Doc 3.1：取第一个包含任一白名单键的域为主域
+            resolvedPath = path;
+            break;
+        }
+        // 域文件存在但无白名单键：继续扫描下一候选域（键状态保持 Missing）
+    }
+    if (resolvedDomain == nil && failedDomain != nil) {
+        // 两候选域均无可读键、但存在读取异常域：报告比 unresolved 更精确的 read_failed 状态
+        for (NSString* key in CLMCLPrefKeys()) {
+            states[key] = @(CLMCLPrefReadFailed);
+        }
+        resolvedDomain = failedDomain;
+        resolvedPath = failedPath;
+    }
+    outPrefs[@"domain"] = resolvedDomain ?: @"unresolved";
+    outPrefs[@"plist_path"] = resolvedPath;
+    outPrefs[@"values"] = values;
+    outPrefs[@"states"] = states;
+    return (resolvedDomain != nil);
+}
+
+// 层2（agent 内存层，F1 语义）：OBC 状态 + MCL 支持性/读回，全部复用既有 XPC 读回通道。
+// 返回 YES = MCL 受支持（iOS 17+ 且 selector 探测通过）；NO = 旧系统或探测失败。
+BOOL CLMCLReadAgentState(int* obcStatus, BOOL* mclSupported, BOOL* mclEnabled) {
+    BOOL supported = isSmartChargeMCLSupported();
+    if (mclSupported != NULL) {
+        *mclSupported = supported;
+    }
+    if (obcStatus != NULL) {
+        *obcStatus = getSmartChargeStatus();
+    }
+    if (mclEnabled != NULL) {
+        *mclEnabled = supported ? getSmartChargeMCLEnabled() : NO;
+    }
+    return supported;
+}
+
 BOOL temporarilyDisableSmartCharge() {
     PowerUISmartChargeClient* client = getSmartChargeClient();
     NSError* err = nil;

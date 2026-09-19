@@ -86,6 +86,20 @@ BOOL isSmartChargeMCLSupported(void);
 BOOL getSmartChargeMCLEnabled(void);
 BOOL setSmartChargeMCLEnabled(BOOL flag);
 
+// iOS 17+ MCL 诊断读取层（Design Doc 3.1）。层1 = /var/mobile 域偏好直读；
+// 层2 = agent 内存层（XPC 读回的真实语义，F1），非执行层证据。
+typedef NS_ENUM(int, CLMCLPrefReadState) {
+    CLMCLPrefMissing = 0,    // 键不存在（域内无此键）
+    CLMCLPrefFound = 1,      // 读到值
+    CLMCLPrefReadFailed = 2, // 域存在但读取异常（区分于缺失）
+};
+NSArray<NSString*>* CLMCLPrefKeys(void);
+// 层1 快照：outPrefs[@"domain"]/@"plist_path"/@"values"/@"states"（states 值为 CLMCLPrefReadState）。
+// 返回 YES=主域已命中；NO=unresolved（两候选域均无白名单键且无读取异常域）。
+BOOL CLMCLReadPrefs(NSMutableDictionary* outPrefs);
+// 层2：OBC 状态 + MCL 支持性/读回。返回 YES=MCL 受支持。
+BOOL CLMCLReadAgentState(int* obcStatus, BOOL* mclSupported, BOOL* mclEnabled);
+
 /* ---------------- App ---------------- */
 id getlocalKV(NSString* key);
 void setlocalKV(NSString* key, id val);
