@@ -1928,6 +1928,184 @@ static void disableMCLForPermanentDisable(void) {
     }
 }
 
+/* ---------------- iOS 17+ MCL 诊断编排（Design Doc 3.3） ---------------- */
+
+// 层3 证据候选键（re-notes.md 注册表稳定键实验定案；实验未找到稳定键时保持空数组，
+// 证据等级如实退化为 indirect——实验失败是预期内结果，不是缺陷）。
+static NSArray<NSString*>* MCLRegistryEvidenceCandidateKeys(void) {
+    static NSArray<NSString*>* keys = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        // 按 re-notes.md §注册表稳定键实验 结论填写；无稳定键则保持空数组
+        keys = @[];
+    });
+    return keys;
+}
+
+// 层3 单键查询（get_bat_info 高频路径用：只查候选键，不做全量 dump）。
+static NSMutableDictionary* MCLRegistryProbeEvidenceKeys(void) {
+    NSMutableDictionary* out = [NSMutableDictionary dictionary];
+    NSArray<NSString*>* candidates = MCLRegistryEvidenceCandidateKeys();
+    if (candidates.count == 0) {
+        return out;
+    }
+    io_service_t serv = getIOPMPSServ();
+    if (serv == IO_OBJECT_NULL) {
+        return out;
+    }
+    for (NSString* key in candidates) {
+        CFTypeRef raw = IORegistryEntrySearchCFProperty(serv, kIOServicePlane,
+                                                        (__bridge CFStringRef)key,
+                                                        kCFAllocatorDefault, 0);
+        NSMutableDictionary* item = [NSMutableDictionary dictionary];
+        item[@"present"] = @(raw != NULL);
+        if (raw != NULL) {
+            item[@"value"] = CFBridgingRelease(raw);
+        }
+        out[key] = item;
+    }
+    return out;
+}
+
+// 层3 全量数值属性快照（repair 前后 diff 用，Task 5 消费）。
+static NSDictionary* MCLSnapshotRegistryNumericProps(void) {
+    io_service_t serv = getIOPMPSServ();
+    if (serv == IO_OBJECT_NULL) {
+        return @{};
+    }
+    CFMutableDictionaryRef props = nil;
+    kern_return_t kr = IORegistryEntryCreateCFProperties(serv, &props, kCFAllocatorDefault, 0);
+    if (kr != 0 || props == nil) {
+        return @{};
+    }
+    NSDictionary* info = (__bridge_transfer NSDictionary*)props;
+    NSMutableDictionary* numeric = [NSMutableDictionary dictionary];
+    for (NSString* key in info) {
+        if ([info[key] isKindOfClass:[NSNumber class]]) {
+            numeric[key] = info[key];
+        }
+    }
+    return numeric;
+}
+
+// 前后 diff：limit/override 相关整型变化键（Design Doc 3.3-1 候选模式，Task 5 消费）。
+static NSDictionary* MCLDiffRegistryProps(NSDictionary* before, NSDictionary* after) {
+    NSMutableDictionary* changed = [NSMutableDictionary dictionary];
+    NSMutableDictionary* limitRelated = [NSMutableDictionary dictionary];
+    for (NSString* key in after) {
+        NSNumber* beforeValue = before[key];
+        NSNumber* afterValue = after[key];
+        if (beforeValue == nil || afterValue == nil || [beforeValue isEqualToNumber:afterValue]) {
+            continue;
+        }
+        changed[key] = @{@"before": beforeValue, @"after": afterValue};
+        NSString* lower = key.lowercaseString;
+        if ([lower containsString:@"limit"] || [lower containsString:@"override"]) {
+            limitRelated[key] = changed[key];
+        }
+    }
+    return @{@"changed": changed, @"limit_related": limitRelated};
+}
+
+// 独立诊断的层3 证据：候选键非空且命中 → registry_diff；候选键全缺席 → registry_diff + present=NO；
+// 候选清单为空（实验未找到稳定键）→ indirect。grade 反映探测方式，present 反映结果。
+static NSDictionary* MCLLayer3EvidenceStandalone(void) {
+    if (MCLRegistryEvidenceCandidateKeys().count == 0) {
+        return @{@"evidence_grade": @"indirect",
+                 @"present": @NO,
+                 @"note": @"no_stable_registry_key"};
+    }
+    NSDictionary* probed = MCLRegistryProbeEvidenceKeys();
+    for (NSString* key in MCLRegistryEvidenceCandidateKeys()) {
+        NSDictionary* item = probed[key];
+        if (item != nil && [item[@"present"] boolValue]) {
+            return @{@"evidence_grade": @"registry_diff",
+                     @"present": @YES,
+                     @"key": key,
+                     @"value": item[@"value"] ?: @""};
+        }
+    }
+    return @{@"evidence_grade": @"registry_diff",
+             @"present": @NO,
+             @"note": @"candidate_keys_absent"};
+}
+
+// 派生判定（Design Doc 3.3 判定矩阵 v1；歧义行按 Global Constraints 的 V1–V3 优先级定案）。
+// read_failed 的 MCLFeatureState 视同 missing 走 V3：报告原样携带 states 供人工判读。
+static NSString* MCLVerdictFromDiagnostics(BOOL mclSupported, NSDictionary* layer1, BOOL agentEnabled, NSDictionary* layer3) {
+    if (!mclSupported) {
+        return @"unsupported";
+    }
+    NSDictionary* states = layer1[@"states"] ?: @{};
+    NSDictionary* values = layer1[@"values"] ?: @{};
+    int featureState = [states[@"MCLFeatureState"] intValue];
+    BOOL registryDiff = [layer3[@"evidence_grade"] isEqualToString:@"registry_diff"];
+    BOOL layer3Present = [layer3[@"present"] boolValue];
+    if (featureState == CLMCLPrefFound) {
+        if ([values[@"MCLFeatureState"] boolValue]) {
+            if (!agentEnabled) {
+                return @"disconnected";          // 行3：agent 未载入/读回关闭（层1↔层2 脱节）
+            }
+            if (registryDiff && !layer3Present) {
+                return @"disconnected";          // 行2：层1/层2 开但执行层证据缺失
+            }
+            return @"healthy_enabled";           // 行1 + indirect 退化（报告标注证据等级）
+        }
+        if (!agentEnabled) {
+            return @"healthy_disabled";          // 行5：显式 false + 读回 NO
+        }
+        if (registryDiff && layer3Present) {
+            return @"disconnected";              // 反向脱节：执行层在限制但偏好关
+        }
+        return @"pref_lost";                     // 行4 false 分支（indirect 层3 缺失）
+    }
+    if (registryDiff && layer3Present) {
+        return @"disconnected";
+    }
+    return @"pref_lost";                         // 行4 missing 分支
+}
+
+// MCL 全链路诊断（单次收集 < 1s：plist 直读 + 既有 XPC 读回 + 候选键单查；不加轮询）。
+// get_bat_info 子字典与 get_mcl_diagnostics 共用；iOS 16 及以下早退零收集（Design Doc 4）。
+static NSDictionary* collectMCLDiagnosticsWithLayer3(NSDictionary* layer3Override) {
+    NSMutableDictionary* report = [NSMutableDictionary dictionary];
+    report[@"collectedAt"] = @(time(0));
+    BOOL mclSupported = isSmartChargeMCLSupported();
+    report[@"supported"] = @(mclSupported);
+    if (!mclSupported) {
+        // iOS 16 及以下早退零收集（Design Doc 4）：旧系统 MCL 不受支持，三层收集通道
+        // 在不支持的系统上要么恒空、要么是无意义开销；get_bat_info 是 App 高频轮询
+        // 路径，诊断块必须保持旧机零成本——plist 直读、agent 读回、IORegistry 探测
+        // 一概不发起。报告仅携带 supported=false + verdict=unsupported 两个判定字段
+        // （外加 collectedAt），App 侧据此隐藏 MCL 诊断分区，不触发任何修复动作。
+        report[@"verdict"] = @"unsupported";
+        return report;
+    }
+    // 层1：偏好落盘直读（/var/mobile 域 plist，F7 白名单六键；outPrefs 含
+    // domain/plist_path/values/states——states 标记每键 Missing/Found/ReadFailed，
+    // 返回 YES 不代表 values 可信，判定一律先看 states，read_failed 走 V3）。
+    NSMutableDictionary* layer1 = [NSMutableDictionary dictionary];
+    CLMCLReadPrefs(layer1);
+    report[@"domain"] = layer1[@"domain"];
+    report[@"layer1"] = layer1;
+    // 层2：agent 内存层读回（复用既有 XPC 通道，F1 语义）。
+    int obcStatus = -1;
+    BOOL agentSupported = NO;
+    BOOL agentEnabled = NO;
+    CLMCLReadAgentState(&obcStatus, &agentSupported, &agentEnabled);
+    report[@"layer2"] = @{@"obc_status": @(obcStatus),
+                          @"mcl_supported": @(agentSupported),
+                          @"mcl_enabled": @(agentEnabled)};
+    // 层3：执行层证据（repair 编排可传前后 diff 覆盖；独立诊断走候选键探测）。
+    report[@"layer3"] = layer3Override ?: MCLLayer3EvidenceStandalone();
+    report[@"verdict"] = MCLVerdictFromDiagnostics(mclSupported, layer1, agentEnabled, report[@"layer3"]);
+    return report;
+}
+
+static NSDictionary* collectMCLDiagnostics(void) {
+    return collectMCLDiagnosticsWithLayer3(nil);
+}
+
 static void restoreSmartChargeForReset(NSString* reason) {
     loadSmartChargeCoordinationRuntimeState();
     tryRestoreSmartChargeAfterCoordination(reason ?: @"reset");
@@ -3813,6 +3991,8 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
         // iOS 17+ MCL（80% 限制开关）状态：App 显示与诊断用。旧系统恒 false/false。
         data[@"SmartChargeMCLSupported"] = @(isSmartChargeMCLSupported());
         data[@"SmartChargeMCLEnabled"] = @(getSmartChargeMCLEnabled());
+        // iOS 17+ MCL 全链路诊断（Design Doc 3.3）：App 诊断页与导出用。旧系统仅 {supported:false}。
+        data[@"MCLDiagnostics"] = collectMCLDiagnostics();
         data[@"SmartChargeOriginalStatus"] = @(g_smartChargeCoordinationOriginalStatus);
         data[@"SmartChargeCoordinationSessionID"] = g_smartChargeCoordinationSessionID ?: @"";
         data[@"SmartChargeCoordinationStartTime"] = @(g_smartChargeCoordinationStartedTs);
@@ -3845,6 +4025,12 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
         return @{
             @"status": @0,
             @"data": data ?: @{},
+        };
+    } else if ([api isEqualToString:@"get_mcl_diagnostics"]) {
+        // 独立只读诊断 API（Design Doc 3.3）：诊断页手动刷新用，读写分离。
+        return @{
+            @"status": @0,
+            @"data": collectMCLDiagnostics(),
         };
     } else if ([api isEqualToString:@"apply_now"]) {
         refreshBatteryStateAndApplyPolicy();

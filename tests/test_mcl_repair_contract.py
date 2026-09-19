@@ -98,3 +98,44 @@ class MCLForceEntryContractTests(unittest.TestCase):
     def test_declarations_in_header(self):
         self.assertIn("BOOL CLMCLForceEnable(void);", self.utils_h)
         self.assertIn("BOOL CLMCLForceDisable(void);", self.utils_h)
+
+
+class MCLDiagnosticsContractTests(unittest.TestCase):
+    """任务 2.2：诊断编排——字段集合、判定矩阵全分支、iOS 16 门控、读写分离。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.daemon_mm = DAEMON_MM.read_text()
+
+    def test_get_bat_info_embeds_mcl_diagnostics(self):
+        body = function_body(self.daemon_mm, 'else if ([api isEqualToString:@"get_bat_info"]) {')
+        self.assertIn('data[@"MCLDiagnostics"] = collectMCLDiagnostics();', body)
+
+    def test_get_mcl_diagnostics_readonly_api_exists(self):
+        self.assertIn('"get_mcl_diagnostics"', self.daemon_mm)
+        self.assertIn("collectMCLDiagnostics()", self.daemon_mm)
+
+    def test_ios16_gate_returns_early_with_zero_collection(self):
+        body = function_body(self.daemon_mm, "static NSDictionary* collectMCLDiagnosticsWithLayer3(NSDictionary* layer3Override) {")
+        early = body.index("if (!mclSupported) {")
+        head = body[early:early + 400]
+        self.assertNotIn("CLMCLReadPrefs(", head)       # 早退分支内不得做层1/层2 收集
+        self.assertNotIn("CLMCLReadAgentState(", head)
+        self.assertIn('@"unsupported"', head)
+
+    def test_verdict_matrix_all_five_rows(self):
+        body = function_body(self.daemon_mm, "static NSString* MCLVerdictFromDiagnostics(BOOL mclSupported, NSDictionary* layer1, BOOL agentEnabled, NSDictionary* layer3) {")
+        for verdict in ("healthy_enabled", "healthy_disabled", "disconnected", "pref_lost", "unsupported"):
+            self.assertIn(f'@"{verdict}"', body)
+        self.assertIn("registry_diff", body)
+
+    def test_layer3_diff_targets_limit_or_override_keys(self):
+        body = function_body(self.daemon_mm, "static NSDictionary* MCLDiffRegistryProps(NSDictionary* before, NSDictionary* after) {")
+        self.assertIn('containsString:@"limit"', body)
+        self.assertIn('containsString:@"override"', body)
+        self.assertIn('@"limit_related"', body)
+
+    def test_standalone_layer3_degrades_to_indirect_without_candidates(self):
+        body = function_body(self.daemon_mm, "static NSDictionary* MCLLayer3EvidenceStandalone(void) {")
+        self.assertIn('@"indirect"', body)
+        self.assertIn("MCLRegistryEvidenceCandidateKeys()", body)
