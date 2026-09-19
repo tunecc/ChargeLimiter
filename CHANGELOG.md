@@ -4,6 +4,20 @@
 
 写法参考了 Keep a Changelog 和一些成熟项目常见的结构：每个版本先说明主线，再按少量分类列出用户真正会感知到的变化，尽量详细，但不写成长文。
 
+## v1.17.1 - 2026-09-19
+
+本版主线：**MCL 强制修复真机轮 1 回灌——诊断通道修复**。真机实测发现：受损设备诊断报告两候选域 plist 均不存在、六键全 Missing，强制修复却被归因为 `gate1_augury_feature`——与 `mcl_supported=true`（augury 门已开）自相矛盾。根因是层 1 磁盘直读对 cfprefsd 缓冲态全盲：poweruiagent 以 mobile 用户经 cfprefsd 写偏好，plist 可能长期不落盘甚至从不存在，「文件读不到」≠「偏好为空」≠「服务端没写」。
+
+### 新增
+
+- **层 1 活通道 `CLMCLReadPrefsLive`**：fork 后降权为 mobile 用户执行 `/usr/bin/defaults read <domain>`（约 3s 超时保护，超时 SIGKILL 回收），直读 cfprefsd 服务端缓冲；枚举 `/var/mobile/Library/Preferences/` 下 `powerui|smartcharg`（不区分大小写）命中文件清单（`pref_files`），六键 best-effort 解析（域不存在=Missing、解析失败=ReadFailed），defaults 原始输出截断 8KB 存 `raw`；`/usr/bin/defaults` 缺失或 spawn 失败时报告降级 `channel=unavailable` 并附原因，不崩溃。
+
+### 改进
+
+- **MCL 诊断活通道优先**：`MCLDiagnostics.layer1` 新增 `live` 子字典；判定矩阵改为磁盘 Missing/ReadFailed 而活通道有值时按活通道判定，`effective_channel` 标注判定生效通道（disk/live/none）；`pref_lost` 仅在磁盘与活通道双通道均无法证实 `MCLFeatureState=true` 时给出，verdict 枚举不变。
+- **修复归因修正**：`featureWritten` 改为磁盘读或活通道任一证实 `MCLFeatureState=true` 即算写入；两通道都无法证实才归 `gate1_augury_feature`/`gate2_device_gate`；活通道证实已写但代理内存 `after.layer2.mcl_enabled=false` 时归 `still_disconnected` 并附 `note`（写入已被 cfprefsd 受理、代理内存未翻转），失败建议保持「重启设备后重试」。
+- **App 修复反馈回灌**：修复失败弹窗在失败分支后追加两行关键证据——`force_enable_ok`（服务端调用受理）与修复后 `after.layer2.mcl_enabled`（代理内存标志）；MCL 诊断复制导出在诊断 JSON 内附最近一次修复完整响应（键名 `last_repair`）。
+
 ## v1.17.0 - 2026-09-19
 
 本版主线：**iOS 17 MCL（80% 限制）真机诊断与强制修复**。针对被旧版本破坏后「设置显示 80% 但充过头」的设备：策略诊断页新增 MCL 全链路诊断（偏好层 / 代理内存层 / 执行层证据与一致性判定）与一键复制导出；新增「强制修复 80% 限制」——不信任读回短路，写前快照、失败自动回滚并给出分层失败证据（调用报错 / 电池参数未就绪被中和 / 令牌缺失）。健康设备执行修复无副作用；iOS 16 及以下显式不支持、零写入。
