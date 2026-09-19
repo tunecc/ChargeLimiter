@@ -4,6 +4,20 @@
 
 写法参考了 Keep a Changelog 和一些成熟项目常见的结构：每个版本先说明主线，再按少量分类列出用户真正会感知到的变化，尽量详细，但不写成长文。
 
+## v1.17.2 - 2026-09-19
+
+本版主线：**MCL 真实偏好域定案回灌（真机轮 2）**。真机实锤：MCL 六键的真实偏好域为 `com.apple.smartcharging.topoffprotection`（mobile 用户）——PowerUISmartChargeManager 单例工厂块传给 `initWithDefaultsDomain:` 的 CFString 静态铁证（参照物校验通过）+ `su mobile -c 'defaults read'` 读出 `MCLFeatureState=1` 等实值；`com.apple.powerui.smartcharging`/`com.apple.powerui.smartcharge` 是 checkpoint 句柄/通知名残留，并非 MCL 键域。同版修掉 roothide 下活通道不可用与一类自相矛盾的失败归因。
+
+### 改进
+
+- **候选域清单定案**：磁盘通道与活通道共用的候选域扫描首位改为静态定案的 `com.apple.smartcharging.topoffprotection`，`com.apple.powerui.smartcharging`/`com.apple.powerui.smartcharge` 降为回退；只读扫描语义不变，诊断报告 `domain` 字段仍为权威。
+- **活通道 defaults 二进制按序探测**：roothide 下 daemon 视野不存在 `/usr/bin/defaults`（v1.17.1 真机 `defaults_missing` 根因）。现按序尝试 libroothide jbroot 解析路径（运行时 dlsym/dlopen 函数探测，编译期不硬依赖 roothide，不可用即跳过）→ `/var/jb/usr/bin/defaults` → `/usr/bin/defaults`，任一存在即用，全部缺失才报 `defaults_missing`；setuid(mobile) 子进程、约 3s 超时与 15s TTL 缓存/force-refresh 语义不变。
+- **修复受理推断归因修正**：层 2 内存标志置位代码位于 gate1/gate2 之后（F2），`after.layer2.mcl_enabled=YES` 即服务端已通过全部门禁并受理 enableMCL 的实锤——此时双通道无法证实 `MCLFeatureState` 不再归 gate1/gate2（自相矛盾），改报新分支 `accepted_unverified`，失败建议改为「插电充电实测」（advice=charge_test_now）；既有失败分支族与默认建议语义不变。
+
+### App
+
+- 修复结果弹窗识别 `advice=charge_test_now`，输出「服务端已受理并持久化尝试，请插电充电实测 80%」提示（zh-Hans/en 双语同步）。
+
 ## v1.17.1 - 2026-09-19
 
 本版主线：**MCL 强制修复真机轮 1 回灌——诊断通道修复**。真机实测发现：受损设备诊断报告两候选域 plist 均不存在、六键全 Missing，强制修复却被归因为 `gate1_augury_feature`——与 `mcl_supported=true`（augury 门已开）自相矛盾。根因是层 1 磁盘直读对 cfprefsd 缓冲态全盲：poweruiagent 以 mobile 用户经 cfprefsd 写偏好，plist 可能长期不落盘甚至从不存在，「文件读不到」≠「偏好为空」≠「服务端没写」。
