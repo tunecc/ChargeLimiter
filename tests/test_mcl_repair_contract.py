@@ -9,8 +9,8 @@ UTILS_H = ROOT / "ChargeLimiter" / "utils.h"
 API_CLIENT_H = ROOT / "ChargeLimiter" / "UIKit" / "CLAPIClient.h"
 API_CLIENT_M = ROOT / "ChargeLimiter" / "UIKit" / "CLAPIClient.m"
 ADV_SETTINGS_M = ROOT / "ChargeLimiter" / "UIKit" / "Controllers" / "CLAdvancedSettingsViewController.m"
-STRINGS_EN = ROOT / "en.lproj" / "Localizable.strings"
-STRINGS_ZH = ROOT / "zh-Hans.lproj" / "Localizable.strings"
+STRINGS_EN = ROOT / "ChargeLimiter" / "en.lproj" / "Localizable.strings"
+STRINGS_ZH = ROOT / "ChargeLimiter" / "zh-Hans.lproj" / "Localizable.strings"
 
 
 def function_body(source: str, signature: str) -> str:
