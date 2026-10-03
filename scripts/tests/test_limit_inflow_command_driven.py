@@ -7,8 +7,17 @@ DAEMON = (Path(__file__).resolve().parents[2] / "ChargeLimiter" / "daemon.mm").r
 )
 
 
+def decision_function_source():
+    m = re.search(
+        r"static\s+NSString\*\s+\w*[Tt]hermal\w*[Mm]ode\w*\s*\(.*?\)\s*\{.*?\n\}",
+        DAEMON,
+        re.S,
+    )
+    return m.group(0) if m else ""
+
+
 class TestLimitInflowCommandDriven(unittest.TestCase):
-    """集中决策函数只读命令+配置，不读系统信号"""
+    """集中决策函数只读命令+配置+连接信号，不读实时充电读数"""
 
     def test_decision_function_exists(self):
         # 集中决策函数应在 daemon 中存在
@@ -20,23 +29,13 @@ class TestLimitInflowCommandDriven(unittest.TestCase):
 
     def test_reads_charge_command_enabled(self):
         # 决策函数应读 g_chargeCommandEnabled
-        m = re.search(
-            r"static\s+NSString\*\s+\w*[Tt]hermal\w*[Mm]ode\w*\s*\(.*?\)\s*\{.*?\n\}",
-            DAEMON,
-            re.S,
-        )
-        if m:
-            seg = m.group(0)
+        seg = decision_function_source()
+        if seg:
             self.assertIn("g_chargeCommandEnabled", seg)
 
     def test_reads_four_config_keys(self):
-        m = re.search(
-            r"static\s+NSString\*\s+\w*[Tt]hermal\w*[Mm]ode\w*\s*\(.*?\)\s*\{.*?\n\}",
-            DAEMON,
-            re.S,
-        )
-        if m:
-            seg = m.group(0)
+        seg = decision_function_source()
+        if seg:
             for key in [
                 "adv_limit_inflow",
                 "adv_limit_inflow_mode",
@@ -45,23 +44,43 @@ class TestLimitInflowCommandDriven(unittest.TestCase):
             ]:
                 self.assertIn(key, seg)
 
-    def test_does_not_read_system_signals(self):
-        # 不应读取系统实时信号
+    def test_requires_adaptor_connected_gate(self):
+        # 限流档只在插电充电会话生效：决策函数必须经 isAdaptorConnect 做连接门控，
+        # 未插电（含启动默认命令态、拔线重置态）恒为默认档
+        seg = decision_function_source()
+        if seg:
+            self.assertIn("isAdaptorConnect", seg)
+
+    def test_does_not_read_charging_readings(self):
+        # 不应读取实时充电读数（电流/充电标志/派生值）；连接判定只允许经
+        # isAdaptorConnect 封装，决策函数体内不得直接出现这些信号
+        seg = decision_function_source()
+        if seg:
+            for signal in [
+                "currentLooksCharging",
+                "InstantAmperage",
+                "IsCharging",
+                "ExternalChargeCapable",
+                "AdapterDetails",
+            ]:
+                self.assertNotIn(signal, seg)
+
+    def test_policy_end_applies_thermal(self):
+        # applyChargePolicy 末尾兜底同步 thermal 档位：覆盖拔线解除残留、
+        # daemon 启动/重启对齐上次会话档位
         m = re.search(
-            r"static\s+NSString\*\s+\w*[Tt]hermal\w*[Mm]ode\w*\s*\(.*?\)\s*\{.*?\n\}",
+            r"static\s+void\s+applyChargePolicy\([^;{]*\)\s*\{.*?\n\}",
             DAEMON,
             re.S,
         )
-        if m:
-            seg = m.group(0)
-            for signal in [
-                "isAdaptorConnect",
-                "AdapterDetails",
-                "currentLooksCharging",
-                "IsCharging",
-                "ExternalChargeCapable",
-            ]:
-                self.assertNotIn(signal, seg)
+        self.assertIsNotNone(m)
+        self.assertIn("applyThermalModeForCurrentState", m.group(0))
+
+    def test_apply_is_idempotent(self):
+        # 应用路径幂等：最近写入键缓存未变化时不重写偏好、不重发通知；
+        # 还原链（restoreThermalSimulationForReset）清除缓存
+        self.assertIn("g_lastAppliedThermalKey", DAEMON)
+        self.assertIn("g_lastAppliedThermalKey = nil", DAEMON)
 
     def test_onBatteryEventEnd_no_thermal_write(self):
         # onBatteryEventEnd 不应调 setThermalSimulationMode

@@ -1853,8 +1853,8 @@ static int setChargeStatus(BOOL flag) {
 }
 
 
-// 集中决策：thermal mode 只由命令和配置决定，不读系统实时信号。
-// lock=YES → 默认档；charging+limit=YES → 限流档；其他 → 默认档。
+// 集中决策：thermal mode 只由命令、配置与连接信号决定，不读实时充电读数。
+// lock=YES → 默认档；插电+充电命令开+limit=YES → 限流档；其他 → 默认档。
 static NSString* targetThermalModeForCurrentState(void) {
     BOOL lock = getLocalBool(@"adv_thermal_mode_lock", NO);
     NSString* defaultMode = getLocalString(@"adv_def_thermal_mode", @"off");
@@ -1862,7 +1862,12 @@ static NSString* targetThermalModeForCurrentState(void) {
         return defaultMode;
     }
     BOOL limitInflow = getLocalBool(@"adv_limit_inflow", NO);
-    if (g_chargeCommandEnabled && limitInflow) {
+    // 限流档只在插电充电会话生效：命令标志静态默认/拔线重置都是 YES，未插电时
+    // 不能凭它进入限流档，否则限流档残留会覆盖温控模拟默认档（b8c0764 已知代价，
+    // CLThermalSim 补齐执行通路后变成实际的持续限流）。连接判定只经 isAdaptorConnect
+    // 取连接信号，不引入实时充电读数依赖。
+    BOOL adaptorConnected = isAdaptorConnect(bat_info, @(getLocalBool(@"adv_disable_inflow", NO)));
+    if (adaptorConnected && g_chargeCommandEnabled && limitInflow) {
         return getLocalString(@"adv_limit_inflow_mode", @"moderate");
     }
     return defaultMode;
@@ -1876,6 +1881,9 @@ static NSTimer* g_thermalVerifyTimer = nil;
 static NSString* g_thermalVerifyExpected = nil;
 static int g_thermalVerifyChecksLeft = 0;
 static int g_thermalVerifyRepostsLeft = 0;
+// 幂等键 = 目标档 + 锁定镜像（与 setThermalSimulationMode 的写入内容一致）。
+// 策略评估兜底同步按它拦截重复写，未变化不重写偏好、不重发通知。
+static NSString* g_lastAppliedThermalKey = nil;
 
 static int thermalLevelForMode(NSString* mode) {
     if ([mode isEqualToString:@"light"]) return 1;
@@ -1984,9 +1992,16 @@ static void cancelThermalApplyVerification(void) {
 }
 
 static void applyThermalModeForCurrentState(void) {
-    NSString* target = targetThermalModeForCurrentState();
-    setThermalSimulationMode(target);
-    scheduleThermalApplyVerification(target);
+    @synchronized (Service.inst) {
+        NSString* target = targetThermalModeForCurrentState();
+        NSString* key = [NSString stringWithFormat:@"%@|%d", target, getLocalBool(@"adv_thermal_mode_lock", NO)];
+        if ([key isEqualToString:g_lastAppliedThermalKey]) {
+            return; // 目标与锁定镜像均未变：不重写偏好、不重发通知
+        }
+        g_lastAppliedThermalKey = key;
+        setThermalSimulationMode(target);
+        scheduleThermalApplyVerification(target);
+    }
 }
 
 static int setBatteryStatus(BOOL flag) {
@@ -3168,6 +3183,9 @@ static void restoreSmartChargeForReset(NSString* reason) {
 
 static void restoreThermalSimulationForReset(void) {
     cancelThermalApplyVerification(); // 放弃在途验证，防止重发路径复活旧档位（I2）
+    @synchronized (Service.inst) {
+        g_lastAppliedThermalKey = nil; // 清除幂等缓存，后续应用按新决策重新写入
+    }
     setThermalSimulationMode(@"off");
     // spec『还原的对象与语义』第 5 条：温控与 PPM 模拟双双归零。
     setPPMSimulationMode(@"off");
@@ -4643,6 +4661,10 @@ static void applyChargePolicy(NSDictionary* oldInfo, NSDictionary* info) {
         nextPolicyState = @"battery";
         nextPolicyReason = @"adaptor_disconnected";
     }
+    // thermal 档位兜底同步（applyThermalModeForCurrentState 内幂等，未变化直接返回）：
+    // 覆盖拔线边沿解除限流残留、daemon 启动/重启对齐上次会话档位、未走命令边沿的
+    // 会话变化；命令边沿已在 setBatteryStatus 内即时应用，这里通常命中缓存。
+    applyThermalModeForCurrentState();
     updatePolicyRuntimeState(nextPolicyState, nextPolicyReason, safeInfo, now);
     notifyForChargeCommandTransition(previousExternalConnected,
                                      is_adaptor_connected,
