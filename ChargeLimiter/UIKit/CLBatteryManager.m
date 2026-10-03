@@ -120,6 +120,11 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
     _thermalMode = [self thermalModeFromString:data[@"adv_def_thermal_mode"]];
     _limitInflowThermalMode = [self thermalModeFromString:data[@"adv_limit_inflow_mode"]];
     _thermalSimulateMode = [self thermalModeFromString:data[@"thermal_simulate_mode"]];
+    // 生效验证诊断（design D5）：区分"已配置"与"已生效"。
+    NSString *thermalConfigValue = data[@"thermal_config_mode"];
+    _thermalConfigMode = ([thermalConfigValue isKindOfClass:[NSString class]] && thermalConfigValue.length > 0) ? thermalConfigValue : @"off";
+    NSString *thermalApplyStatusValue = data[@"thermal_apply_status"];
+    _thermalApplyStatus = ([thermalApplyStatusValue isKindOfClass:[NSString class]] && thermalApplyStatusValue.length > 0) ? thermalApplyStatusValue : @"unknown";
     _fullChargeScheduleEnabled = [data[@"full_charge_sched_enabled"] boolValue];
     _fullChargeScheduleIntervalDays = [data[@"full_charge_sched_interval_days"] integerValue];
     _fullChargeScheduleStartMinute = [data[@"full_charge_sched_start_minute"] integerValue];

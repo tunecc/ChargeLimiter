@@ -71,7 +71,8 @@ BOOL isAutoBrightEnable();
 void setAutoBrightEnable(BOOL flag);
 
 NSDictionary* getThermalData();
-NSString* getThermalSimulationMode();
+NSString* getThermalSimulationMode(); // 实时系统热状态（生效探针）
+NSString* getThermalConfigMode(); // com.apple.cltm 中已配置的模拟档位
 void setThermalSimulationMode(NSString* mode);
 NSString* getPPMSimulationMode();
 void setPPMSimulationMode(NSString* mode);
