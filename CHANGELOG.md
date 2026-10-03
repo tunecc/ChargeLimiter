@@ -4,6 +4,36 @@
 
 写法参考了 Keep a Changelog 和一些成熟项目常见的结构：每个版本先说明主线，再按少量分类列出用户真正会感知到的变化，尽量详细，但不写成长文。
 
+## v1.17.3 - 2026-09-28
+
+本版主线：**官方 80% 充电限制（MCL）短效失效的根因定案与自动维持**。固件逆向（iPhone16,2 / iOS 17.1 21B80，PowerUI）定案：`engageManualChargeLimit` 只在调用那一刻把限制值快照为 80 或 101（101 = 不限制），之后系统侧没有任何路径会重新计算。101 的三个来源是电池维护窗口——DOD0 陈旧超过 3 天、QMax 陈旧超过 14 天、距上次满充超过 21 天（最后一条会自我强化：开着 80% 限制就充不到 100%，满 21 天后任意一次重新计算都给出 101，直到一次满充刷新日期）。同时 `clearChargeLimit` 会在拔电时取消 powerd 侧限制，而 `isMCLCurrentlyEnabled` 只读代理内存标志，所以诊断三层全绿却照样充过头。
+
+### 改进
+
+- **执行层物理电流证据**：诊断新增一条不依赖猜注册表键的通道——插电且电量已到 80% 时，用 `InstantAmperage`/`Amperage` 绝对值是否低于 120mA 判定限制是否真的生效。判定矩阵据此把「偏好与代理层全绿但实际未限制」判为 `disconnected`，不再误报健康。
+- **新失败分支 `execution_layer_not_limited`**：修复后即时采样仍未被限制时单独归因，并如实说明 powerd 取消与 101 中和在外部不可区分（需 `log stream` 两条日志才能定性）。
+- **80% 限制自动维持（默认关闭）**：挂在既有 daemon 的 60 秒定时器上（不新增常驻进程，配置键 `mcl_auto_maintain`，默认关——它是可选兜底，不替用户长期驻留）。打开后，仅在用户原意是 80% 限制、且物理证据连续两次确认未生效、且距上次下发超过 5 分钟时，重新走一次与系统设置开关等价的 `enableMCL:`。用户显式关掉 80% 限制、协调会话进行中、满充计划窗口内、手动修复进行中，一律不动。
+
+### 改进（第五轮逆向回灌：官方临时停用窗口）
+
+- 固件逆向定案 80% 不限流的另一主机制：`client:setState:` case 2/3（客户端 API `temporarilyEnableCharging`/`temporarilyDisableSmartCharging`，通知「立即充电」按钮走 case 2）会设置 TemporarilyDisabled，截止时间由 `defaultDateToDisableUntilGivenDate:` 算成**下一个早上 6:00**；窗口内 80% 限制完全不执行，窗口结束后系统自愈重新 engage。设置分支之外的所有调用点（enableMCL/enableDEoC/handleCallback）都是清除语义。
+- **维持器窗口让位**：`disabledUntil` 偏好未过期（官方临时停用窗口 active）时，自动维持不再重下发 `enableMCL:`（对抗窗口正是「修好一下又坏」的对抗循环嫌疑路径），分类记为 `official_temp_window` 并如实上报。
+- **诊断新增 `temporary_window` 与 `mitigation_gate` 字段**：直读偏好域 `disabledUntil` 与 DOD0/QMax/满充时间戳（只读，不进六键写入白名单），区分「系统临时窗口」「engage 被电池计量中和」与「真执行层失效」；`execution_layer_not_limited` 归因拆出 `engage_neutralized_mitigation` 新分支（真机定案主因：DOD0 38.9 天未校准，engage 被中和为 101，需先充满校准），App 弹窗直接给出「充满校准」步骤与 DOD0 天数。
+- **执行层观测窗口 [80, 95]**：电量超过 95% 时不再判定「限制生效」——满电自然停充同样低电流（真机 100% 时 81mA 被误判假绿），超出窗口一律标注不可判定。
+- **真机回灌定案（主因）**：DOD0 已 38.9 天未校准（阈值 3 天）——engage 每次被中和为 101；用户夜间满充刷新了 lastFullChargeDate 但 lastDOD0Update 不变，系统等待静置 OCV 标定（previousOCVState=OCVNeededAndRequested）。修复建议改为完整校准流程：低电量静置 → 充满 → 验证 `mitigation_gate.dod0_age_days`。
+
+### 主开关全禁用（master-off-full-disable）
+
+- **总开关关闭 = 零干预 + 零驻留**：关闭瞬间全量还原系统状态（IOKit 充电属性、thermal/PPM、加速充电子项、MCL 按记忆值——与「还原系统优化充电」同级），随后 daemon 退出进程并从 launchd 注销（`bootout system/com.chargelimiter.mod`）；TrollStore 无 launchd 直接退出。设备重启时 launchd 拉起一次，daemon 自检发现开关为关即还原后退出。
+- **修复动作保留可用**（用户决定）：总开关关闭状态下，「还原系统优化充电」「强制修复 80%」「充电控制探针」与只读诊断照常可用——软件的核心用途不受影响。
+- **HTTP 白名单**：开关关闭时其余一切写入（限流等级、高温模拟、智能停充、停充禁流、悬浮窗等）一律拒绝（`master_switch_off`），App 端高级设置页同步灰锁并显示提示条。
+- **自愈收编**：daemon 启动自愈（自动重开/重关系统优化充电）与统计写入在开关关闭时停止——不再「关了总开关高级里还有东西生效」。
+- **按需恢复**：打开 App 自动拉起 daemon（既有机制）进入非驻留诊断形态（空闲 5 分钟自动退出）；重新打开主开关时 daemon 自动 bootstrap 回 launchd 常驻，策略恢复。
+
+### App
+
+- 修复结果弹窗识别新失败分支与 `re_engage_and_observe` 建议，提示「执行层未生效」与「保持插电观察，daemon 会自动重新下发」（zh-Hans/en 双语同步）。
+
 ## v1.17.2 - 2026-09-19
 
 本版主线：**MCL 真实偏好域定案回灌（真机轮 2）**。真机实锤：MCL 六键的真实偏好域为 `com.apple.smartcharging.topoffprotection`（mobile 用户）——PowerUISmartChargeManager 单例工厂块传给 `initWithDefaultsDomain:` 的 CFString 静态铁证（参照物校验通过）+ `su mobile -c 'defaults read'` 读出 `MCLFeatureState=1` 等实值；`com.apple.powerui.smartcharging`/`com.apple.powerui.smartcharge` 是 checkpoint 句柄/通知名残留，并非 MCL 键域。同版修掉 roothide 下活通道不可用与一类自相矛盾的失败归因。

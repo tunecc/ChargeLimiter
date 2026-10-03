@@ -8,6 +8,7 @@ workflows:
   - classic
 # 是否启用只读的环境感知恢复探针，同时作用于 Native 和 Classic；设为 false 可关闭自动工作流恢复。
 # ambient_resume: true | false
+# ambient_resume: true | false
 ambient_resume: true
 # Native 工作流配置，不会改变 Classic 的状态或行为。
 native:

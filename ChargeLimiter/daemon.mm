@@ -235,8 +235,13 @@ static void performAcccharge(BOOL flag);
 static void restoreSmartChargeForReset(NSString* reason);
 static void restoreThermalSimulationForReset(void);
 static void restoreAcceleratedChargeStateForReset(void);
+static void refreshMCLMaintainTimer(void);
+static NSDictionary* mclMaintainRuntimeSnapshot(void);
 static void resetBatteryStatusWithContext(BOOL restoreRuntimeSideEffects, NSString* reason);
 static void refreshTrollStoreBundleCheckTimer(void);
+static NSDictionary* CLMasterOffGateRequest(NSString* api, NSDictionary* nsreq);
+static void CLMasterOffShutdown(NSString* reason);
+static void CLMasterOnBootstrapSelf(void);
 
 @interface Service: NSObject<UNUserNotificationCenterDelegate>
 + (instancetype)inst;
@@ -1903,20 +1908,36 @@ static void rememberMCLStateBeforeDisable(void) {
     setLocalBool(kSmartChargeMCLStateBeforeDisableKey, getSmartChargeMCLEnabled());
 }
 
+// 官方「关→开」重置序列：等价于用户在系统设置里把 80% 上限关一次再开一次——
+// disableMCL 清 token 并取消 powerd 侧限制（固件 0x20237a41c clearChargeLimit），
+// enableMCL 清临时停用窗口（setTemporarilyDisabled(0,0)）、重写 MCLFeatureState 并
+// 重新 engage 80。必须绕过 setSmartChargeMCLEnabled 的读回短路：执行层残留坏状态
+// 的设备读回值与目标相同，短路会把还原变成空操作（v1.16.1 语义对修复场景不适用）。
+static void MCLResetViaOfficialToggle(BOOL endStateOn) {
+    CLMCLForceDisable();
+    if (endStateOn) {
+        CLMCLForceEnable();
+    }
+}
+
 static void restoreMCLStateAfterEnable(void) {
     if (!isSmartChargeMCLSupported()) {
         return;
     }
-    // 记忆键不存在 = CL 从未执行过永久停用、从未动过 MCL：不得回写，
-    // 否则会把从未停用用户的"80% 限制"（MCL=YES）按缺省值 NO 静默降级为
-    // "优化电池充电"（违背还原不得覆盖用户主动选择的约束）。
+    // 记忆键不存在 = 当前版本的 CL 从未执行过永久停用。两种情形：
+    // a) 旧版（未适配 iOS 17）执行过停用且未还原就卸载——旧版不写记忆键，
+    //    MCL 执行层残留坏状态（token 被取消/临时停用窗口），单纯 enable 修不动；
+    // b) 用户从未动过 MCL，或自己在系统设置里关着。
+    // 处置：代理读回开 → 走官方关→开重置（终态不变，仅重建执行层）；读回关 → 尊重现状。
     if (getlocalKV(kSmartChargeMCLStateBeforeDisableKey) == nil) {
+        if (getSmartChargeMCLEnabled()) {
+            MCLResetViaOfficialToggle(YES);
+        }
         return;
     }
-    BOOL mclBefore = getLocalBool(kSmartChargeMCLStateBeforeDisableKey, NO);
-    if (!setSmartChargeMCLEnabled(mclBefore)) {
-        NSFileErrorLog(@"MCL restore to %d failed", mclBefore);
-    }
+    // 记忆键存在：恢复永久停用前的用户选择。开 = 关→开全量重置（token/临时停用/
+    // engage 全部重建），关 = 仅关。
+    MCLResetViaOfficialToggle(getLocalBool(kSmartChargeMCLStateBeforeDisableKey, NO));
 }
 
 static void disableMCLForPermanentDisable(void) {
@@ -2005,29 +2026,6 @@ static NSDictionary* MCLDiffRegistryProps(NSDictionary* before, NSDictionary* af
         }
     }
     return @{@"changed": changed, @"limit_related": limitRelated};
-}
-
-// 独立诊断的层3 证据：候选键非空且命中 → registry_diff；候选键全缺席 → registry_diff + present=NO；
-// 候选清单为空（实验未找到稳定键）→ indirect。grade 反映探测方式，present 反映结果。
-static NSDictionary* MCLLayer3EvidenceStandalone(void) {
-    if (MCLRegistryEvidenceCandidateKeys().count == 0) {
-        return @{@"evidence_grade": @"indirect",
-                 @"present": @NO,
-                 @"note": @"no_stable_registry_key"};
-    }
-    NSDictionary* probed = MCLRegistryProbeEvidenceKeys();
-    for (NSString* key in MCLRegistryEvidenceCandidateKeys()) {
-        NSDictionary* item = probed[key];
-        if (item != nil && [item[@"present"] boolValue]) {
-            return @{@"evidence_grade": @"registry_diff",
-                     @"present": @YES,
-                     @"key": key,
-                     @"value": item[@"value"] ?: @""};
-        }
-    }
-    return @{@"evidence_grade": @"registry_diff",
-             @"present": @NO,
-             @"note": @"candidate_keys_absent"};
 }
 
 // 活通道优先合并（v1.17.1 修复轮 2 修订冲突规则）：磁盘直读对 cfprefsd 缓冲态全盲
@@ -2120,6 +2118,18 @@ static NSString* MCLVerdictFromDiagnostics(BOOL mclSupported, NSDictionary* laye
             if (!agentEnabled) {
                 return @"disconnected";          // 行3：agent 未载入/读回关闭（层1↔层2 脱节）
             }
+            // 行1/行2 的执行层判据：物理电流证据优先于注册表候选键（本轮候选键实验为空，
+            // 永远拿不到 registry_diff；而物理采样只要插电 + 电量到上限就可获得）。
+            // conclusive=YES 且 physically_limited=NO = 插着电、电量已 >=80%、电流却 >=120mA
+            // ——限制并未生效，层1/层2 双绿只是代理内存与偏好一致，与执行层无关。这正是
+            // 固件逆向定案的「engage 时快照 101 / clearChargeLimit 取消 powerd」后果：
+            // 三层全绿而实际充过头，必须判 disconnected 而不是 healthy_enabled。
+            if ([layer3[@"evidence_grade"] isEqualToString:@"physical_current"]
+                && [layer3[@"conclusive"] boolValue]
+                && [layer3[@"physically_limited"] isKindOfClass:[NSNumber class]]
+                && ![layer3[@"physically_limited"] boolValue]) {
+                return @"disconnected";          // 行2 物理通道版：执行层未在限制
+            }
             if (registryDiff && !layer3Present) {
                 return @"disconnected";          // 行2：层1/层2 开但执行层证据缺失
             }
@@ -2137,6 +2147,273 @@ static NSString* MCLVerdictFromDiagnostics(BOOL mclSupported, NSDictionary* laye
         return @"disconnected";
     }
     return @"pref_lost";                         // 行4 missing 分支
+}
+
+/* ---------------- iOS 17+ MCL 执行层物理证据（固件逆向 iPhone16,2 17.1 21B80） ---------------- */
+
+// 固件逆向定案（PowerUI/PowerUISmartChargeManager，见 re-notes）：
+//   1. engageManualChargeLimit 只在 engage 那一刻快照 mclTargetSoC=80 或 101，
+//      之后系统侧没有任何路径会重新 evaluate（handleNewBatteryLevelForMCL 只改 checkpoint，
+//      不重新下发 IOPSLimitBatteryLevel）。一旦落在 101（=不限制），限制就是静默失效。
+//   2. 101 的三个来源全部来自 PowerUIBatteryMitigationManager.additionalWaitTime：
+//      - additionalWaitTimeForQMaxWithInterval:  距上次 QMax 变更 >= 1209600s(14天)，
+//        且需 dod0AtLastQualQmax > 50000 且距 lastQualifiedQmaxDate >= 108000s(30h)
+//      - additionalWaitTimeForDOD0WithInterval:  距上次 DOD0 变更 >= 259200s(3天)
+//      - additionalWaitTimeWithProperties:       距 lastFullChargeDate > 1814400s(21天)
+//      任一 >= maxAdditionalWaitTimeForQMax(常量 99999.0) 即中和为 101。注意末项是
+//      **整体覆写**为 99999.0（不是相加）：additionalWaitTimeWithProperties 在越过 21 天
+//      线时直接把等待时间改成 99999.0，覆盖前两项的返回。
+//   3. clearChargeLimit 会调 IOPSLimitBatteryLevelCancel() 取消 powerd 侧 ChargeLimit。
+//      反汇编确认调用场合为 handleCallback 的**拔电沿**（externalConnected==NO 且
+//      lastPluginStatus!=externalConnected，0x20237173c 尾段）；handleCallback 里出现
+//      checkpoint ∈ {5,6} 的另一处判定只决定是否进入主处理体，并非 clearChargeLimit
+//      的调用条件——不得据此声称「电量跌出 checkpoint 会取消限制」。
+//   4. isMCLCurrentlyEnabled 只读代理内存标志 _manualChargeLimitEnabled——「读回 YES」与
+//      powerd 里是否有生效限制完全无关。这正是 v1.17.x 判定矩阵把受损设备误判为
+//      healthy_enabled 的根因：三层全绿而执行层早已不见。
+//   5. engage 失败不会回传：enableMCL 无条件置内存标志、写 MCLFeatureState、尾调 engage，
+//      engage 的四个静默分支（gate1/gate2/QMax 中和/token==0）都不影响返回值。
+//      因此「调用成功」同样不等于「限制在生效」。
+//   6. chargeLimitToken 由 engage 自愈：loadChargeLimitToken 在偏好键缺失（clearChargeLimit
+//      写 nil 即移除键）时自行创建新 token 并回写。所以客户端**不需要、也不应该** gate
+//      在 token 上——前置检查只会挡住唯一能自愈的这次 engage。
+//   7. mclTargetSoC 这个偏好键 PowerUI 从不写：engageManualChargeLimit 只赋 ivar，
+//      setMclTargetSoC: 是纯 ivar setter 且无调用者。CLMCLPrefKeys 保留该键只为白名单
+//      完整性，**不得**据此判定「上限值被中和」——域内恒缺失。
+//
+// 因此执行层证据不能只看注册表候选键（本轮实验仍未找到稳定键，MCLLayer3EvidenceCandidateKeys
+// 为空），必须补一条不依赖猜键的物理通道：插电 + SoC 已到上限 + 电池仍在被供能时，
+// 实际电流应已被压低。第一阶段已把「电流跨 120mA」定为 effective 的判据（停充控制面），
+// 同一物理量在这里就是 80% 限制是否真的生效的唯一硬证据。
+static const NSInteger kMCLExecutionAmperageThresholdMA = 120;
+// SoC 达到上限后电流才应被限制。取 80 与 MCL 默认上限对齐：80% 是电量被钳住后的稳态值，
+// 而 79→80 的过渡窗口内电流可能仍高（限制刚生效）。取 80 可把过渡窗口排除在「未限制」
+// 判定之外；维持器另外要求连续两次采样一致，进一步压低误触发。
+static const NSInteger kMCLExecutionTriggerSoC = 80;
+// 观测窗口上沿：>95% 时电量已冲过上限或处于满充保持，低电流判不出 MCL 好坏
+// （满电自然停充电流同样 <120mA），不得作为「限制生效」证据。
+static const NSInteger kMCLExecutionWindowSoCMax = 95;
+
+// 官方临时停用窗口证据（第五阶段逆向定案，固件 0x20236f898 / 0x20236f70c / 0x20237c400）：
+// PowerUISmartChargeManager 的 setTemporarilyDisabled:until:（0x20236f898）把 disabledUntil
+// （double，timeIntervalSinceReferenceDate）写进 com.apple.smartcharging.topoffprotection 域，
+// until 由 defaultDateToDisableUntilGivenDate:（0x20236f70c）算成「下一个早上 6:00」。
+// 设置来源只有 client:setState:withHandler:（0x20237c400）case 2/3（= 客户端 API
+// temporarilyEnableCharging / temporarilyDisableSmartCharging，通知「立即充电」按钮走 case 2，
+// 日志 "User requested immediate charge."）、initWithDefaults 恢复、以及清除路径。窗口 active
+// 期间 MCL 限制完全不执行（setCurrentState 2/3 + setCheckpoint 9/11 + 时间线 TemporarilyDisabled
+// 事件）；窗口结束（明早 6:00 dispatch_after）或之后首个插件沿 handleCallback 会自愈重新 engage。
+// 因此「80% 到点却照常充电」不一定是执行层失效，可能是系统自己的临时窗口——维持器不得对抗。
+// 只读 plist（与 CLMCLReadPrefs 同一路径），无 XPC、无子进程；键不在 F7 六键白名单内，
+// 仅作只读诊断，不写入。
+static NSDictionary* MCLTemporaryWindowEvidence(void) {
+    NSMutableDictionary* ev = [NSMutableDictionary dictionary];
+    ev[@"present"] = @NO;
+    ev[@"active"] = @NO;
+    NSString* path = @"/var/mobile/Library/Preferences/com.apple.smartcharging.topoffprotection.plist";
+    NSDictionary* dict = [NSDictionary dictionaryWithContentsOfFile:path];
+    if (dict == nil) {
+        ev[@"note"] = @"domain_plist_unreadable";
+        return ev;
+    }
+    id value = dict[@"disabledUntil"];
+    double refInterval = 0;
+    if ([value isKindOfClass:[NSNumber class]]) {
+        refInterval = [value doubleValue];
+    } else if ([value isKindOfClass:[NSDate class]]) {
+        refInterval = [value timeIntervalSinceReferenceDate];
+    } else {
+        ev[@"note"] = @"disabled_until_absent";
+        return ev;
+    }
+    if (refInterval <= 0.0) {
+        // 固件清除路径写 0/删键；<=0 视为无窗口。
+        ev[@"note"] = @"disabled_until_zero";
+        return ev;
+    }
+    ev[@"present"] = @YES;
+    ev[@"disabled_until_ts"] = @(refInterval + 978307200);   // Apple epoch → Unix epoch
+    time_t now = time(0);
+    ev[@"active"] = @((refInterval + 978307200.0) > (double)now);
+    ev[@"remaining_s"] = @(MAX(0, (time_t)(refInterval + 978307200.0) - now));
+    return ev;
+}
+
+// 电池计量中和门（engage_neutralize gate）。固件定案（0x202350354 / 0x2023506B0 /
+// 0x202350E24，第五轮真机回灌定案为 80% 不限流主因）：engageManualChargeLimit 那一刻
+// PowerUIBatteryMitigationManager.additionalWaitTime 任一命中即把限制值中和为 101
+// （= 不限制），日志原话 "charge to full" / "feature is disengaged"。三条判据全部
+// 只读 topoffprotection 域时间戳即可完全复算，无需 log stream：
+//   DOD0   距上次更新 >= 259200s（3 天）→ 中和（真机 2026-09-28：38.5 天，主因）
+//   QMax   距上次更新 >= 1209600s（14 天）且 lastQualQmaxDODValue > 50000
+//          且距 lastQualQmaxDate >= 108000s（30h）→ 中和
+//   满充   距上次满充 > 1814400s（21 天）→ 覆写中和
+// 中和后充满一次即可刷新 DOD0/QMax/满充时间，下一次 engage 恢复 80。
+static NSDictionary* MCLMitigationGateEvidence(void) {
+    NSMutableDictionary* ev = [NSMutableDictionary dictionary];
+    ev[@"will_neutralize"] = @NO;
+    ev[@"reasons"] = [NSNull null];
+    NSString* path = @"/var/mobile/Library/Preferences/com.apple.smartcharging.topoffprotection.plist";
+    NSDictionary* dict = [NSDictionary dictionaryWithContentsOfFile:path];
+    if (dict == nil) {
+        ev[@"note"] = @"domain_plist_unreadable";
+        return ev;
+    }
+    double nowApple = [NSDate date].timeIntervalSinceReferenceDate;
+    NSMutableArray* reasons = [NSMutableArray array];
+    NSNumber* dod0Ts = [dict[@"lastDOD0Update"] isKindOfClass:[NSNumber class]] ? dict[@"lastDOD0Update"] : nil;
+    if (dod0Ts != nil) {
+        double interval = nowApple - dod0Ts.doubleValue;
+        ev[@"dod0_age_days"] = @(interval / 86400.0);
+        if (interval >= 259200.0) {
+            [reasons addObject:@{ @"gate": @"dod0_stale",
+                                  @"age_days": @(interval / 86400.0),
+                                  @"threshold_days": @3 }];
+        }
+    }
+    NSNumber* qmaxTs = [dict[@"lastQMaxUpdate"] isKindOfClass:[NSNumber class]] ? dict[@"lastQMaxUpdate"] : nil;
+    NSNumber* qualQmaxDOD = [dict[@"lastQualQmaxDODValue"] isKindOfClass:[NSNumber class]] ? dict[@"lastQualQmaxDODValue"] : nil;
+    NSNumber* qualQmaxTs = [dict[@"lastQualQmaxDate"] isKindOfClass:[NSNumber class]] ? dict[@"lastQualQmaxDate"] : nil;
+    if (qmaxTs != nil) {
+        double interval = nowApple - qmaxTs.doubleValue;
+        ev[@"qmax_age_days"] = @(interval / 86400.0);
+        BOOL dodBig = qualQmaxDOD != nil && qualQmaxDOD.doubleValue > 50000.0;
+        BOOL qualAged = qualQmaxTs == nil || (nowApple - qualQmaxTs.doubleValue) >= 108000.0;
+        if (interval >= 1209600.0 && dodBig && qualAged) {
+            [reasons addObject:@{ @"gate": @"qmax_stale",
+                                  @"age_days": @(interval / 86400.0),
+                                  @"threshold_days": @14 }];
+        }
+    }
+    NSNumber* fullTs = [dict[@"lastFullChargeDate"] isKindOfClass:[NSNumber class]] ? dict[@"lastFullChargeDate"] : nil;
+    if (fullTs != nil) {
+        double interval = nowApple - fullTs.doubleValue;
+        ev[@"full_charge_age_days"] = @(interval / 86400.0);
+        if (interval > 1814400.0) {
+            [reasons addObject:@{ @"gate": @"full_charge_stale",
+                                  @"age_days": @(interval / 86400.0),
+                                  @"threshold_days": @21 }];
+        }
+    }
+    ev[@"reasons"] = reasons;
+    ev[@"will_neutralize"] = @(reasons.count > 0);
+    return ev;
+}
+
+// 物理执行层证据采样。一次 getBatInfo 调用，无额外 IO、无子进程——get_bat_info 1Hz
+// 轮询路径可承受。conclusive=NO 时不得据此下任何结论（未插电 / 电量未到上限 /
+// 采样失败都无法区分「限制生效」与「本来就不需要限制」）。
+static NSDictionary* MCLPhysicalExecutionEvidence(void) {
+    NSMutableDictionary* ev = [NSMutableDictionary dictionary];
+    ev[@"evidence_grade"] = @"physical_current";
+    ev[@"threshold_ma"] = @(kMCLExecutionAmperageThresholdMA);
+    ev[@"trigger_soc"] = @(kMCLExecutionTriggerSoC);
+    ev[@"present"] = @NO;
+    ev[@"conclusive"] = @NO;
+    ev[@"physically_limited"] = [NSNull null];
+    ev[@"limited"] = [NSNull null];
+    NSDictionary* info = nil;
+    if (0 != getBatInfo(&info, YES)) {
+        // 采样失败：退回 indirect，不得伪装成「未被限制」。
+        ev[@"evidence_grade"] = @"indirect";
+        ev[@"note"] = @"battery_info_unavailable";
+        return ev;
+    }
+    NSNumber* socObj = [info[@"CurrentCapacity"] isKindOfClass:[NSNumber class]] ? info[@"CurrentCapacity"] : nil;
+    NSNumber* extObj = [info[@"ExternalConnected"] isKindOfClass:[NSNumber class]] ? info[@"ExternalConnected"] : nil;
+    NSNumber* chargingObj = [info[@"IsCharging"] isKindOfClass:[NSNumber class]] ? info[@"IsCharging"] : nil;
+    NSNumber* amperageObj = [info[@"InstantAmperage"] isKindOfClass:[NSNumber class]] ? info[@"InstantAmperage"] : nil;
+    NSNumber* amperageFallbackObj = [info[@"Amperage"] isKindOfClass:[NSNumber class]] ? info[@"Amperage"] : nil;
+    if (socObj == nil || extObj == nil) {
+        ev[@"evidence_grade"] = @"indirect";
+        ev[@"note"] = @"battery_properties_incomplete";
+        return ev;
+    }
+    ev[@"soc"] = socObj;
+    ev[@"external_connected"] = extObj;
+    ev[@"is_charging"] = chargingObj ?: [NSNull null];
+    ev[@"present"] = @YES;
+    // 优先进阶瞬时电流；缺失时退回 Amperage（第一阶段停充判定同样两者都看）。
+    NSNumber* current = amperageObj ?: amperageFallbackObj;
+    ev[@"amperage"] = current ?: [NSNull null];
+    ev[@"amperage_key"] = amperageObj != nil ? @"InstantAmperage" : (amperageFallbackObj != nil ? @"Amperage" : [NSNull null]);
+    BOOL externalConnected = [extObj boolValue];
+    NSInteger soc = [socObj integerValue];
+    // 观测窗口 = [80, 95]：MCL 生效的稳态是电量钳在上限附近；>95 意味着电量已经
+    // 冲过上限（限流未生效）或处于满充保持——两种情况下低电流都判不出 MCL 好坏
+    // （真机 2026-09-29：100% 满电自然停充电流 81mA 被误判 physically_limited=true，
+    // verdict 假绿）。超出窗口一律 conclusive=NO，不下「生效/未生效」结论。
+    BOOL reachedTrigger = soc >= kMCLExecutionTriggerSoC && soc <= kMCLExecutionWindowSoCMax;
+    // 决定性条件：插电 + 已到上限阈值。IsCharging 只作参考不作为闸门——iOS 17 上
+    // 停充后 IsCharging 常保持 true（第一阶段硬结论），拿它当闸门会把有效限流误判成失效。
+    if (externalConnected && reachedTrigger && current != nil) {
+        NSInteger ma = [current integerValue];
+        if (ma < 0) {
+            ma = -ma;   // iOS 17 上 Amperage/InstantAmperage 极性随充放电翻转，取绝对值
+        }
+        BOOL limited = ma < kMCLExecutionAmperageThresholdMA;
+        ev[@"amperage_ma"] = @(ma);
+        ev[@"conclusive"] = @YES;
+        ev[@"physically_limited"] = @(limited);
+        ev[@"limited"] = @(limited);
+    } else {
+        NSString* note = externalConnected
+            ? (soc > kMCLExecutionWindowSoCMax ? @"soc_above_mcl_window_full_charge"
+               : (reachedTrigger ? @"amperage_unavailable" : @"soc_below_limit_trigger"))
+            : @"not_externally_connected";
+        ev[@"note"] = note;
+    }
+    return ev;
+}
+
+// 独立诊断的层3 证据：注册表候选键探测（既有，re-notes 稳定键实验）与物理电流证据（新增）
+// 组合。优先返回 registry_diff（键级证据最强）；候选键未命中时若物理通道可采样，
+// 返回 physical_current；两者都拿不到才退回 indirect（如实标注证据等级，不伪装）。
+static NSDictionary* MCLLayer3EvidenceStandalone(void) {
+    BOOL hasCandidates = MCLRegistryEvidenceCandidateKeys().count > 0;
+    NSDictionary* registryEvidence = nil;
+    if (hasCandidates) {
+        NSDictionary* probed = MCLRegistryProbeEvidenceKeys();
+        for (NSString* key in MCLRegistryEvidenceCandidateKeys()) {
+            NSDictionary* item = probed[key];
+            if (item != nil && [item[@"present"] boolValue]) {
+                registryEvidence = @{@"evidence_grade": @"registry_diff",
+                                     @"present": @YES,
+                                     @"key": key,
+                                     @"value": item[@"value"] ?: @""};
+                break;
+            }
+        }
+        if (registryEvidence == nil) {
+            registryEvidence = @{@"evidence_grade": @"registry_diff",
+                                 @"present": @NO,
+                                 @"note": @"candidate_keys_absent"};
+        }
+    }
+    NSDictionary* physical = MCLPhysicalExecutionEvidence();
+    // registry_diff 的语义是「执行层在场」；present=NO 与 physical 未采样都不能升级它。
+    if (hasCandidates && [registryEvidence[@"present"] boolValue]) {
+        NSMutableDictionary* composed = [registryEvidence mutableCopy];
+        composed[@"physical"] = physical;
+        return composed;
+    }
+    if ([physical[@"evidence_grade"] isEqualToString:@"physical_current"] && [physical[@"present"] boolValue]) {
+        NSMutableDictionary* composed = [physical mutableCopy];
+        composed[@"registry"] = hasCandidates ? registryEvidence : [NSNull null];
+        return composed;
+    }
+    if (hasCandidates) {
+        NSMutableDictionary* composed = [registryEvidence mutableCopy];
+        composed[@"physical"] = physical;
+        return composed;
+    }
+    // 无候选键且物理不可采样：保持 indirect 退化，附上物理通道的真实原因供人工判读。
+    NSMutableDictionary* indirect = [NSMutableDictionary dictionaryWithObjectsAndKeys:
+        @"indirect", @"evidence_grade",
+        @NO, @"present",
+        @"no_stable_registry_key", @"note",
+        physical, @"physical", nil];
+    return indirect;
 }
 
 // MCL 全链路诊断（单次收集 < 1s：plist 直读 + 既有 XPC 读回 + 候选键单查；不加轮询）。
@@ -2181,8 +2458,17 @@ static NSDictionary* collectMCLDiagnosticsWithLayer3(NSDictionary* layer3Overrid
     report[@"layer2"] = @{@"obc_status": @(obcStatus),
                           @"mcl_supported": @(agentSupported),
                           @"mcl_enabled": @(agentEnabled)};
-    // 层3：执行层证据（repair 编排可传前后 diff 覆盖；独立诊断走候选键探测）。
+    // 层3：执行层证据（repair 编排可传前后 diff 覆盖；独立诊断走候选键探测 + 物理电流采样）。
     report[@"layer3"] = layer3Override ?: MCLLayer3EvidenceStandalone();
+    // 官方临时停用窗口（disabledUntil 直读）：区分「系统自己的 TemporarilyDisabled 窗口」
+    // 与「真执行层失效」的关键证据；verdict 不因窗口单独翻转，由 maintain 层让位逻辑消费。
+    report[@"temporary_window"] = MCLTemporaryWindowEvidence();
+    // 电池计量中和门（DOD0/QMax/满充时间戳复算）：engage 会不会被中和成 101 当场可判，
+    // 命中即提示「先充满一次校准」——不用抓 log stream。
+    report[@"mitigation_gate"] = MCLMitigationGateEvidence();
+    // 维持器运行时快照（只读）：即便维持器没跑（旧系统 / 不支持 / 用户关闭）也如实上报，
+    // 便于把「执行层缺位却没有任何对抗动作」与「维持器在跑但仍在冷却」区分开。
+    report[@"maintain"] = mclMaintainRuntimeSnapshot();
     // 判定活通道优先（v1.17.1）：磁盘 Missing/ReadFailed 的键以活通道值为准合成
     // 判定视图；pref_lost 仅在双通道均无法证实 MCLFeatureState=true 时给出。
     // 报告 layer1 保留磁盘真值 + live 子字典，effective_channel 标注判定生效通道
@@ -2433,25 +2719,59 @@ static NSDictionary* performMCLLimitRepairInner(void) {
             // 代理内存已翻转但判定仍不健康（罕见：执行层证据缺失行），branch 保持
             // still_disconnected——写入已被证实，断点在层2/层3 侧。
         } else {
-            BOOL qmaxNeutralized = NO;
-            for (NSString* key in limitRelated) {
-                NSInteger afterValue = [limitRelated[key][@"after"] integerValue];
-                if (afterValue == 101 || afterValue == 0) {   // F4：0x65=101=不限制
-                    qmaxNeutralized = YES;
-                    break;
+            // 执行层物理证据（固件逆向定案 §10.4 新增）：偏好与代理层全绿、enableMCL 也已
+            // 受理，但插电 + 电量已到上限 + 电流未被压低——这是「engage 那一刻被中和为
+            // 101（QMax/DOD0/lastFullChargeDate 维护窗口）」或「powerd 侧 ChargeLimit 被
+            // IOPSLimitBatteryLevelCancel 取消」的可观测指纹，比 qmax_neutralized（依赖
+            // 注册表 diff，而候选键实验至今为空、永远拿不到）直接得多。取修复后即时采样：
+            // enableMCL 同步走到 IOPSLimitBatteryLevel，此刻仍未限制即为实证。
+            NSDictionary* physicalAfter = MCLPhysicalExecutionEvidence();
+            if ([physicalAfter[@"conclusive"] boolValue]
+                && [physicalAfter[@"physically_limited"] isKindOfClass:[NSNumber class]]
+                && ![physicalAfter[@"physically_limited"] boolValue]) {
+                // 中和门复算（第五轮真机定案主因）：DOD0/QMax/满充时间戳任一命中阈值，
+                // engage 就会被中和成 101——此时重下发多少次都无效，唯一出路是充满一次
+                // 校准后重新 engage。偏好时间戳可完全复算，无需 log stream。
+                NSDictionary* gate = MCLMitigationGateEvidence();
+                if ([gate[@"will_neutralize"] boolValue]) {
+                    branch = @"engage_neutralized_mitigation";
+                    advice = @"full_charge_calibration";
+                    branchNote = @"engage-time value neutralized to 101 by battery mitigation (see after.mitigation_gate reasons); full-charge calibration required before re-engage can take effect";
+                } else {
+                    branch = @"execution_layer_not_limited";
+                    // 归因边界（如实标注，不得过度归因）：本分支能证实的是「执行层未在限制」，
+                    // 但它无法区分剩余两种上游原因——powerd 侧的 ChargeLimit 被
+                    // IOPSLimitBatteryLevelCancel 取消、或官方临时停用窗口（disabledUntil）
+                    // 在修复后立刻被触发源重新设置。理由：value 与 cancel 都不经 cfprefsd
+                    // 落盘（mclTargetSoC 偏好键 PowerUI 从不写；IOPS* 状态只在 powerd 进程内），
+                    // 外部拿不到可区分的持久证据；窗口侧看 after.temporary_window。
+                    // 需要精确归因时须抓 `log stream` 的日志：
+                    //   "Cleared current charge limit token"        → cancel 路径
+                    //   "requests state: 2/3" + "Feature disabled until:" → 窗口触发源（clientName 即调用者）
+                    branchNote = @"plugged in above limit but amperage still high: powerd charge limit cancelled or official temp window re-engaged (see log stream to distinguish)";
+                    advice = @"re_engage_and_observe";
                 }
-            }
-            if (qmaxNeutralized) {
-                branch = @"qmax_neutralized";   // QMax 未就绪 → 限制值被中和，不下发限制
             } else {
-                // F5：engage 会自动创建并持久化 token（缺失不是断点）；修复后仍缺失/为 0
-                // 才是 "Charge token is 0, do not engage charge limit" 分支。
-                int tokenState = [afterStates[@"chargeLimitToken"] intValue];
-                id tokenValue = afterValues[@"chargeLimitToken"];
-                NSInteger tokenNumeric = [tokenValue respondsToSelector:@selector(integerValue)]
-                    ? [tokenValue integerValue] : 0;
-                if (tokenState != CLMCLPrefFound || tokenNumeric == 0) {
-                    branch = @"token_zero";
+                BOOL qmaxNeutralized = NO;
+                for (NSString* key in limitRelated) {
+                    NSInteger afterValue = [limitRelated[key][@"after"] integerValue];
+                    if (afterValue == 101 || afterValue == 0) {   // F4：0x65=101=不限制
+                        qmaxNeutralized = YES;
+                        break;
+                    }
+                }
+                if (qmaxNeutralized) {
+                    branch = @"qmax_neutralized";   // QMax 未就绪 → 限制值被中和，不下发限制
+                } else {
+                    // F5：engage 会自动创建并持久化 token（缺失不是断点）；修复后仍缺失/为 0
+                    // 才是 "Charge token is 0, do not engage charge limit" 分支。
+                    int tokenState = [afterStates[@"chargeLimitToken"] intValue];
+                    id tokenValue = afterValues[@"chargeLimitToken"];
+                    NSInteger tokenNumeric = [tokenValue respondsToSelector:@selector(integerValue)]
+                        ? [tokenValue integerValue] : 0;
+                    if (tokenState != CLMCLPrefFound || tokenNumeric == 0) {
+                        branch = @"token_zero";
+                    }
                 }
             }
         }
@@ -2509,6 +2829,204 @@ static NSDictionary* performMCLLimitRepair(void) {
         }
     }
     return result;
+}
+
+/* ---------------- iOS 17+ MCL 自动维持（固件逆向定案：系统侧无重新 evaluate 路径） ---------------- */
+
+// 固件逆向定案（PowerUI/PowerUISmartChargeManager）指出的真正缺口：MCL 的 80/101 值只在
+// engageManualChargeLimit 执行那一刻决定，之后系统侧没有任何路径会重新 evaluate——
+//   1. mclTargetSoC=101（QMax/DOD0/lastFullChargeDate 维护窗口中和，日志
+//      "QMax update needed, do not limit charging"）→ IOPSLimitBatteryLevel 收到 101=不限制，
+//      窗口过去后也不会有第二次 engage；
+//   2. clearChargeLimit 调 IOPSLimitBatteryLevelCancel() 取消 powerd 侧限制（拔电沿），
+//      重新插电时 handleCallback 才会再 engage；
+//   3. 排障三重奏（偏好/代理内存/token 全绿）永远无法暴露上面两条——isMCLCurrentlyEnabled
+//      只读代理内存标志，与 powerd 里是否有生效限制无关。
+//
+// 因此需要外部对抗：在「用户原意是 80% 限制」且「插电 + 电量已到上限 + 电流未被压低」
+// 同时成立时，重新走一次与设置 UI 等价的 enableMCL（PowerUISmartChargeClient 公共 selector，
+// 不引入新的私有入口），迫使系统侧重新 evaluate 当前维护窗口。
+//
+// 安全边界（缺一不可）：
+//   - 不新增常驻进程：挂在既有 daemon 的主 runloop NSTimer 上，随 daemon 生命周期走。
+//   - 不覆盖用户选择：只在代理内存层读回 MCL=YES 时才维持；用户显式关掉 MCL 时 classify
+//     为 off，维持器一概不动。永久停用系统优化充电（disableMCLForPermanentDisable）后
+//     读回为 NO，天然出局。
+//   - 不覆盖 CL 自己的策略：满充计划窗口 / 协调会话 / 手动修复进行中一律暂停。
+//   - 抑制误触发：要求物理证据连续两次一致（默认 60s 间隔 ≈ 1 分钟稳态），再加冷却期。
+static const NSTimeInterval kMCLMaintainIntervalSeconds = 60.0;
+static const NSTimeInterval kMCLMaintainCooldownSeconds = 300.0;
+static const NSInteger kMCLMaintainNegativeStreakRequired = 2;
+
+static NSTimer* g_mclMaintainTimer = nil;
+static time_t g_mclMaintainLastEngageTs = 0;
+static NSInteger g_mclMaintainNegativeStreak = 0;
+static NSMutableDictionary* g_mclMaintainRuntimeState = nil;
+
+// 维持器是否应该跑：iOS17+、MCL 受支持、CL 总开关开着、维持功能未被人为关闭。
+// 不在这里判断 MCL 开/关——那属于「用户选择」，由 tick 内读回值决定。
+static BOOL mclMaintainShouldRun(void) {
+    if (!g_enable) {
+        return NO;
+    }
+    if (!getLocalBool(@"mcl_auto_maintain", NO)) {
+        return NO;
+    }
+    if (@available(iOS 17.0, *)) {
+        // 继续
+    } else {
+        return NO;
+    }
+    return isSmartChargeMCLSupported();
+}
+
+static void mclMaintainRecordState(NSString* classification, NSDictionary* evidence, NSString* action) {
+    if (g_mclMaintainRuntimeState == nil) {
+        g_mclMaintainRuntimeState = [NSMutableDictionary dictionary];
+    }
+    g_mclMaintainRuntimeState[@"lastCheckAt"] = @(time(0));
+    g_mclMaintainRuntimeState[@"classification"] = classification ?: @"unknown";
+    if (evidence != nil) {
+        g_mclMaintainRuntimeState[@"lastEvidence"] = evidence;
+    }
+    g_mclMaintainRuntimeState[@"lastAction"] = action ?: @"none";
+    g_mclMaintainRuntimeState[@"lastEngageAt"] = @(g_mclMaintainLastEngageTs);
+    g_mclMaintainRuntimeState[@"negativeStreak"] = @(g_mclMaintainNegativeStreak);
+}
+
+// 单次维持检查：采样物理证据 → 分类 → 需要时重新 engage。
+// 返回值仅供日志/测试观察，不影响调用方。
+static NSString* mclMaintainTick(void) {
+    if (!mclMaintainShouldRun()) {
+        return @"inactive";
+    }
+    // 与 repair 的 busy 守卫同一语义：手动修复进行中时维持器让位，避免两个入口并发
+    // 下发（虽然 enableMCL: 幂等且整体由 @synchronized(Service.inst) 串行，但手动修复
+    // 会做前后快照/回滚，并发 tick 的写入可能落进它的回滚窗口）。
+    @synchronized (MCLRepairLock()) {
+        if (g_mclRepairRunning) {
+            g_mclMaintainNegativeStreak = 0;
+            mclMaintainRecordState(@"paused", nil, @"repair_in_progress");
+            return @"paused";
+        }
+    }
+    // 协调会话在场（temp-disable/restore）：OBC 状态语义正在被临时改写，维持器不得插手。
+    if (g_tempSmartChargeDisabledByCL || g_smartChargeCoordinationSessionID.length > 0) {
+        g_mclMaintainNegativeStreak = 0;
+        mclMaintainRecordState(@"paused", nil, @"coordination_active");
+        return @"paused";
+    }
+    if (g_fullChargeWindowActive) {
+        // 满充计划正在主动允许充到更高电量：此刻「电流未被压低」是预期行为，
+        // 维持器不得把用户排期的满充窗口顶掉。
+        g_mclMaintainNegativeStreak = 0;
+        mclMaintainRecordState(@"paused", nil, @"full_charge_window_active");
+        return @"paused";
+    }
+    // 用户选择优先：代理内存读回关 = 用户没要 80% 限制（含 CL 永久停用后的显式关）。
+    if (!getSmartChargeMCLEnabled()) {
+        g_mclMaintainNegativeStreak = 0;
+        mclMaintainRecordState(@"mcl_off_by_user", nil, @"none");
+        return @"mcl_off_by_user";
+    }
+    // 官方临时停用窗口在场（disabledUntil 未过期，明早 6:00 截止）：此刻「电流未被压低」
+    // 是系统明确的窗口语义而非执行层失效，窗口结束后的插件沿 handleCallback 会自愈重新
+    // engage。窗口内重下发 enableMCL 只会对抗系统语义（真机「修好一下又坏」的对抗循环
+    // 嫌疑路径），让位并如实记录窗口。
+    NSDictionary* window = MCLTemporaryWindowEvidence();
+    if ([window[@"active"] boolValue]) {
+        g_mclMaintainNegativeStreak = 0;
+        mclMaintainRecordState(@"official_temp_window", window, @"none");
+        return @"official_temp_window";
+    }
+    NSDictionary* evidence = MCLPhysicalExecutionEvidence();
+    // 非决定性采样（未插电 / 电量未到上限 / 采样失败）不得进入判定。
+    if (![evidence[@"conclusive"] boolValue]) {
+        g_mclMaintainNegativeStreak = 0;
+        mclMaintainRecordState(@"not_applicable", evidence, @"none");
+        return @"not_applicable";
+    }
+    if ([evidence[@"physically_limited"] boolValue]) {
+        // 执行层在场：限制正常生效，清零误触计数。
+        g_mclMaintainNegativeStreak = 0;
+        mclMaintainRecordState(@"healthy", evidence, @"none");
+        return @"healthy";
+    }
+    // 执行层缺位：插着电、电量 >=80%、电流 >=120mA。
+    g_mclMaintainNegativeStreak += 1;
+    mclMaintainRecordState(@"execution_layer_missing", evidence, @"pending");
+    if (g_mclMaintainNegativeStreak < kMCLMaintainNegativeStreakRequired) {
+        return @"pending";
+    }
+    // 冷却期：避免在边界抖动时反复重下发（enableMCL 是幂等系统级写，但每次都走 XPC
+    // 与偏好写入，仍应限量）。
+    time_t now = time(0);
+    if (g_mclMaintainLastEngageTs > 0 && (now - g_mclMaintainLastEngageTs) < (time_t)kMCLMaintainCooldownSeconds) {
+        return @"cooling_down";
+    }
+    // TOCTOU 复查：两次采样之间用户/CL 可能刚把 MCL 关掉（例如手动修复的 disable 路径），
+    // 直接重下发会把用户的选择覆盖回去。
+    if (!getSmartChargeMCLEnabled()) {
+        g_mclMaintainNegativeStreak = 0;
+        mclMaintainRecordState(@"mcl_off_by_user", evidence, @"none");
+        return @"mcl_off_by_user";
+    }
+    // 刻意不 gate 在 chargeLimitToken 上（firmware 定案，见文件头部注释第 6 条）：
+    // loadChargeLimitToken 在偏好键缺失时自行创建新 token 并回写，engage 才真正调用
+    // IOPSLimitBatteryLevel。前置检查 token==0 只会挡住唯一能自愈的那次 engage。
+    BOOL ok = CLMCLForceEnable();
+    g_mclMaintainLastEngageTs = now;
+    g_mclMaintainNegativeStreak = 0;
+    mclMaintainRecordState(ok ? @"re_engaged" : @"re_engage_failed", evidence,
+                           ok ? @"force_enable" : @"force_enable_failed");
+    // 时间线留痕：与 mcl_repair_* 同一 policy 事件时间线，方便诊断页与历史页看到维持动作。
+    appendMCLRepairCoordinationEvent(@"mcl_maintain_re_engaged",
+                                     @{@"trigger": @"execution_layer_missing",
+                                       @"success": @(ok),
+                                       @"soc": evidence[@"soc"] ?: [NSNull null],
+                                       @"amperage_key": evidence[@"amperage_key"] ?: [NSNull null],
+                                       @"amperage_ma": evidence[@"amperage_ma"] ?: [NSNull null]});
+    return ok ? @"re_engaged" : @"re_engage_failed";
+}
+
+static void refreshMCLMaintainTimer(void) {
+    BOOL shouldRun = mclMaintainShouldRun();
+    if (!shouldRun) {
+        if (g_mclMaintainTimer != nil) {
+            [g_mclMaintainTimer invalidate];
+            g_mclMaintainTimer = nil;
+        }
+        g_mclMaintainNegativeStreak = 0;
+        return;
+    }
+    if (g_mclMaintainTimer != nil) {
+        return;
+    }
+    g_mclMaintainTimer = [NSTimer scheduledTimerWithTimeInterval:kMCLMaintainIntervalSeconds
+                                                       repeats:YES
+                                                         block:^(NSTimer* timer) {
+        @synchronized (Service.inst) {
+            mclMaintainTick();
+        }
+    }];
+    [[NSRunLoop mainRunLoop] addTimer:g_mclMaintainTimer forMode:NSRunLoopCommonModes];
+}
+
+// 诊断报告用的维持器运行时快照（只读：get_mcl_diagnostics / get_bat_info 直接嵌入）。
+static NSDictionary* mclMaintainRuntimeSnapshot(void) {
+    NSMutableDictionary* snap = [NSMutableDictionary dictionary];
+    snap[@"enabled"] = @(getLocalBool(@"mcl_auto_maintain", NO));
+    snap[@"interval_seconds"] = @(kMCLMaintainIntervalSeconds);
+    snap[@"cooldown_seconds"] = @(kMCLMaintainCooldownSeconds);
+    snap[@"negative_streak_required"] = @(kMCLMaintainNegativeStreakRequired);
+    snap[@"amperage_threshold_ma"] = @(kMCLExecutionAmperageThresholdMA);
+    snap[@"trigger_soc"] = @(kMCLExecutionTriggerSoC);
+    snap[@"running"] = @(g_mclMaintainTimer != nil);
+    snap[@"lastEngageAt"] = @(g_mclMaintainLastEngageTs);
+    if (g_mclMaintainRuntimeState != nil) {
+        [snap addEntriesFromDictionary:g_mclMaintainRuntimeState];
+    }
+    return snap;
 }
 
 static void restoreSmartChargeForReset(NSString* reason) {
@@ -3203,6 +3721,10 @@ static NSMutableDictionary* getFilteredMDic(NSDictionary* dic, NSArray* filter) 
 }
 
 static void updateStatistics() {
+    // 主开关关闭（master-off B5）：非驻留形态不写历史统计，「所有功能禁用」包含数据采集。
+    if (!g_enable) {
+        return;
+    }
     if (!historyStatsEnabled()) {
         return;
     }
@@ -3637,6 +4159,11 @@ static NSDictionary* performFullSmartChargeRestore(NSString* reason) {
 }
 
 static void recoverSmartChargeCoordinationOnBootstrap(void) {
+    // 主开关关闭（master-off B5）：非驻留诊断形态不做任何系统写；协调会话残留由
+    // 主开关关闭路径的全量还原收尾，这里不得替用户重开/重关系统优化充电。
+    if (!g_enable) {
+        return;
+    }
     loadSmartChargeCoordinationRuntimeState();
     if (!g_tempSmartChargeDisabledByCL) {
         return;
@@ -3683,6 +4210,12 @@ static BOOL policyNeedsSmartChargeCoordination(NSString* policyState) {
 }
 
 static void selfHealSmartChargeOnBootstrap(void) {
+    // 主开关关闭（master-off B5）：非驻留形态禁止擅自打开系统优化充电——这正是
+    // 「关了总开关高级里还有东西生效」的主路径之一。自愈仅在用户重新打开主开关后
+    // 的常驻态执行。
+    if (!g_enable) {
+        return;
+    }
     // 启动自愈：若本地配置已放行(disable_smart_charge=NO)但系统的「优化充电」仍
     // 处于关闭态（常见于旧版永久停用的残留），自动重新打开，让已卡死的用户
     // 装新包重启 daemon 后无需任何手动操作即可恢复。
@@ -4124,6 +4657,10 @@ static void initConf(BOOL reset) {
             @"lang": @"en",
             @"floatwnd_auto": @NO,
             @"log_level": @"normal",
+            // iOS 17+ MCL 80% 限制自动维持（固件逆向定案：系统侧无重新 evaluate 路径）。
+            // 默认开：只在用户原意是 80% 限制且插电+电量已到上限但电流未被压低时，
+            // 重新走一次与设置 UI 等价的 enableMCL。用户显式关掉 MCL 时维持器不动。
+            @"mcl_auto_maintain": @NO,
         }];
         for (NSString* key in def_mdic) {
             id val = getAllKV()[key];
@@ -4134,6 +4671,7 @@ static void initConf(BOOL reset) {
     }
     g_enable = getLocalBool(@"enable", YES);
     refreshHoldMonitorTimer();
+    refreshMCLMaintainTimer();
     loadPolicyEventHistoryRuntimeState();
     loadSmartChargeCoordinationRuntimeState();
 }
@@ -4194,9 +4732,148 @@ static void syncDaemonDocumentsForRequest(NSDictionary* nsreq) {
            oldDbPath ?: @"", newDbPath ?: @"", dbExists);
 }
 
+/* ---------------- 主开关全禁用（master-off-full-disable，用户决定 D1/D2/D3） ----------------
+ * 目标语义：主页面「启用」关闭 = 软件对系统零干预 + 后台零驻留。
+ * - B1/B2：运行中收到 enable=NO → 全量还原（与 daemon_exit 同级、幂等）→ 越狱形态从
+ *   launchd 注销自身（bootout 以 SIGTERM 终止本进程，atexit 不再执行，无重复还原）→ 退出；
+ *   TrollStore 无 launchd，直接退出（App 打开时按需拉起）。
+ * - B3：launchd 拉起（开机自启，ppid==1）时若 g_enable=NO → 还原后自注销退出，保证零驻留；
+ *   App spawn 的实例（ppid!=1）保留为非驻留诊断形态，继续白名单服务（B4）。
+ * - B5：g_enable=NO 时 HTTP 只放行「只读诊断 + 修复/还原 + 重开开关」，其余写入拒绝；
+ *   启动自愈与统计写入一并停止。
+ * - B6：重新打开主开关时越狱形态 bootstrap 自我注册回 launchd 常驻。
+ * launchd plist 文件不改（KeepAlive/RunAtLoad 保持 true）：设备重启后 launchd 拉起一次，
+ * 由 B3 自检退出；bootout/bootstrap 均用 service target 形式（system/<label>），无需解析
+ * plist 路径的仅 bootout。 */
+
+// launchctl 尽力而为执行；返回 rc，-1=launchctl 不可用。daemon 自身已 root，无需再提权。
+static int CLMasterLaunchctl(NSArray* args) {
+    NSString* jbRoot = CLDaemonJbRootPath();
+    NSMutableArray* candidates = [NSMutableArray arrayWithObjects:
+        @"/bin/launchctl", @"/usr/bin/launchctl", nil];
+    if (jbRoot.length > 0) {
+        [candidates addObject:[jbRoot stringByAppendingPathComponent:@"bin/launchctl"]];
+        [candidates addObject:[jbRoot stringByAppendingPathComponent:@"usr/bin/launchctl"]];
+    }
+    NSString* launchctlPath = nil;
+    for (NSString* candidate in candidates) {
+        if ([[NSFileManager defaultManager] isExecutableFileAtPath:candidate]) {
+            launchctlPath = candidate;
+            break;
+        }
+    }
+    if (launchctlPath == nil) {
+        return -1;
+    }
+    NSString* out = nil;
+    NSString* err = nil;
+    return spawn([@[launchctlPath] arrayByAddingObjectsFromArray:args], &out, &err, nil, 0, nil);
+}
+
+// B2：从 launchd 注销自身（service target 形式）。返回 0=已注销（本进程随即被 SIGTERM
+// 终止，正常情况下读不到返回值）；非 0=job 未注册/launchctl 不可用，调用方直接 exit。
+static int CLMasterBootoutSelf(void) {
+    return CLMasterLaunchctl(@[@"bootout", @"system/com.chargelimiter.mod"]);
+}
+
+// B6：恢复 launchd 常驻注册。已注册（print rc==0）则跳过；TrollStore 无 launchd 直接返回。
+static void CLMasterOnBootstrapSelf(void) {
+    if (g_jbtype == JBTYPE_TROLLSTORE) {
+        return;
+    }
+    int printRc = CLMasterLaunchctl(@[@"print", @"system/com.chargelimiter.mod"]);
+    if (printRc == 0) {
+        return;   // 常驻态已在 launchd 注册
+    }
+    NSString* jbRoot = CLDaemonJbRootPath();
+    NSMutableArray* plists = [NSMutableArray arrayWithObject:
+        @"/Library/LaunchDaemons/com.chargelimiter.mod.plist"];
+    if (jbRoot.length > 0) {
+        [plists addObject:[jbRoot stringByAppendingPathComponent:
+            @"Library/LaunchDaemons/com.chargelimiter.mod.plist"]];
+    }
+    for (NSString* plist in plists) {
+        if (![[NSFileManager defaultManager] fileExistsAtPath:plist]) {
+            continue;
+        }
+        int rc = CLMasterLaunchctl(@[@"bootstrap", @"system", plist]);
+        // EPERM 等失败不阻塞开关状态：本次进程内继续服务，下次启动/重启后自愈。
+        NSLog2(@"%@ master_on_bootstrap plist=%@ rc=%d", log_prefix, plist, rc);
+        return;
+    }
+    NSLog2(@"%@ master_on_bootstrap no_plist_found jbtype=%d", log_prefix, g_jbtype);
+}
+
+// 非驻留诊断形态的空闲退出阈值（B4）：>充电控制探针长会话上限（180s），避免误杀。
+static const time_t kMasterIdleExitSeconds = 300;
+static volatile time_t g_lastMasterOffRequestTs = 0;
+
+// B1：主开关关闭的全量还原（与 daemon_exit 同级，幂等），随后按 B2 退出。不返回。
+static void CLMasterOffShutdown(NSString* reason) {
+    NSLog2(@"%@ master_off_shutdown reason=%@ jbtype=%d pid=%d ppid=%d",
+           log_prefix, reason, g_jbtype, getpid(), getppid());
+    resetBatteryStatusWithContext(YES, reason);
+    if (g_jbtype != JBTYPE_TROLLSTORE) {
+        // bootout 由 launchd 向本进程发 SIGTERM：越狱形态未忽略 SIGTERM（仅 TrollStore
+        // 忽略），进程终止于此且 atexit 不执行——还原已在上方完成，无重复写。
+        int rc = CLMasterBootoutSelf();
+        // 走到这里说明 SIGTERM 未按预期终止（防御）：job 已注销，直接退出不会被重拉。
+        NSLog2(@"%@ master_off_bootout rc=%d fallback_exit", log_prefix, rc);
+    }
+    exit(0);
+}
+
+// B5：g_enable=NO 时 HTTP 面白名单。返回非 nil = 拒绝（调用方直接回包）；nil = 放行。
+// 保留：只读诊断、修复/还原类（用户决定 D1——软件的核心用途）、重开主开关。
+static NSDictionary* CLMasterOffGateRequest(NSString* api, NSDictionary* nsreq) {
+    if (g_enable) {
+        return nil;
+    }
+    static NSSet* allowedAPIs = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        allowedAPIs = [NSSet setWithArray:@[
+            // 只读诊断
+            @"get_conf", @"get_bat_info", @"get_mcl_diagnostics", @"get_statistics",
+            @"get_policy_events", @"get_diag", @"reload_conf",
+            // 修复/还原类（D1）
+            @"restore_smart_charge", @"repair_mcl_limit", @"charge_control_probe",
+            // App 自身数据管理（不触碰系统状态；真机回灌：主开关关闭时用户
+            // 需要能关闭/清空历史记录，否则统计页表现为「关不掉删不掉」）
+            @"clear_statistics",
+        ]];
+    });
+    if ([allowedAPIs containsObject:api]) {
+        return nil;
+    }
+    if ([api isEqualToString:@"set_conf"]) {
+        NSString* key = nsreq[@"key"];
+        if ([key isEqualToString:@"enable"]) {
+            return nil;   // 重开主开关（B6）
+        }
+        if ([key isEqualToString:@"disable_smart_charge"] && ![nsreq[@"val"] boolValue]) {
+            return nil;   // 关闭「永久停用」= 还原语义，允许（D1 同类）
+        }
+        // App 本地数据/UI 配置：不构成系统干预，拒绝会让用户「关不掉」
+        if ([key isEqualToString:@"history_stats_enabled"] || [key isEqualToString:@"lang"]) {
+            return nil;
+        }
+        return @{@"status": @(-403),
+                 @"error": @"master_switch_off",
+                 @"key": key ?: @""};
+    }
+    return @{@"status": @(-403), @"error": @"master_switch_off"};
+}
+
 NSDictionary* handleReq(NSDictionary* nsreq) {
+    g_lastMasterOffRequestTs = time(0);   // 非驻留形态空闲退出计时（B4）
     syncDaemonDocumentsForRequest(nsreq);
     NSString* api = nsreq[@"api"];
+    // 主开关关闭：白名单门（B5）。放行 nil；拒绝直接回包，不落任何系统写。
+    NSDictionary* masterGate = CLMasterOffGateRequest(api, nsreq);
+    if (masterGate != nil) {
+        return masterGate;
+    }
     if ([api isEqualToString:@"get_conf"]) {
         NSString* key = nsreq[@"key"];
         if (key == nil) {
@@ -4242,9 +4919,13 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             g_enable = [val boolValue];
             refreshFullChargeScheduleTimer(0);
             refreshHoldMonitorTimer();
+            refreshMCLMaintainTimer();
             if (!g_enable) {
-                resetBatteryStatus();
-                tryRestoreSmartChargeAfterCoordination(@"daemon_disabled");
+                // 主开关关闭（用户决定 D2/D3）：全量还原系统状态后退出进程并从 launchd
+                // 注销，后台零驻留。resetBatteryStatus() 旧路径（restore=NO）会留下 MCL/
+                // thermal 等残留，必须走完整还原（与 daemon_exit 同级）。
+                CLMasterOffShutdown(@"master_off_set_conf");
+                return @{@"status": @0};   // unreachable：Shutdown 不返回
             } else { // 启用时检查
                 BOOL disableSmartCharge = getLocalBool(@"disable_smart_charge", NO);
                 if (disableSmartCharge) {
@@ -4255,6 +4936,9 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
                     }
                 }
                 evaluateFullChargeSchedule(YES);
+                // B6：非驻留形态（App 按需拉起）重开主开关时，恢复 launchd 常驻注册；
+                // 常驻态已注册则幂等跳过；TrollStore 无 launchd。
+                CLMasterOnBootstrapSelf();
             }
         } else if ([key isEqualToString:@"disable_smart_charge"]) {
             // 关闭「永久停用系统优化充电」时，必须把系统优化充电重新打开。
@@ -4262,6 +4946,13 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             if (![val boolValue] && !isSmartChargeEnable()) {
                 setSmartChargeEnable(YES);
                 restoreMCLStateAfterEnable();
+            }
+            refreshMCLMaintainTimer();
+        } else if ([key isEqualToString:@"mcl_auto_maintain"]) {
+            // 维持开关切换：立即重排定时器，并在关闭时清零误触计数（避免遗留半程状态）。
+            refreshMCLMaintainTimer();
+            if (![val boolValue]) {
+                g_mclMaintainNegativeStreak = 0;
             }
         } else if ([key isEqualToString:@"action"]) {
             if ([val isEqualToString:@"noti"]) {
@@ -4897,6 +5588,36 @@ void detectUPSBattery() {
 - (void)serve {
     initConf(NO);
     initDB(nil);
+
+    // B3：主开关关闭 + launchd 拉起（设备重启自启场景，ppid==1）→ 完成还原后自注销退出，
+    // 保证后台零驻留。App spawn 的实例（ppid!=1）保留为非驻留诊断形态（B4），继续白名单服务。
+    if (!g_enable && getppid() == 1 && g_jbtype != JBTYPE_TROLLSTORE) {
+        CLMasterOffShutdown(@"master_off_boot_check");
+        return;   // unreachable：Shutdown 不返回
+    }
+    // B4：主开关关闭 + App spawn 的非驻留诊断形态——空闲自动退出（App 退后台后不留孤儿
+    // 进程；下次 App 请求失败时既有机制自动重新 spawn）。阈值 300s 覆盖充电控制探针的
+    // 120s/180s 长会话；收到 enable=YES 后 g_enable 翻转，退出条件不再成立（常驻化）。
+    if (!g_enable) {
+        static dispatch_source_t g_masterIdleMonitor = nil;
+        static dispatch_once_t onceToken;
+        dispatch_once(&onceToken, ^{
+            g_masterIdleMonitor = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+                                                         dispatch_get_global_queue(0, 0));
+            dispatch_source_set_timer(g_masterIdleMonitor,
+                                      dispatch_time(DISPATCH_TIME_NOW, (int64_t)kMasterIdleExitSeconds * NSEC_PER_SEC),
+                                      (uint64_t)kMasterIdleExitSeconds * NSEC_PER_SEC,
+                                      (uint64_t)5 * NSEC_PER_SEC);
+            dispatch_source_set_event_handler(g_masterIdleMonitor, ^{
+                if (!g_enable && (time(0) - g_lastMasterOffRequestTs) >= kMasterIdleExitSeconds) {
+                    NSLog2(@"%@ master_off_idle_exit idle=%lds", log_prefix,
+                           (long)(time(0) - g_lastMasterOffRequestTs));
+                    exit(0);   // atexit 兜底再做一次幂等全量还原
+                }
+            });
+            dispatch_resume(g_masterIdleMonitor);
+        });
+    }
 
     // 使用自己的简易 HTTP 服务器
     static CLSimpleHTTPServer* _webServer = nil;

@@ -2794,7 +2794,7 @@ static NSString* CLDaemonPathForApp(void) {
 }
 
 // 从自身 exe 截取 .jbroot-XXX 前缀（launchctl plist 候选路径推导用）
-static NSString* CLDaemonJbRootPath(void) {
+NSString* CLDaemonJbRootPath(void) {
     NSString* exe = getSelfExePath();
     NSArray* parts = [exe componentsSeparatedByString:@"/"];
     NSMutableArray* kept = [NSMutableArray array];

@@ -1922,6 +1922,30 @@ static const NSInteger CLAdvAccChargeLPMTag = 405;
     if ([result[@"advice"] isEqualToString:@"charge_test_now"]) {
         msg = [msg stringByAppendingFormat:@"\n%@", CLL(@"服务端已受理并持久化尝试，请插电充电实测 80%。")];
     }
+    // 执行层物理证据（固件逆向 iPhone16,2 17.1 定案）：偏好与代理层全绿、服务端也已
+    // 受理，但插电且电量已到上限时电流未被压低——限制并未真正生效。
+    if ([branch isEqualToString:@"execution_layer_not_limited"]) {
+        msg = [msg stringByAppendingFormat:@"\n%@",
+               CLL(@"执行层未生效：已插电且电量达到上限，但电流未被压低（上限值被系统维护窗口中和或已被取消）。")];
+    }
+    // v1.17.3 中和门（第五轮真机定案主因）：DOD0/QMax/满充时间戳任一过阈值，engage
+    // 即被系统中和为 101（官方校准逻辑，固件日志原话 charge to full）——重下发无效，
+    // 必须先充满一次校准再重新 engage。
+    if ([branch isEqualToString:@"engage_neutralized_mitigation"]) {
+        msg = [msg stringByAppendingFormat:@"\n%@", CLL(@"电池校准数据已过期（DOD0/QMax 超阈值），系统在限制生效前会故意先充满校准。请先关闭 80% 上限，把电池用到 30% 以下并静置半小时，再充满一次到 100%，然后重新开启 80% 上限并拔插一次电源。")];
+        NSDictionary *gate = result[@"after"][@"mitigation_gate"] ?: result[@"before"][@"mitigation_gate"];
+        if ([gate isKindOfClass:[NSDictionary class]] && gate[@"dod0_age_days"] != nil) {
+            msg = [msg stringByAppendingFormat:@"\n%@",
+                   [NSString stringWithFormat:CLL(@"当前 DOD0 已 %.1f 天未校准（阈值 3 天）。"), [gate[@"dod0_age_days"] doubleValue]]];
+        }
+        return msg;
+    }
+    if ([result[@"advice"] isEqualToString:@"full_charge_calibration"]) {
+        msg = [msg stringByAppendingFormat:@"\n%@", CLL(@"建议：先充满一次电池做校准，再重新开启 80% 上限。")];
+    }
+    if ([result[@"advice"] isEqualToString:@"re_engage_and_observe"]) {
+        msg = [msg stringByAppendingFormat:@"\n%@", CLL(@"建议：保持插电观察数分钟，daemon 会自动重新下发；仍无效请重启后重试。")];
+    }
     // v1.17.1 回灌证据：失败分支追加两行关键证据——服务端调用受理（force_enable_ok）
     // 与代理内存标志（修复后 after.layer2.mcl_enabled），真机回传时直接判读
     // 「服务端写没写 / 代理内存翻没翻」，不再只看 failure_branch 单值。
@@ -2233,9 +2257,20 @@ static const NSInteger CLAdvAccChargeLPMTag = 405;
                                              selector:@selector(configDidUpdate)
                                                  name:CLConfigDidUpdateNotification
                                                object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(applyMasterSwitchLockState)
+                                                 name:CLDaemonStatusDidChangeNotification
+                                               object:nil];
     if ([self normalizeAdvancedOptionInterlocksIfNeeded]) {
         [self reloadContentRows];
     }
+    [self applyMasterSwitchLockState];
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    // 从主页切完总开关回来时同步锁态（开关翻转不经本页配置通知）
+    [self applyMasterSwitchLockState];
 }
 
 - (void)setupScrollView {
@@ -2309,6 +2344,71 @@ static const NSInteger CLAdvAccChargeLPMTag = 405;
         }
     } else {
         [self reloadContentRows];
+    }
+    [self applyMasterSwitchLockState];
+}
+
+/* ---------------- 主开关灰锁（master-off-full-disable B7，用户决定 D1） ----------------
+ * 主页面「启用」关闭时：高级设置全部功能行禁用（daemon 侧白名单是最终防线，此处为 UX）；
+ * 保留可用：「还原系统优化充电」行（软件的核心修复用途）与只读提示行；
+ * 「重置所有设置」一并禁用（其 daemon API 同样被白名单拒绝）。 */
+
+static const NSInteger CLAdvMasterOffBannerTag = 901;
+
+- (BOOL)masterSwitchCurrentlyOff {
+    return ![[CLBatteryManager shared] enabled];
+}
+
+- (void)applyMasterSwitchLockState {
+    BOOL locked = [self masterSwitchCurrentlyOff];
+
+    // 顶部提示 banner：锁定时插入，解锁时移除
+    UIView *existingBanner = [self.view viewWithTag:CLAdvMasterOffBannerTag];
+    if (locked && existingBanner == nil) {
+        UIView *banner = [[UIView alloc] init];
+        banner.tag = CLAdvMasterOffBannerTag;
+        banner.translatesAutoresizingMaskIntoConstraints = NO;
+        banner.backgroundColor = [UIColor secondarySystemGroupedBackgroundColor];
+        banner.layer.cornerRadius = 12;
+        UILabel *label = [[UILabel alloc] init];
+        label.translatesAutoresizingMaskIntoConstraints = NO;
+        label.text = CLL(@"主开关已关闭：所有充电控制功能已停用并已还原系统状态。仅「还原系统优化充电」等修复工具可用。");
+        label.font = [UIFont systemFontOfSize:13];
+        label.textColor = [UIColor secondaryLabelColor];
+        label.numberOfLines = 0;
+        [banner addSubview:label];
+        [NSLayoutConstraint activateConstraints:@[
+            [label.topAnchor constraintEqualToAnchor:banner.topAnchor constant:12],
+            [label.bottomAnchor constraintEqualToAnchor:banner.bottomAnchor constant:-12],
+            [label.leadingAnchor constraintEqualToAnchor:banner.leadingAnchor constant:16],
+            [label.trailingAnchor constraintEqualToAnchor:banner.trailingAnchor constant:-16],
+        ]];
+        [self.mainStack insertArrangedSubview:banner atIndex:0];
+    } else if (!locked && existingBanner != nil) {
+        [existingBanner removeFromSuperview];
+    }
+
+    // 遍历功能行：除白名单 tag 外全部禁用/恢复
+    NSArray<UIView *> *cards = [self.mainStack.arrangedSubviews copy];
+    for (UIView *view in cards) {
+        if ([view isKindOfClass:[UIButton class]]) {
+            // 重置所有设置按钮
+            UIButton *button = (UIButton *)view;
+            button.enabled = !locked;
+            button.alpha = locked ? 0.45 : 1.0;
+            continue;
+        }
+        if (![view isKindOfClass:[CLAdvSettingsCard class]]) {
+            continue;   // banner 等非卡片
+        }
+        CLAdvSettingsCard *card = (CLAdvSettingsCard *)view;
+        for (UIView *row in card.contentStack.arrangedSubviews) {
+            NSInteger tag = row.tag;
+            BOOL keepInteractive = (tag == CLAdvRestoreSmartChargeTag);
+            BOOL shouldLock = locked && !keepInteractive;
+            row.userInteractionEnabled = shouldLock ? NO : YES;
+            row.alpha = shouldLock ? 0.45 : 1.0;
+        }
     }
 }
 

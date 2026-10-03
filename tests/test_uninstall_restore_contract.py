@@ -172,3 +172,54 @@ class UninstallRestoreContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MCLOfficialResetContractTests(unittest.TestCase):
+    """官方「关→开」MCL 重置序列（旧版残留场景修复）。
+
+    旧版（未适配 iOS 17）执行过永久停用且未还原就卸载：不写记忆键、MCL 执行层
+    残留坏状态（token 被 IOPSLimitBatteryLevelCancel 取消/临时停用窗口），单纯
+    force enable 修不动——必须先 disableMCL（清 token + 取消 powerd 侧限制）
+    再 enableMCL（清临时停用 + 重新 engage 80），等价于系统设置里关一次开一次。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.daemon_mm = (ROOT / "ChargeLimiter" / "daemon.mm").read_text()
+
+    def test_official_toggle_helper_defined(self):
+        body = function_body(self.daemon_mm, "static void MCLResetViaOfficialToggle(BOOL endStateOn) {")
+        self.assertIn("CLMCLForceDisable()", body)
+        self.assertIn("CLMCLForceEnable()", body)
+        # 关在前、开在后：disable 清 token 后 enable 才能重建
+        self.assertLess(body.index("CLMCLForceDisable()"), body.index("CLMCLForceEnable()"))
+
+    def test_restore_uses_toggle_not_short_circuiting_setter(self):
+        # 还原不得走 setSmartChargeMCLEnabled（读回相同即短路）——残留坏状态的
+        # 设备读回与目标相同，短路会把还原变成空操作。
+        body = function_body(self.daemon_mm, "static void restoreMCLStateAfterEnable(void) {")
+        self.assertIn("MCLResetViaOfficialToggle", body)
+        self.assertNotIn("setSmartChargeMCLEnabled(", body)
+
+    def test_missing_memory_key_with_mcl_on_still_resets(self):
+        # 记忆键不存在 + 读回开（旧版残留的典型形态）：必须重置，不得直接 return。
+        body = function_body(self.daemon_mm, "static void restoreMCLStateAfterEnable(void) {")
+        guard = body.index("getlocalKV(kSmartChargeMCLStateBeforeDisableKey) == nil")
+        tail = body[guard:]
+        self.assertIn("getSmartChargeMCLEnabled()", tail)
+        self.assertIn("MCLResetViaOfficialToggle(YES)", tail)
+
+    def test_missing_memory_key_with_mcl_off_untouched(self):
+        # 读回关（用户自己在系统设置里关着）：不得擅自打开。
+        body = function_body(self.daemon_mm, "static void restoreMCLStateAfterEnable(void) {")
+        guard = body.index("getlocalKV(kSmartChargeMCLStateBeforeDisableKey) == nil")
+        tail = body[guard:]
+        self.assertIn("return;", tail)
+        reset_idx = tail.index("MCLResetViaOfficialToggle(YES)")
+        self.assertNotIn("MCLResetViaOfficialToggle(YES)", tail[reset_idx + 1:])
+
+    def test_full_restore_and_uninstall_still_route_through_mcl_restore(self):
+        for fn in ("static NSDictionary* performFullSmartChargeRestore(NSString* reason) {",
+                   "static void restoreSmartChargeForReset(NSString* reason) {"):
+            body = function_body(self.daemon_mm, fn)
+            self.assertIn("restoreMCLStateAfterEnable()", body, msg=fn)

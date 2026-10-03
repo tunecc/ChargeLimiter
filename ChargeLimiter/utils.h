@@ -117,6 +117,8 @@ BOOL CLMCLReadAgentState(int* obcStatus, BOOL* mclSupported, BOOL* mclEnabled);
 // MCL 强制入口：无读回短路，无条件下发（修复编排专用；常规联动仍走 setSmartChargeMCLEnabled）。
 BOOL CLMCLForceEnable(void);
 BOOL CLMCLForceDisable(void);
+// 从自身 exe 截取 .jbroot-XXX 前缀（roothide launchd plist 候选路径推导用；非 roothide 返回 @""）
+NSString* CLDaemonJbRootPath(void);
 
 /* ---------------- App ---------------- */
 id getlocalKV(NSString* key);
