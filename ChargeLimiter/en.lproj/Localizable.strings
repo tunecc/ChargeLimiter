@@ -221,7 +221,7 @@
 "保留历史记录" = "Keep History";
 "删除历史记录" = "Delete History";
 "目标下方 %ld%%" = "Top up at %ld%% below target";
-"限流控制" = "Limit-inflow Control";
+"充电限流" = "Charging Limit";
 "仅在充电时通过热模拟降低电流；选择“关闭”可禁用。" = "Applies thermal simulation only while charging to reduce current; select Off to disable.";
 "高温模拟 (Powercuff)" = "Thermal Sim (Powercuff)";
 "默认等级" = "Default Level";
