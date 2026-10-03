@@ -53,37 +53,67 @@ case "$REAL_DAEMON" in
 esac
 [ -x "$REAL_DAEMON" ] || fail_install "resolved daemon is not executable: $REAL_DAEMON"
 
-# 不同安装器下 postinst 的路径语义不同：有的运行在 jbroot 命名空间内
-# （/ 即 jbroot 根，真实 rootfs 挂在 /rootfs，系统二进制不在 /usr/bin），
-# 有的直接运行在真实 rootfs 上。plutil 因此不能假定在 PATH 里，
-# 按三种来源依次探测；plist 同样解析成系统工具必然可见的真实路径。
-# 提示：真实 rootfs 前缀从 jbroot 已解析出的 REAL_DAEMON 推导，不硬编码。
+# plist 编辑：Irisin 等安装器以 DISABLE_TWEAKS=1 运行 maintainer 脚本
+# （root 进程禁止注入），其子进程无 roothide 路径重映射，且 iOS 系统
+# 本身不附带 plutil（Sileo 环境带注入才看得到）。因此改写 plist 分两级：
+# 优先 plutil（存在时），否则退回 bootstrap 必备的 sed 对 XML plist 做
+# 等价文本替换——包内 plist 的 Program 与 ProgramArguments.0 是同一
+# 字面路径，全局替换一次即同时覆盖两处。真实 rootfs 前缀从 jbroot 已
+# 解析出的 REAL_DAEMON 推导，不硬编码 /var/jb 或 .jbroot-*。
 ROOTFS_PREFIX="${REAL_DAEMON%%/.jbroot-*}"
-PLUTIL_BIN="$(command -v plutil 2>/dev/null || true)"
-if [ -z "$PLUTIL_BIN" ]; then
-    for cand in \
-        "$(jbroot /usr/bin/plutil 2>/dev/null)" \
-        "$ROOTFS_PREFIX/usr/bin/plutil"; do
-        if [ -n "$cand" ] && [ -x "$cand" ]; then
-            PLUTIL_BIN="$cand"
-            break
-        fi
-    done
-fi
-[ -n "$PLUTIL_BIN" ] && [ -x "$PLUTIL_BIN" ] || \
-    fail_install "plutil not found (tried PATH, jbroot /usr/bin/plutil, $ROOTFS_PREFIX/usr/bin/plutil)"
 
+# daemon plist 真实路径：system 域 launchd 在真实 rootfs 上，看不到
+# jbroot 逻辑路径；launchctl/launchd 一律用该真实路径。
 REAL_PLIST="$(jbroot "$DAEMON_PLIST" 2>/dev/null)" || \
     fail_install "jbroot failed to resolve $DAEMON_PLIST"
 [ -f "$REAL_PLIST" ] || fail_install "daemon plist not found: ${REAL_PLIST:-<empty>}"
 
-"$PLUTIL_BIN" -replace Program -string "$REAL_DAEMON" "$REAL_PLIST" || \
-    fail_install "failed to update Program in daemon plist (plutil=$PLUTIL_BIN plist=$REAL_PLIST)"
-"$PLUTIL_BIN" -replace ProgramArguments.0 -string "$REAL_DAEMON" "$REAL_PLIST" || \
-    fail_install "failed to update ProgramArguments in daemon plist (plutil=$PLUTIL_BIN)"
+edit_daemon_plist_with_plutil() {
+    PLUTIL_BIN="$(command -v plutil 2>/dev/null || true)"
+    if [ -z "$PLUTIL_BIN" ]; then
+        for cand in \
+            "$(jbroot /usr/bin/plutil 2>/dev/null)" \
+            "$ROOTFS_PREFIX/usr/bin/plutil"; do
+            if [ -n "$cand" ] && [ -x "$cand" ]; then
+                PLUTIL_BIN="$cand"
+                break
+            fi
+        done
+    fi
+    [ -n "$PLUTIL_BIN" ] && [ -x "$PLUTIL_BIN" ] || return 1
+    "$PLUTIL_BIN" -replace Program -string "$REAL_DAEMON" "$REAL_PLIST" || return 1
+    "$PLUTIL_BIN" -replace ProgramArguments.0 -string "$REAL_DAEMON" "$REAL_PLIST" || return 1
+}
 
-# launchctl 同理按三来源解析；plist 参数保持 jbroot 逻辑路径
-# （launchctl 客户端侧读取 plist，真机 relaxin 轮3已验证此路径可用）。
+edit_daemon_plist_with_sed() {
+    SED_BIN="$(command -v sed 2>/dev/null || true)"
+    if [ -z "$SED_BIN" ]; then
+        for cand in \
+            "$(jbroot /usr/bin/sed 2>/dev/null)" \
+            "$ROOTFS_PREFIX/usr/bin/sed"; do
+            if [ -n "$cand" ] && [ -x "$cand" ]; then
+                SED_BIN="$cand"
+                break
+            fi
+        done
+    fi
+    [ -n "$SED_BIN" ] && [ -x "$SED_BIN" ] || \
+        fail_install "no plist editor available (plutil and sed both missing)"
+    sed "s|/Applications/ChargeLimiter.app/ChargeLimiterDaemon|$REAL_DAEMON|g" \
+        "$REAL_PLIST" > "$REAL_PLIST.tmp" \
+        || fail_install "sed rewrite of daemon plist failed (sed=$SED_BIN)"
+    mv "$REAL_PLIST.tmp" "$REAL_PLIST" \
+        || fail_install "failed to move rewritten daemon plist into place"
+    grep -q -F "$REAL_DAEMON" "$REAL_PLIST" \
+        || fail_install "daemon plist rewrite verification failed ($REAL_PLIST)"
+}
+
+if ! edit_daemon_plist_with_plutil; then
+    edit_daemon_plist_with_sed
+fi
+
+# launchctl 二进制按三来源解析（iOS 自带 /usr/bin/launchctl；Irisin 的
+# PATH 含 /rootfs/usr/bin 可达；Sileo 注入环境下 PATH 直接可达）。
 LAUNCHCTL_BIN="$(command -v launchctl 2>/dev/null || true)"
 if [ -z "$LAUNCHCTL_BIN" ]; then
     for cand in \
@@ -99,12 +129,14 @@ fi
 [ -n "$LAUNCHCTL_BIN" ] && [ -x "$LAUNCHCTL_BIN" ] || \
     fail_install "launchctl not found (tried PATH, jbroot /usr/bin/launchctl, $ROOTFS_PREFIX/usr/bin/launchctl)"
 
-# 清理新旧域的可能残留
-"$LAUNCHCTL_BIN" bootout system "$DAEMON_PLIST" 2>/dev/null
-"$LAUNCHCTL_BIN" bootout user/foreground "$DAEMON_PLIST" 2>/dev/null
-if ! "$LAUNCHCTL_BIN" bootstrap system "$DAEMON_PLIST" 2>/dev/null; then
-    "$LAUNCHCTL_BIN" load "$DAEMON_PLIST" 2>/dev/null || \
-        fail_install "launchctl failed to load daemon plist (launchctl=$LAUNCHCTL_BIN)"
+# 清理新旧域的可能残留；bootstrap/load 一律用真实路径——真实 launchd
+# 看不到 jbroot 逻辑路径。label 形式兜底卸载旧版本按旧路径注册的残留。
+"$LAUNCHCTL_BIN" bootout system/com.chargelimiter.mod 2>/dev/null
+"$LAUNCHCTL_BIN" bootout system "$REAL_PLIST" 2>/dev/null
+"$LAUNCHCTL_BIN" bootout user/foreground "$REAL_PLIST" 2>/dev/null
+if ! "$LAUNCHCTL_BIN" bootstrap system "$REAL_PLIST" 2>/dev/null; then
+    "$LAUNCHCTL_BIN" load "$REAL_PLIST" 2>/dev/null || \
+        fail_install "launchctl failed to load daemon plist (launchctl=$LAUNCHCTL_BIN plist=$REAL_PLIST)"
 fi
 
 uicache -p "$APP_DIR" 2>/dev/null
