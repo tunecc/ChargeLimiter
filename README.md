@@ -43,7 +43,7 @@ ChargeLimiter 本质上是一个充电策略调度器，不是硬件电源路径
 - 温度控制（高温停充 / 降温恢复）
 - 系统优化充电协调与`永久停用系统优化充电`
 - `满充计划`：每隔数天在指定时间暂时解除电量上限
-- `限流等级`（原子配置）与`高温模拟 (Powercuff)`
+- `限流控制`（原子配置）与`高温模拟 (Powercuff)`
 - `加速充电`
 - `策略诊断`、`停充控制探针`与守护进程修复
 - `历史统计`与`策略事件时间线`
@@ -162,7 +162,7 @@ CL 可以和充电宝配合使用：停充模式下充电宝优先为手机供�
 
 **夏天怎样降低电池温度？**
 
-* 使用 CL 的`高温模拟 (Powercuff)`减少硬件耗电，充电状态下会同时降低充电功率；使用`限流等级`降低充电电流。
+* 使用 CL 的`高温模拟 (Powercuff)`减少硬件耗电，充电状态下会同时降低充电功率；使用`限流控制`在充电时通过热模拟降低充电电流。
 * 使用低功率充电头；或使用手机散热器。
 
 **怎样使用电池最好？**
@@ -246,17 +246,17 @@ CL 可以和充电宝配合使用：停充模式下充电宝优先为手机供�
 * 满充窗口内临时放开电量上限，温度控制仍生效
 * 默认关闭；默认值为每隔 7 天、02:00 开始、持续 4 小时
 
-#### 限流等级
+#### 限流控制
 
-* 不是直接对 PMIC 下发固定安培数，而是通过更保守的热状态模拟让系统整体倾向更低功耗、更保守的充电行为
-* 可选：关闭 / 正常 / 轻度 / 中度 / 重度；等级越高充电电流越小，前台性能也可能越受影响
-* 开关与等级一次提交（原子配置），不会出现两次写入之间的中间档
+* 仅在充电时生效：通过热状态模拟让 iOS 主动压低充电电流，不直接对 PMIC 下发固定安培数
+* 可选：关闭 / 正常 / 轻度 / 中度 / 重度；档位越高充电电流越小，前台性能也可能越受影响
+* 开关与档位一次提交（原子配置），不会出现两次写入之间的中间档
 
 #### 高温模拟 (Powercuff)
 
 * `默认高温模拟等级`：非充电时维持的热状态（关闭 / 正常 / 轻度 / 中度 / 重度），等级越高性能越低、发热越少
 * `锁定等级`：防止系统自动调节温度模拟；越狱环境下若存在功能冲突的 tweak，CL 的热模拟可能不生效
-* 与`限流等级`配合：充电时进入限流等级，停充后恢复默认等级
+* 与`限流控制`配合：充电时进入限流档，停充后恢复默认等级
 * 生效条件：越狱包（rootful / rootless / roothide）内置执行端 `CLThermalSim`，随包安装后把模拟档位实际应用到 `thermalmonitord`；策略诊断可查看"配置档位"与"最近应用结果"
 * TrollStore 包不含执行端（无注入环境）：档位仅写入系统偏好，是否生效由系统决定
 * 与第三方 Powercuff 类 tweak 并存时后应用者生效，建议二选一
@@ -371,7 +371,7 @@ curl http://127.0.0.1:1230 -d '{"api":"get_conf","key":"enable"}' -H "content-ty
 | `adv_hold_temp_disable_smart_charge` | bool | `true` | 插电保持时临时停用系统优化充电 |
 | `disable_smart_charge` | bool | `false` | 永久停用系统优化充电（系统级开关） |
 | `adv_limit_inflow` | bool | `false` | 限流开关 |
-| `adv_limit_inflow_mode` | string | `moderate` | 限流等级：`off` / `nominal` / `light` / `moderate` / `heavy` |
+| `adv_limit_inflow_mode` | string | `moderate` | 限流控制：`off` / `nominal` / `light` / `moderate` / `heavy` |
 | `adv_def_thermal_mode` | string | `off` | 默认高温模拟等级（Powercuff） |
 | `adv_thermal_mode_lock` | bool | `false` | 锁定热模拟等级 |
 | `full_charge_sched_enabled` | bool | `false` | 满充计划开关 |
@@ -525,7 +525,7 @@ ChargeLimiter is essentially a charging-policy scheduler, not a hardware power-p
 - Temperature control (over-temp stop / cool-down resume)
 - Optimized Battery Charging coordination and permanent disable
 - `Full-charge schedule`: temporarily lift the cap every N days at a given time
-- `Limit-inflow level` (atomic config) and `Thermal simulation (Powercuff)`
+- `Limit-inflow control` (atomic config) and `Thermal simulation (Powercuff)`
 - `Fast charge`
 - `Policy diagnostics`, `charge-control probe` and daemon repair
 - `History charts` and the persisted `policy event timeline`
@@ -644,7 +644,7 @@ CL works with power banks: in charge-inhibit mode the bank powers the phone firs
 
 **How to cool the battery in summer?**
 
-* Use `Thermal simulation (Powercuff)` to cut hardware power (also lowers charging wattage); use `Limit-inflow level` to cut charging current.
+* Use `Thermal simulation (Powercuff)` to cut hardware power (also lowers charging wattage); use `Limit-inflow control` to cut charging current while charging.
 * Use a lower-wattage charger, or a phone cooler.
 
 **Best practices for battery health?**
@@ -728,9 +728,9 @@ For people who avoid full charges daily but occasionally want one:
 * Inside the window the capacity cap is lifted; temperature control still applies
 * Off by default; defaults are every 7 days at 02:00 for 4 hours
 
-#### Limit-inflow level
+#### Limit-inflow control
 
-* Doesn't write a fixed current to the PMIC; instead it applies a more conservative thermal simulation so the system leans towards lower power and gentler charging
+* Applies only while charging: uses thermal simulation so iOS lowers the charging current on its own; no fixed amperage is written to the PMIC
 * Levels: Off / Nominal / Light / Moderate / Heavy; higher = lower charging current, possibly lower foreground performance
 * The switch and level are committed atomically in one request — no intermediate state between two writes
 
@@ -738,7 +738,7 @@ For people who avoid full charges daily but occasionally want one:
 
 * `Default level`: the thermal state maintained while not charging (Off / Nominal / Light / Moderate / Heavy); higher = less performance, less heat
 * `Lock level`: prevents the system from adjusting thermal simulation on its own; under jailbreak, conflicting tweaks may defeat CL's thermal simulation
-* Combined with `Limit-inflow level`: the limit level applies while charging, the default level after stopping
+* Combined with `Limit-inflow control`: the limit applies while charging, the default level after stopping
 * How it takes effect: jailbreak packages (rootful / rootless / roothide) bundle the companion `CLThermalSim` tweak installed with the package; it applies the configured level to `thermalmonitord`. Policy diagnostics show the configured level and the latest apply result
 * The TrollStore package has no injection environment and ships without the tweak: the level is written to system preferences only, and whether iOS honors it is up to the system
 * When third-party Powercuff-style tweaks are installed alongside, the last applier wins; pick one

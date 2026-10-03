@@ -2632,7 +2632,7 @@ static const NSInteger CLAdvMasterOffBannerTag = 901;
 
     // 限流控制
     CLAdvSettingsCard *limitCard = [[CLAdvSettingsCard alloc] init];
-    [limitCard addPickerRowWithIcon:@"thermometer.sun.fill" title:CLL(@"限流等级") subtitle:CLL(@"选择“关闭”可禁用自动限流；其他等级会自动启用。") value:[self limitInflowValueText] color:[UIColor systemOrangeColor] tag:306 target:self action:@selector(limitInflowModeTapped:)];
+    [limitCard addPickerRowWithIcon:@"thermometer.sun.fill" title:CLL(@"限流控制") subtitle:CLL(@"仅在充电时通过热模拟降低电流；选择“关闭”可禁用。") value:[self limitInflowValueText] color:[UIColor systemOrangeColor] tag:306 target:self action:@selector(limitInflowModeTapped:)];
     [self.mainStack addArrangedSubview:limitCard];
     
     // 高温模拟
@@ -3252,7 +3252,7 @@ static const NSInteger CLAdvMasterOffBannerTag = 901;
 }
 
 - (void)limitInflowModeTapped:(UITapGestureRecognizer *)tap {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"限流等级") message:CLL(@"选择“关闭”可禁用自动限流\n等级越高，充电电流越小") preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"限流控制") message:CLL(@"仅在充电时通过热模拟降低电流\n档位越高，充电电流越小") preferredStyle:UIAlertControllerStyleAlert];
     
     NSArray *modes = @[CLL(@"关闭"), CLL(@"正常"), CLL(@"轻度"), CLL(@"中度"), CLL(@"重度")];
     NSArray *modeValues = @[@"off", @"nominal", @"light", @"moderate", @"heavy"];
