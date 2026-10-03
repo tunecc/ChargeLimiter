@@ -1107,6 +1107,10 @@ static const NSInteger CLAdvAccChargeLPMTag = 405;
     [self addDiagnosticRowToCard:runtimeCard key:@"smart_charge_coordination_start_time" icon:@"clock" title:CLL(@"接管开始时间") color:[UIColor systemBlueColor]];
     [runtimeCard addSeparator];
     [self addDiagnosticRowToCard:runtimeCard key:@"last_inflow_command_time" icon:@"clock" title:CLL(@"最近禁流/恢复时间") color:[UIColor systemRedColor]];
+    [runtimeCard addSeparator];
+    [self addDiagnosticRowToCard:runtimeCard key:@"thermal_config_mode" icon:@"flame.fill" title:CLL(@"模拟配置档位") color:[UIColor systemOrangeColor]];
+    [runtimeCard addSeparator];
+    [self addDiagnosticRowToCard:runtimeCard key:@"thermal_apply_status" icon:@"stethoscope" title:CLL(@"模拟应用结果") color:[UIColor systemOrangeColor]];
     [self addTipRowToCard:runtimeCard text:CLL(@"仅用于观察插电保持当前状态与检查节奏，不会改变正常使用逻辑。")];
     [self.mainStack addArrangedSubview:runtimeCard];
 
@@ -2200,6 +2204,17 @@ static const NSInteger CLAdvAccChargeLPMTag = 405;
     [self updateDiagnosticValue:[self smartChargeCoordinationSessionTextForManager:manager] forKey:@"smart_charge_coordination_session"];
     [self updateDiagnosticValue:[self smartChargeCoordinationStartTimeTextForManager:manager] forKey:@"smart_charge_coordination_start_time"];
     [self updateDiagnosticValue:CLTimestampLabel(manager.lastInflowCommandTime) forKey:@"last_inflow_command_time"];
+
+    // 生效验证诊断（design D5）：区分"已配置"与"已生效"。
+    [self updateDiagnosticValue:(manager.thermalConfigMode ?: @"off") forKey:@"thermal_config_mode"];
+    NSString *thermalApplyStatus = manager.thermalApplyStatus;
+    NSString *thermalApplyLabel = CLL(@"未知");
+    if ([thermalApplyStatus isEqualToString:@"applied"]) {
+        thermalApplyLabel = CLL(@"已生效");
+    } else if ([thermalApplyStatus isEqualToString:@"unverified"]) {
+        thermalApplyLabel = CLL(@"未生效");
+    }
+    [self updateDiagnosticValue:thermalApplyLabel forKey:@"thermal_apply_status"];
 
     [self updateDiagnosticValue:[self holdIntervalTextForManager:manager] forKey:@"hold_interval"];
     [self updateDiagnosticValue:[self holdTargetTextForManager:manager] forKey:@"hold_target"];

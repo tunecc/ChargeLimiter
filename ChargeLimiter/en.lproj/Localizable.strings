@@ -444,6 +444,10 @@
 "插电保持配置已更新" = "Sailing Mode settings updated";
 "最近充电命令时间" = "Last charge command";
 "最近禁流/恢复时间" = "Last inflow on/off";
+"模拟配置档位" = "Sim config level";
+"模拟应用结果" = "Sim apply result";
+"已生效" = "Applied";
+"未生效" = "Not applied";
 "最近策略切换" = "Recent policy changes";
 "温控" = "Thermal";
 "立即刷新" = "Refresh now";

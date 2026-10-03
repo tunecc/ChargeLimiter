@@ -123,6 +123,8 @@ extern NSNotificationName const CLDaemonStatusDidChangeNotification;
 @property(nonatomic, assign) CLThermalMode limitInflowThermalMode;
 @property(nonatomic, assign) BOOL thermalModeLock;
 @property(nonatomic, assign) CLThermalMode thermalSimulateMode; // 实际系统温度等级
+@property(nonatomic, copy) NSString *thermalConfigMode;   // 已配置的模拟档位（com.apple.cltm）
+@property(nonatomic, copy) NSString *thermalApplyStatus;  // 最近一次应用结果 applied/unverified/unknown
 @property(nonatomic, assign) BOOL fullChargeScheduleEnabled;    // 满充计划
 @property(nonatomic, assign) NSInteger fullChargeScheduleIntervalDays;
 @property(nonatomic, assign) NSInteger fullChargeScheduleStartMinute;

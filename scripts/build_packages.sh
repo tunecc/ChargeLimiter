@@ -7,6 +7,8 @@ OUT_DIR="$ROOT_DIR/out"
 PKG_ROOTFUL_DIR="$ROOT_DIR/ChargeLimiter/Package"
 PKG_ROOTLESS_DIR="$ROOT_DIR/ChargeLimiter/Package_rootless"
 PKG_ROOTHIDE_DIR="$ROOT_DIR/ChargeLimiter/Package_roothide"
+TWEAK_SRC_DIR="$ROOT_DIR/ChargeLimiter/Tweak"
+TWEAK_NAME="CLThermalSim"
 BUILD_ROOTFUL="$ROOT_DIR/build_rootful"
 BUILD_ROOTLESS="$ROOT_DIR/build_rootless"
 BUILD_ROOTHIDE="$ROOT_DIR/build_roothide"
@@ -269,6 +271,32 @@ sign_roothide_app() {
   rm -rf "$APP_PATH/_CodeSignature"
 }
 
+# Companion tweak dylib for thermalmonitord injection (design D6):
+# compiled directly with clang per package arch, fake-signed with ldid; no Theos/Logos.
+build_tweak_dylib() {
+  TWEAK_ARCH="$1"
+  TWEAK_OUT="$2"
+  plutil -lint "$TWEAK_SRC_DIR/$TWEAK_NAME.plist" >/dev/null
+  xcrun -sdk iphoneos clang -dynamiclib \
+    -arch "$TWEAK_ARCH" \
+    -fobjc-arc \
+    -miphoneos-version-min=11.0 \
+    -framework Foundation \
+    "$TWEAK_SRC_DIR/CLThermalSimTweak.m" \
+    -o "$TWEAK_OUT"
+  ldid -S "$TWEAK_OUT"
+}
+
+stage_tweak_files() {
+  STAGE_TREE="$1"
+  TWEAK_DYLIB="$2"
+  mkdir -p "$STAGE_TREE/Library/MobileSubstrate/DynamicLibraries"
+  cp -p "$TWEAK_DYLIB" "$STAGE_TREE/Library/MobileSubstrate/DynamicLibraries/$TWEAK_NAME.dylib"
+  cp -p "$TWEAK_SRC_DIR/$TWEAK_NAME.plist" "$STAGE_TREE/Library/MobileSubstrate/DynamicLibraries/$TWEAK_NAME.plist"
+  chmod 755 "$STAGE_TREE/Library/MobileSubstrate/DynamicLibraries/$TWEAK_NAME.dylib"
+  chmod 644 "$STAGE_TREE/Library/MobileSubstrate/DynamicLibraries/$TWEAK_NAME.plist"
+}
+
 strip_app() {
   APP_PATH="$1"
   xcrun strip -S -x "$APP_PATH/ChargeLimiter"
@@ -460,6 +488,14 @@ if [ "$BUILD_NATIVE_ROOTHIDE" = "1" ]; then
   sign_roothide_app "$ROOTHIDE_APP"
 fi
 
+echo "[5b/10] Build companion tweak dylibs..."
+TWEAK_STAGE_DIR="$STAGE_DIR/tweak"
+mkdir -p "$TWEAK_STAGE_DIR"
+build_tweak_dylib arm64 "$TWEAK_STAGE_DIR/$TWEAK_NAME.dylib"
+if [ "$BUILD_NATIVE_ROOTHIDE" = "1" ]; then
+  build_tweak_dylib arm64e "$TWEAK_STAGE_DIR/$TWEAK_NAME-arm64e.dylib"
+fi
+
 echo "[6/10] Prepare package trees..."
 cp -a "$PKG_ROOTFUL_DIR" "$STAGE_ROOTFUL_DIR"
 cp -a "$PKG_ROOTLESS_DIR" "$STAGE_ROOTLESS_DIR"
@@ -478,6 +514,9 @@ mkdir -p "$STAGE_ROOTFUL_DIR/Applications"
 mkdir -p "$STAGE_ROOTLESS_DIR/var/jb/Applications"
 cp -a "$ROOTFUL_APP" "$STAGE_ROOTFUL_DIR/Applications/ChargeLimiter.app"
 cp -a "$ROOTLESS_APP" "$STAGE_ROOTLESS_DIR/var/jb/Applications/ChargeLimiter.app"
+
+stage_tweak_files "$STAGE_ROOTFUL_DIR" "$TWEAK_STAGE_DIR/$TWEAK_NAME.dylib"
+stage_tweak_files "$STAGE_ROOTLESS_DIR/var/jb" "$TWEAK_STAGE_DIR/$TWEAK_NAME.dylib"
 
 clean_host_metadata "$STAGE_ROOTFUL_DIR"
 clean_host_metadata "$STAGE_ROOTLESS_DIR"
@@ -503,6 +542,7 @@ if [ "$BUILD_NATIVE_ROOTHIDE" = "1" ]; then
   rm -rf "$STAGE_ROOTHIDE_DIR/Applications/ChargeLimiter.app"
   mkdir -p "$STAGE_ROOTHIDE_DIR/Applications"
   cp -a "$ROOTHIDE_APP" "$STAGE_ROOTHIDE_DIR/Applications/ChargeLimiter.app"
+  stage_tweak_files "$STAGE_ROOTHIDE_DIR" "$TWEAK_STAGE_DIR/$TWEAK_NAME-arm64e.dylib"
   clean_host_metadata "$STAGE_ROOTHIDE_DIR"
   chmod 755 "$STAGE_ROOTHIDE_DIR/DEBIAN"
   chmod 755 "$STAGE_ROOTHIDE_DIR/DEBIAN"/*
@@ -616,6 +656,26 @@ check_deb_metadata() {
   check_deb_field "$deb_path" Architecture "$expected_arch"
 }
 
+check_tweak_files() {
+  lib_root="$1"
+  expected_tweak_arch="$2"
+  tweak_dylib="$lib_root/Library/MobileSubstrate/DynamicLibraries/CLThermalSim.dylib"
+  tweak_plist="$lib_root/Library/MobileSubstrate/DynamicLibraries/CLThermalSim.plist"
+  [ -f "$tweak_dylib" ] || {
+    echo "[ERR] Missing companion tweak dylib: $tweak_dylib" >&2
+    exit 1
+  }
+  [ -f "$tweak_plist" ] || {
+    echo "[ERR] Missing companion tweak filter plist: $tweak_plist" >&2
+    exit 1
+  }
+  TWEAK_ARCH="$(xcrun lipo -info "$tweak_dylib" | sed -n 's/.*architecture: \(.*\)$/\1/p')"
+  if [ "$TWEAK_ARCH" != "$expected_tweak_arch" ]; then
+    echo "[ERR] Unexpected companion tweak architecture: $TWEAK_ARCH (expected $expected_tweak_arch)" >&2
+    exit 1
+  fi
+}
+
 check_rootful_stage() {
   stage_path="$1"
   app_path="$stage_path/Applications/ChargeLimiter.app"
@@ -635,6 +695,7 @@ check_rootful_stage() {
   }
   check_no_host_metadata "$stage_path"
   check_app "$app_path" "arm64"
+  check_tweak_files "$stage_path" "arm64"
 }
 
 check_rootless_stage() {
@@ -656,6 +717,7 @@ check_rootless_stage() {
   }
   check_no_host_metadata "$stage_path"
   check_app "$app_path" "arm64"
+  check_tweak_files "$stage_path/var/jb" "arm64"
 }
 
 check_roothide_stage() {
@@ -741,8 +803,8 @@ check_roothide_stage() {
       exit 1
     fi
   done
+  check_tweak_files "$STAGE_PATH" "arm64e"
 }
-
 echo "[10/10] Verify package contents..."
 check_rootful_stage "$STAGE_ROOTFUL_DIR"
 check_rootless_stage "$STAGE_ROOTLESS_DIR"

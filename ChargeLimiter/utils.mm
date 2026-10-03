@@ -3538,11 +3538,36 @@ NSString* getThermalSimulationMode() {
 }
 
 
+// 模拟档位配置域与执行端（CLThermalSim tweak）共享；通知只作"配置已变"触发信号（design D2）。
+static NSString* const CLThermalPrefsSuite = @"com.apple.cltm";
+static NSString* const CLThermalApplyNotification = @"com.chargelimiter.thermalapply";
+
+NSString* getThermalConfigMode() {
+    if (@available(iOS 11.0, *)) {
+        NSUserDefaults* defs = [[NSUserDefaults alloc] initWithSuiteName:CLThermalPrefsSuite];
+        NSString* mode = [defs objectForKey:@"thermalSimulationMode"];
+        if (mode == nil) {
+            mode = @"off";
+        }
+        return mode;
+    }
+    return @"off";
+}
+
+static void CLPostThermalApplyNotification() {
+    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                         (__bridge CFStringRef)CLThermalApplyNotification,
+                                         NULL, NULL, YES);
+}
+
 void setThermalSimulationMode(NSString* mode) {
     if (@available(iOS 11.0, *)) {
-        NSUserDefaults* defs = [[NSUserDefaults alloc] initWithSuiteName:@"com.apple.cltm"];
+        NSUserDefaults* defs = [[NSUserDefaults alloc] initWithSuiteName:CLThermalPrefsSuite];
         [defs setObject:mode forKey:@"thermalSimulationMode"]; // off/nominal/light/moderate/heavy
+        // 锁定标志镜像给执行端（design D4：单写入方，随 thermal 模式写入同步镜像）
+        [defs setObject:@(getLocalBool(@"adv_thermal_mode_lock", NO)) forKey:@"thermalSimulationLocked"];
         [defs synchronize];
+        CLPostThermalApplyNotification();
     }
 }
 
@@ -3563,10 +3588,11 @@ NSString* getPPMSimulationMode() {
 
 void setPPMSimulationMode(NSString* mode) {
     if (@available(iOS 11.0, *)) {
-        NSUserDefaults* defs = [[NSUserDefaults alloc] initWithSuiteName:@"com.apple.cltm"];
+        NSUserDefaults* defs = [[NSUserDefaults alloc] initWithSuiteName:CLThermalPrefsSuite];
         [defs setObject:mode forKey:@"ppmSimulationMode"]; // off/nominal/light/moderate/heavy
         [defs synchronize];
         ppm_mode = mode;
+        CLPostThermalApplyNotification();
     }
 }
 

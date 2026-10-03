@@ -1868,8 +1868,125 @@ static NSString* targetThermalModeForCurrentState(void) {
     return defaultMode;
 }
 
+// 读回验证（design D5）：应用档位后短窗口内比对系统热状态与预期档，未达重发通知有限次。
+// 状态机统一在主线程操作（I1）：配置边沿来自 HTTP handler 队列，经 dispatch 归队；
+// 定时器用 timerWithTimeInterval + mainRunLoop 挂载（对齐 g_disableInflowRetryTimer，
+// C1：scheduledTimerWithTimeInterval 会挂到无 run loop 的 handler 线程上永不触发）。
+static NSTimer* g_thermalVerifyTimer = nil;
+static NSString* g_thermalVerifyExpected = nil;
+static int g_thermalVerifyChecksLeft = 0;
+static int g_thermalVerifyRepostsLeft = 0;
+
+static int thermalLevelForMode(NSString* mode) {
+    if ([mode isEqualToString:@"light"]) return 1;
+    if ([mode isEqualToString:@"moderate"]) return 2;
+    if ([mode isEqualToString:@"heavy"]) return 3;
+    return 0; // nominal / off / 未知
+}
+
+// 以下四个函数仅主线程调用；@synchronized 与既有定时器 block 模式一致。
+static void finishThermalApplyVerificationOnMain(BOOL applied) {
+    setLocalString(@"thermal_apply_status", applied ? @"applied" : @"unverified");
+    setLocalString(@"thermal_apply_checked_at", [NSString stringWithFormat:@"%ld", (long)time(0)]);
+    [g_thermalVerifyTimer invalidate];
+    g_thermalVerifyTimer = nil;
+    g_thermalVerifyExpected = nil;
+}
+
+static void cancelThermalApplyVerificationOnMain(void) {
+    // 放弃在途验证，不改诊断 KV（调用方决定是否补写状态）。
+    [g_thermalVerifyTimer invalidate];
+    g_thermalVerifyTimer = nil;
+    g_thermalVerifyExpected = nil;
+}
+
+// 返回 YES = 验证仍在进行（还需定时器继续检查）；NO = 已收敛。
+static BOOL checkThermalApplyOnceOnMain(void) {
+    @synchronized (Service.inst) {
+        NSString* expected = g_thermalVerifyExpected;
+        if (expected == nil) {
+            finishThermalApplyVerificationOnMain(NO); // 防御分支：无在途应用
+            return NO;
+        }
+        if ([expected isEqualToString:@"off"]) { // 调度时即收敛，防御保持
+            finishThermalApplyVerificationOnMain(YES);
+            return NO;
+        }
+        int currentLevel = 0;
+        switch (NSProcessInfo.processInfo.thermalState) {
+            case NSProcessInfoThermalStateFair: currentLevel = 1; break;
+            case NSProcessInfoThermalStateSerious: currentLevel = 2; break;
+            case NSProcessInfoThermalStateCritical: currentLevel = 3; break;
+            case NSProcessInfoThermalStateNominal: currentLevel = 0; break;
+        }
+        if (currentLevel >= thermalLevelForMode(expected)) {
+            finishThermalApplyVerificationOnMain(YES);
+            return NO;
+        }
+        g_thermalVerifyChecksLeft--;
+        if (g_thermalVerifyChecksLeft > 0) {
+            return YES;
+        }
+        if (g_thermalVerifyRepostsLeft > 0) {
+            // 重发前重算目标（I2）：配置在验证窗口内被改变时放弃在途验证，避免复活旧档位。
+            NSString* currentTarget = targetThermalModeForCurrentState();
+            if (![currentTarget isEqualToString:expected]) {
+                cancelThermalApplyVerificationOnMain();
+                return NO;
+            }
+            g_thermalVerifyRepostsLeft--;
+            g_thermalVerifyChecksLeft = 3;
+            setThermalSimulationMode(expected); // 重发：写偏好 + 广播
+            return YES;
+        }
+        finishThermalApplyVerificationOnMain(NO);
+        return NO;
+    }
+}
+
+static void scheduleThermalApplyVerificationOnMain(NSString* expectedMode) {
+    @synchronized (Service.inst) {
+        g_thermalVerifyExpected = expectedMode;
+        g_thermalVerifyChecksLeft = 3;
+        g_thermalVerifyRepostsLeft = 2;
+        [g_thermalVerifyTimer invalidate];
+        g_thermalVerifyTimer = nil;
+        if ([expectedMode isEqualToString:@"off"]) {
+            // off：还原是本地偏好写入，无系统通路可验证，直接记 applied（design D5 off 跳过）。
+            finishThermalApplyVerificationOnMain(YES);
+            return;
+        }
+        if (checkThermalApplyOnceOnMain()) { // 首次即时校验（nominal 弱验证即时通过）
+            g_thermalVerifyTimer = [NSTimer timerWithTimeInterval:3.0
+                                                          repeats:YES
+                                                            block:^(NSTimer* timer) {
+                                                                checkThermalApplyOnceOnMain();
+                                                            }];
+            [[NSRunLoop mainRunLoop] addTimer:g_thermalVerifyTimer forMode:NSRunLoopCommonModes];
+        }
+    }
+}
+
+// 任意线程入口（HTTP handler 队列 / 主 run loop）。
+static void scheduleThermalApplyVerification(NSString* expectedMode) {
+    NSString* modeCopy = [expectedMode copy];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        scheduleThermalApplyVerificationOnMain(modeCopy);
+    });
+}
+
+static void cancelThermalApplyVerification(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        @synchronized (Service.inst) {
+            cancelThermalApplyVerificationOnMain();
+        }
+    });
+}
+
 static void applyThermalModeForCurrentState(void) {
-    setThermalSimulationMode(targetThermalModeForCurrentState());
+    NSString* target = targetThermalModeForCurrentState();
+    setThermalSimulationMode(target);
+    scheduleThermalApplyVerification(target);
 }
 
 static int setBatteryStatus(BOOL flag) {
@@ -3050,9 +3167,13 @@ static void restoreSmartChargeForReset(NSString* reason) {
 }
 
 static void restoreThermalSimulationForReset(void) {
+    cancelThermalApplyVerification(); // 放弃在途验证，防止重发路径复活旧档位（I2）
     setThermalSimulationMode(@"off");
     // spec『还原的对象与语义』第 5 条：温控与 PPM 模拟双双归零。
     setPPMSimulationMode(@"off");
+    // 诊断与归零后的配置保持一致（M3）：还原即时生效，无系统通路可验证。
+    setLocalString(@"thermal_apply_status", @"applied");
+    setLocalString(@"thermal_apply_checked_at", [NSString stringWithFormat:@"%ld", (long)time(0)]);
 }
 
 static void restoreAcceleratedChargeStateForReset(void) {
@@ -4887,6 +5008,10 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             kv[@"serv_boot"] = @(g_serv_boot);
             kv[@"sys_boot"] = @(get_sys_boottime());
             kv[@"thermal_simulate_mode"] = getThermalSimulationMode();
+            // 生效验证诊断（design D5）：配置档位 + 最近一次应用结果，区分"已配置"与"已生效"。
+            kv[@"thermal_config_mode"] = getThermalConfigMode();
+            kv[@"thermal_apply_status"] = getLocalString(@"thermal_apply_status", @"unknown");
+            kv[@"thermal_apply_checked_at"] = getLocalString(@"thermal_apply_checked_at", @"");
             kv[@"ppm_simulate_mode"] = getPPMSimulationMode();
             kv[@"use_smart"] = @(g_use_smart);
             kv[@"smart_charge_status"] = @(g_smartChargeStatus);

@@ -257,6 +257,9 @@ CL 可以和充电宝配合使用：停充模式下充电宝优先为手机供�
 * `默认高温模拟等级`：非充电时维持的热状态（关闭 / 正常 / 轻度 / 中度 / 重度），等级越高性能越低、发热越少
 * `锁定等级`：防止系统自动调节温度模拟；越狱环境下若存在功能冲突的 tweak，CL 的热模拟可能不生效
 * 与`限流等级`配合：充电时进入限流等级，停充后恢复默认等级
+* 生效条件：越狱包（rootful / rootless / roothide）内置执行端 `CLThermalSim`，随包安装后把模拟档位实际应用到 `thermalmonitord`；策略诊断可查看"配置档位"与"最近应用结果"
+* TrollStore 包不含执行端（无注入环境）：档位仅写入系统偏好，是否生效由系统决定
+* 与第三方 Powercuff 类 tweak 并存时后应用者生效，建议二选一
 
 #### 加速充电
 
@@ -736,6 +739,9 @@ For people who avoid full charges daily but occasionally want one:
 * `Default level`: the thermal state maintained while not charging (Off / Nominal / Light / Moderate / Heavy); higher = less performance, less heat
 * `Lock level`: prevents the system from adjusting thermal simulation on its own; under jailbreak, conflicting tweaks may defeat CL's thermal simulation
 * Combined with `Limit-inflow level`: the limit level applies while charging, the default level after stopping
+* How it takes effect: jailbreak packages (rootful / rootless / roothide) bundle the companion `CLThermalSim` tweak installed with the package; it applies the configured level to `thermalmonitord`. Policy diagnostics show the configured level and the latest apply result
+* The TrollStore package has no injection environment and ships without the tweak: the level is written to system preferences only, and whether iOS honors it is up to the system
+* When third-party Powercuff-style tweaks are installed alongside, the last applier wins; pick one
 
 #### Fast charge
 
