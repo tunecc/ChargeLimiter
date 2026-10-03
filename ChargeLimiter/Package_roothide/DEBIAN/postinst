@@ -53,17 +53,58 @@ case "$REAL_DAEMON" in
 esac
 [ -x "$REAL_DAEMON" ] || fail_install "resolved daemon is not executable: $REAL_DAEMON"
 
-plutil -replace Program -string "$REAL_DAEMON" "$DAEMON_PLIST" 2>/dev/null || \
-    fail_install "failed to update Program in daemon plist"
-plutil -replace ProgramArguments.0 -string "$REAL_DAEMON" "$DAEMON_PLIST" 2>/dev/null || \
-    fail_install "failed to update ProgramArguments in daemon plist"
+# 不同安装器下 postinst 的路径语义不同：有的运行在 jbroot 命名空间内
+# （/ 即 jbroot 根，真实 rootfs 挂在 /rootfs，系统二进制不在 /usr/bin），
+# 有的直接运行在真实 rootfs 上。plutil 因此不能假定在 PATH 里，
+# 按三种来源依次探测；plist 同样解析成系统工具必然可见的真实路径。
+# 提示：真实 rootfs 前缀从 jbroot 已解析出的 REAL_DAEMON 推导，不硬编码。
+ROOTFS_PREFIX="${REAL_DAEMON%%/.jbroot-*}"
+PLUTIL_BIN="$(command -v plutil 2>/dev/null || true)"
+if [ -z "$PLUTIL_BIN" ]; then
+    for cand in \
+        "$(jbroot /usr/bin/plutil 2>/dev/null)" \
+        "$ROOTFS_PREFIX/usr/bin/plutil"; do
+        if [ -n "$cand" ] && [ -x "$cand" ]; then
+            PLUTIL_BIN="$cand"
+            break
+        fi
+    done
+fi
+[ -n "$PLUTIL_BIN" ] && [ -x "$PLUTIL_BIN" ] || \
+    fail_install "plutil not found (tried PATH, jbroot /usr/bin/plutil, $ROOTFS_PREFIX/usr/bin/plutil)"
+
+REAL_PLIST="$(jbroot "$DAEMON_PLIST" 2>/dev/null)" || \
+    fail_install "jbroot failed to resolve $DAEMON_PLIST"
+[ -f "$REAL_PLIST" ] || fail_install "daemon plist not found: ${REAL_PLIST:-<empty>}"
+
+"$PLUTIL_BIN" -replace Program -string "$REAL_DAEMON" "$REAL_PLIST" || \
+    fail_install "failed to update Program in daemon plist (plutil=$PLUTIL_BIN plist=$REAL_PLIST)"
+"$PLUTIL_BIN" -replace ProgramArguments.0 -string "$REAL_DAEMON" "$REAL_PLIST" || \
+    fail_install "failed to update ProgramArguments in daemon plist (plutil=$PLUTIL_BIN)"
+
+# launchctl 同理按三来源解析；plist 参数保持 jbroot 逻辑路径
+# （launchctl 客户端侧读取 plist，真机 relaxin 轮3已验证此路径可用）。
+LAUNCHCTL_BIN="$(command -v launchctl 2>/dev/null || true)"
+if [ -z "$LAUNCHCTL_BIN" ]; then
+    for cand in \
+        "$(jbroot /usr/bin/launchctl 2>/dev/null)" \
+        "$ROOTFS_PREFIX/usr/bin/launchctl" \
+        "$ROOTFS_PREFIX/bin/launchctl"; do
+        if [ -n "$cand" ] && [ -x "$cand" ]; then
+            LAUNCHCTL_BIN="$cand"
+            break
+        fi
+    done
+fi
+[ -n "$LAUNCHCTL_BIN" ] && [ -x "$LAUNCHCTL_BIN" ] || \
+    fail_install "launchctl not found (tried PATH, jbroot /usr/bin/launchctl, $ROOTFS_PREFIX/usr/bin/launchctl)"
 
 # 清理新旧域的可能残留
-launchctl bootout system "$DAEMON_PLIST" 2>/dev/null
-launchctl bootout user/foreground "$DAEMON_PLIST" 2>/dev/null
-if ! launchctl bootstrap system "$DAEMON_PLIST" 2>/dev/null; then
-    launchctl load "$DAEMON_PLIST" 2>/dev/null || \
-        fail_install "launchctl failed to load daemon plist"
+"$LAUNCHCTL_BIN" bootout system "$DAEMON_PLIST" 2>/dev/null
+"$LAUNCHCTL_BIN" bootout user/foreground "$DAEMON_PLIST" 2>/dev/null
+if ! "$LAUNCHCTL_BIN" bootstrap system "$DAEMON_PLIST" 2>/dev/null; then
+    "$LAUNCHCTL_BIN" load "$DAEMON_PLIST" 2>/dev/null || \
+        fail_install "launchctl failed to load daemon plist (launchctl=$LAUNCHCTL_BIN)"
 fi
 
 uicache -p "$APP_DIR" 2>/dev/null
