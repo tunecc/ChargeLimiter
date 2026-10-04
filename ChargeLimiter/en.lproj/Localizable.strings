@@ -503,3 +503,27 @@
 "当前 DOD0 已 %.1f 天未校准（阈值 3 天）。" = "DOD0 has not been calibrated for %.1f days (threshold: 3 days).";
 "建议：先充满一次电池做校准，再重新开启 80% 上限。" = "Suggestion: charge to full once for calibration, then re-enable the 80% limit.";
 "主开关已关闭：所有充电控制功能已停用并已还原系统状态。仅「还原系统优化充电」等修复工具可用。" = "Master switch is off: all charge-control features are disabled and system state has been restored. Only repair tools such as Restore Smart Charging remain available.";
+
+// limit-only daemon-free（仅限流模式）
+"运行模式" = "Operation Mode";
+"完整控制" = "Full Control";
+"仅限流" = "Limit Only";
+"仅限流模式 · 守护进程未运行
+电量上限由系统负责（优化充电 / 80% 限制）" = "Limit Only · daemon not running
+Capacity limit is handled by the system (Optimized Charging / 80% limit)";
+"限流档位" = "Limit Level";
+"会话状态" = "Session Status";
+"已插电 · 限流生效中" = "Plugged in · limiting active";
+"已插电 · 生效验证中" = "Plugged in · verifying";
+"未插电 · 限流已解除" = "Unplugged · limit released";
+"生效验证" = "Verification";
+"未验证" = "Unverified";
+"插电时限流生效，拔线自动解除
+档位越高，充电电流越小" = "Limiting applies while plugged in and clears on unplug.
+Higher levels mean lower charging current";
+"完整控制：守护进程常驻，全部功能。
+仅限流：守护进程不运行，只保留充电限流，电量上限交给系统（优化充电 / 80% 限制）。
+关闭：停止一切控制并还原系统状态。" = "Full Control: resident daemon with all features.
+Limit Only: no resident daemon, charging limit only; the capacity limit is handled by the system (Optimized Charging / 80% limit).
+Off: stop all control and restore the system state.";
+"巨魔环境无执行端：档位仅写入系统偏好，是否生效由系统决定" = "TrollStore has no injection executor: the level is written to system preferences only, and whether iOS honors it is up to the system";

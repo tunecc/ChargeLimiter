@@ -27,6 +27,9 @@ warn_restore_failed() {
     printf '\033[33m[ChargeLimiter] Warning: failed to restore system charge state during removal. If Optimized Battery Charging stays off, toggle it in Settings, or reinstall ChargeLimiter and use "Restore Optimized Battery Charging".\033[0m\n' >&2
 }
 
+# limit-only 会话键先行清理（spec B7）：卸载必须清除 clLimitSessionEnabled/clLimitMode
+# 并把 thermal/locked 镜像归官方，否则残留键会在重装 tweak 后经 initProduct 复活会话。
+"$APP_DIR/ChargeLimiterDaemon" apply_limit_only 0 >/dev/null 2>&1 || true
 if ! "$APP_DIR/ChargeLimiterDaemon" reset_and_exit >/dev/null 2>&1; then
     warn_restore_failed
 fi

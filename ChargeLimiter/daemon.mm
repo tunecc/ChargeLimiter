@@ -3186,7 +3186,12 @@ static void restoreThermalSimulationForReset(void) {
     @synchronized (Service.inst) {
         g_lastAppliedThermalKey = nil; // 清除幂等缓存，后续应用按新决策重新写入
     }
-    setThermalSimulationMode(@"off");
+    // limit-only carve-out（spec B4）：仅限流会话在场时 thermal 镜像归 tweak 会话管理，
+    // 自检/退出/还原路径不得写 off 覆盖会话（否则未插电收敛与插电重放被打断）。
+    // PPM 不属于会话，照常归零；会话未启用（mode 切换窗口）时 thermal 照常归零。
+    if (!(getLocalBool(@"limit_only_mode", NO) && getLimitOnlySessionEnabled())) {
+        setThermalSimulationMode(@"off");
+    }
     // spec『还原的对象与语义』第 5 条：温控与 PPM 模拟双双归零。
     setPPMSimulationMode(@"off");
     // 诊断与归零后的配置保持一致（M3）：还原即时生效，无系统通路可验证。
@@ -4813,6 +4818,14 @@ static void initConf(BOOL reset) {
         }
     }
     g_enable = getLocalBool(@"enable", YES);
+    // limit-only 防御清理（spec B1）：完整控制态回收残留会话键——常驻策略与 tweak
+    // 会话不得同时管理 thermal。g_enable=NO（master-off / 仅限流非驻留形态）不动会话。
+    if (g_enable) {
+        clearLimitOnlySessionKeys();
+        if (getLocalBool(@"limit_only_mode", NO)) {
+            setLocalBool(@"limit_only_mode", NO);
+        }
+    }
     refreshHoldMonitorTimer();
     refreshMCLMaintainTimer();
     loadPolicyEventHistoryRuntimeState();
@@ -5001,6 +5014,10 @@ static NSDictionary* CLMasterOffGateRequest(NSString* api, NSDictionary* nsreq) 
         if ([key isEqualToString:@"history_stats_enabled"] || [key isEqualToString:@"lang"]) {
             return nil;
         }
+        // 仅限流模式标志（spec B1）：模式编排状态键，非系统干预
+        if ([key isEqualToString:@"limit_only_mode"]) {
+            return nil;
+        }
         return @{@"status": @(-403),
                  @"error": @"master_switch_off",
                  @"key": key ?: @""};
@@ -5034,6 +5051,9 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             kv[@"thermal_config_mode"] = getThermalConfigMode();
             kv[@"thermal_apply_status"] = getLocalString(@"thermal_apply_status", @"unknown");
             kv[@"thermal_apply_checked_at"] = getLocalString(@"thermal_apply_checked_at", @"");
+            // 仅限流会话诊断（spec B5）：root 域会话键状态与当前档位
+            kv[@"limit_only_session_enabled"] = @(getLimitOnlySessionEnabled());
+            kv[@"limit_only_level"] = getLimitOnlyLevel();
             kv[@"ppm_simulate_mode"] = getPPMSimulationMode();
             kv[@"use_smart"] = @(g_use_smart);
             kv[@"smart_charge_status"] = @(g_smartChargeStatus);
@@ -5074,6 +5094,11 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
                 CLMasterOffShutdown(@"master_off_set_conf");
                 return @{@"status": @0};   // unreachable：Shutdown 不返回
             } else { // 启用时检查
+                // 回到完整控制（spec B1）：回收仅限流会话键与模式标志，常驻策略接管 thermal
+                clearLimitOnlySessionKeys();
+                if (getLocalBool(@"limit_only_mode", NO)) {
+                    setLocalBool(@"limit_only_mode", NO);
+                }
                 BOOL disableSmartCharge = getLocalBool(@"disable_smart_charge", NO);
                 if (disableSmartCharge) {
                     if (isSmartChargeEnable()) {
@@ -5969,6 +5994,28 @@ int main(int argc, char** argv) { // daemon_main
             } else if (0 == strcmp(argv[argIndex], "set_inflow") && (argIndex + 1) < argc) {
                 bool flag = argv[argIndex + 1][0] - '0';
                 setInflowStatus(flag);
+                return 0;
+            } else if (0 == strcmp(argv[argIndex], "apply_limit_only") && (argIndex + 1) < argc) {
+                // 仅限流会话一次性写入（limit-only daemon-free spec B3）：写会话键 +
+                // thermal 初始镜像 + 通知即退。不启动 HTTP/策略循环/IOKit 监控/统计，
+                // 本进程存在时间 = 一次偏好写。App 经 spawnDaemonCLIVerb_C 调用。
+                BOOL enabled = (argv[argIndex + 1][0] != '0');
+                NSString* mode = @"moderate";
+                if (enabled && (argIndex + 2) < argc) {
+                    mode = @(argv[argIndex + 2]);
+                    if (![mode isEqualToString:@"nominal"] && ![mode isEqualToString:@"light"] &&
+                        ![mode isEqualToString:@"moderate"] && ![mode isEqualToString:@"heavy"]) {
+                        mode = @"moderate";
+                    }
+                }
+                NSDictionary* bat = nil;
+                BOOL plugged = NO;
+                if (0 == getBatInfo(&bat, YES) && bat != nil) {
+                    plugged = isAdaptorConnect(bat, @NO);
+                }
+                setLimitOnlySession(enabled, mode, plugged);
+                NSLog2(@"%@ apply_limit_only enabled=%d mode=%@ plugged=%d",
+                               log_prefix, enabled, mode, plugged);
                 return 0;
             }
         }

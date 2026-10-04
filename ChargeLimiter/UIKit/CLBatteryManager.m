@@ -5,7 +5,10 @@
 
 #import "CLBatteryManager.h"
 #import "CLAPIClient.h"
+#import <IOKit/IOKitLib.h>
 extern NSDictionary* getAllKV_C(void);
+extern void setlocalKV_C(NSString* key, id val);
+extern int spawnDaemonCLIVerb_C(NSArray<NSString*>* verbArgs); // utils.mm：一次性 root CLI（仅限流会话写入）
 
 NSNotificationName const CLBatteryInfoDidUpdateNotification = @"CLBatteryInfoDidUpdateNotification";
 NSNotificationName const CLConfigDidUpdateNotification = @"CLConfigDidUpdateNotification";
@@ -69,6 +72,13 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
 @property (nonatomic, copy, nullable) NSString *appVersion;
 @property (nonatomic, assign) NSTimeInterval systemBootTime;
 @property (nonatomic, assign) NSTimeInterval serviceBootTime;
+
+// 仅限流模式（daemon-free）内部状态
+@property (nonatomic, assign) BOOL limitOnlyModeFlag;      // conf: limit_only_mode
+@property (nonatomic, assign) BOOL limitOnlySessionEnabled; // daemon 报告的 root 域会话键
+@property (nonatomic, assign) BOOL directPlugConnected;     // 直读插电（零 daemon 依赖）
+@property (nonatomic, assign) BOOL directReadAvailable;     // 直读是否成功
+@property (nonatomic, assign) BOOL limitOnlyApplied;        // thermalState 探针判定
 @end
 
 @implementation CLBatteryManager
@@ -125,6 +135,14 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
     _thermalConfigMode = ([thermalConfigValue isKindOfClass:[NSString class]] && thermalConfigValue.length > 0) ? thermalConfigValue : @"off";
     NSString *thermalApplyStatusValue = data[@"thermal_apply_status"];
     _thermalApplyStatus = ([thermalApplyStatusValue isKindOfClass:[NSString class]] && thermalApplyStatusValue.length > 0) ? thermalApplyStatusValue : @"unknown";
+
+    // 仅限流模式（limit-only daemon-free）：模式标志 + root 域会话诊断
+    _limitOnlyModeFlag = [data[@"limit_only_mode"] boolValue];
+    _limitOnlySessionEnabled = [data[@"limit_only_session_enabled"] boolValue];
+    NSString *limitOnlyLevelValue = data[@"limit_only_level"];
+    if ([limitOnlyLevelValue isKindOfClass:[NSString class]] && limitOnlyLevelValue.length > 0) {
+        _limitOnlyLevel = limitOnlyLevelValue;
+    }
     _fullChargeScheduleEnabled = [data[@"full_charge_sched_enabled"] boolValue];
     _fullChargeScheduleIntervalDays = [data[@"full_charge_sched_interval_days"] integerValue];
     _fullChargeScheduleStartMinute = [data[@"full_charge_sched_start_minute"] integerValue];
@@ -164,6 +182,8 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
     if (!m[@"full_charge_sched_interval_days"]) m[@"full_charge_sched_interval_days"] = @7;
     if (!m[@"full_charge_sched_start_minute"]) m[@"full_charge_sched_start_minute"] = @120;
     if (!m[@"full_charge_sched_duration_hours"]) m[@"full_charge_sched_duration_hours"] = @4;
+    if (!m[@"limit_only_mode"]) m[@"limit_only_mode"] = @NO;
+    if (!m[@"limit_only_level"]) m[@"limit_only_level"] = @"moderate";
     return m;
 }
 
@@ -386,6 +406,147 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
             completion(success);
         }
     }];
+}
+
+#pragma mark - 仅限流模式（daemon-free）
+
+- (CLOperationMode)operationMode {
+    // 三态派生（spec B1）：enable 优先——完整控制态忽略 limit_only_mode 残留
+    if (_enabled) return CLOperationModeFullControl;
+    return _limitOnlyModeFlag ? CLOperationModeLimitOnly : CLOperationModeOff;
+}
+
+// D5 同款探针：系统热状态达到限流档级别即判已生效（本进程读数，零 daemon 依赖）。
+// off/nominal 无可验证通路，对齐 daemon D5 off 跳过语义直接记已生效。
+- (BOOL)computeLimitOnlyApplied {
+    if (self.operationMode != CLOperationModeLimitOnly) return NO;
+    CLThermalMode mode = [self thermalModeFromString:self.limitOnlyLevel];
+    NSInteger expected;
+    switch (mode) {
+        case CLThermalModeLight: expected = 1; break;
+        case CLThermalModeModerate: expected = 2; break;
+        case CLThermalModeHeavy: expected = 3; break;
+        default: return YES;
+    }
+    NSInteger current = 0;
+    NSProcessInfoThermalState state = NSProcessInfo.processInfo.thermalState;
+    if (state == NSProcessInfoThermalStateFair) current = 1;
+    else if (state == NSProcessInfoThermalStateSerious) current = 2;
+    else if (state == NSProcessInfoThermalStateCritical) current = 3;
+    return current >= expected;
+}
+
+// 直读 AppleSmartBattery（App 目标链接 IOKit.tbd）：插电/温度/电量/充电态，
+// 零 daemon 依赖。master port 用 0（iOS SDK 将 kIOMasterPortDefault 标记不可用，值即 0）。
+// 读失败保持 directReadAvailable=NO，UI 回退 daemon 按需数据。
+- (void)refreshDirectSessionState {
+    BOOL readOK = NO;
+    BOOL plugged = NO;
+    io_service_t serv = IOServiceGetMatchingService(0, IOServiceMatching("AppleSmartBattery"));
+    if (serv != IO_OBJECT_NULL) {
+        CFTypeRef capable = IORegistryEntryCreateCFProperty(serv, CFSTR("ExternalChargeCapable"), kCFAllocatorDefault, 0);
+        CFTypeRef connected = NULL;
+        if (capable == NULL) {
+            connected = IORegistryEntryCreateCFProperty(serv, CFSTR("ExternalConnected"), kCFAllocatorDefault, 0);
+        }
+        CFTypeRef temperature = IORegistryEntryCreateCFProperty(serv, CFSTR("Temperature"), kCFAllocatorDefault, 0);
+        CFTypeRef isCharging = IORegistryEntryCreateCFProperty(serv, CFSTR("IsCharging"), kCFAllocatorDefault, 0);
+        CFTypeRef capacity = IORegistryEntryCreateCFProperty(serv, CFSTR("CurrentCapacity"), kCFAllocatorDefault, 0);
+        CFTypeRef plugRef = capable ?: connected;
+        if (plugRef != NULL) {
+            readOK = YES;
+            plugged = (CFGetTypeID(plugRef) == CFBooleanGetTypeID()) ? CFBooleanGetValue(plugRef) : NO;
+            self.externalConnected = plugged;
+            if (capable != NULL) {
+                self.externalChargeCapable = plugged;
+            }
+        }
+        if (readOK && temperature != NULL && CFGetTypeID(temperature) == CFNumberGetTypeID()) {
+            self.temperature = [(__bridge NSNumber *)temperature doubleValue] / 100.0;
+        }
+        if (readOK && isCharging != NULL && CFGetTypeID(isCharging) == CFBooleanGetTypeID()) {
+            self.isCharging = CFBooleanGetValue(isCharging);
+        }
+        if (readOK && capacity != NULL && CFGetTypeID(capacity) == CFNumberGetTypeID()) {
+            self.currentCapacity = [(__bridge NSNumber *)capacity integerValue];
+        }
+        if (capable) CFRelease(capable);
+        if (connected) CFRelease(connected);
+        if (temperature) CFRelease(temperature);
+        if (isCharging) CFRelease(isCharging);
+        if (capacity) CFRelease(capacity);
+        IOObjectRelease(serv);
+    }
+    _directReadAvailable = readOK;
+    _directPlugConnected = readOK ? plugged : _externalConnected;
+    _limitOnlyApplied = [self computeLimitOnlyApplied];
+}
+
+- (void)applyLimitOnlyLevel:(NSString *)mode completion:(void (^)(BOOL))completion {
+    NSString *level = mode ?: @"off";
+    self.limitOnlyLevel = level;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        // 一次性 root 进程写会话键 + thermal 镜像（spec B3/B5）：daemon 始终不驻留；
+        // 档位偏好走本地配置（setlocalKV_C），同样不拉起 daemon。
+        int rc = spawnDaemonCLIVerb_C(@[@"apply_limit_only", @"1", level]);
+        setlocalKV_C(@"limit_only_level", level);
+        // 给 thermalState 一点收敛窗口（对齐 daemon D5 3s 探针）后刷新验证
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)1.5 * NSEC_PER_SEC),
+                       dispatch_get_main_queue(), ^{
+            [self refreshDirectSessionState];
+            [[NSNotificationCenter defaultCenter] postNotificationName:CLConfigDidUpdateNotification object:self];
+            if (completion) completion(rc == 0);
+        });
+    });
+}
+
+- (void)switchToMode:(CLOperationMode)mode completion:(void (^)(BOOL))completion {
+    CLOperationMode current = self.operationMode;
+    if (current == mode) {
+        if (completion) completion(YES);
+        return;
+    }
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        BOOL ok = YES;
+        switch (mode) {
+            case CLOperationModeLimitOnly: {
+                // 完整控制→仅限流（spec B1 编排次序）：先停常驻（daemon 完整还原，
+                // 此时会话未启用 → thermal 照常归零），再写模式标志（本地键），
+                // 最后一次性 CLI 建立会话——保证还原不会清掉后写的会话配置。
+                if (current == CLOperationModeFullControl) {
+                    [self saveConfigKey:@"enable" value:@NO completion:nil];
+                }
+                setlocalKV_C(@"limit_only_mode", @YES);
+                NSString *level = self.limitOnlyLevel ?: @"moderate";
+                ok = (spawnDaemonCLIVerb_C(@[@"apply_limit_only", @"1", level]) == 0);
+                break;
+            }
+            case CLOperationModeFullControl: {
+                // 仅限流→完整控制：先清会话（一次性 CLI），再开常驻（daemon bootstrap 回驻留；
+                // daemon 侧 enable=YES 分支另有防御清理，双保险防会话与常驻策略打架）
+                if (current == CLOperationModeLimitOnly) {
+                    spawnDaemonCLIVerb_C(@[@"apply_limit_only", @"0"]);
+                }
+                [self saveConfigKey:@"enable" value:@YES completion:nil];
+                break;
+            }
+            case CLOperationModeOff: {
+                if (current == CLOperationModeLimitOnly) {
+                    // 先清会话（CLI），再清模式标志（本地键）；系统 thermal 已由 CLI 归零
+                    spawnDaemonCLIVerb_C(@[@"apply_limit_only", @"0"]);
+                    setlocalKV_C(@"limit_only_mode", @NO);
+                } else if (current == CLOperationModeFullControl) {
+                    [self saveConfigKey:@"enable" value:@NO completion:nil]; // master-off 全还原
+                }
+                break;
+            }
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self refreshDirectSessionState];
+            [[NSNotificationCenter defaultCenter] postNotificationName:CLConfigDidUpdateNotification object:self];
+            if (completion) completion(ok);
+        });
+    });
 }
 
 #pragma mark - 私有方法

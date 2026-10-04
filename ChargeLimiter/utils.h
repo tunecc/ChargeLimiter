@@ -76,6 +76,22 @@ NSString* getThermalConfigMode(); // com.apple.cltm 中已配置的模拟档位
 void setThermalSimulationMode(NSString* mode);
 NSString* getPPMSimulationMode();
 void setPPMSimulationMode(NSString* mode);
+
+// 仅限流会话（limit-only daemon-free）：com.apple.cltm 域的会话键与 thermal 镜像。
+// 以下读写在调用进程的 CFPreferences 域生效——仅限 root（daemon/CLI 动词）；
+// App（mobile）必须经 spawnDaemonCLIVerb_C 走 root 一次性进程，不得直写。
+#ifdef __cplusplus
+extern "C" {
+#endif
+BOOL getLimitOnlySessionEnabled(void);      // clLimitSessionEnabled
+NSString* getLimitOnlyLevel(void);          // clLimitMode（非法/缺省按 off）
+void setLimitOnlySession(BOOL enabled, NSString* mode, BOOL plugged); // 会话键 + thermal/locked 镜像 + 通知
+void clearLimitOnlySessionKeys(void);       // 清会话键并把 thermal/locked 镜像归零 + 通知
+BOOL isCLPowerConnected(void);              // AppleSmartBattery 插电判定（ExternalChargeCapable 优先）
+int spawnDaemonCLIVerb_C(NSArray<NSString*>* verbArgs); // App 侧阻塞式 spawn daemon CLI 动词
+#ifdef __cplusplus
+}
+#endif
 BOOL isSmartChargeEnable(); // 系统自带电池优化
 int getSmartChargeStatus(); // 0:disable 1:enable 2:fullcharge 3:temporarily_disable
 BOOL temporarilyDisableSmartCharge();

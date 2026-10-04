@@ -3596,6 +3596,108 @@ void setPPMSimulationMode(NSString* mode) {
     }
 }
 
+// === 仅限流会话（limit-only daemon-free，spec B2/B3）===
+// com.apple.cltm 域会话键：CLThermalSim tweak（thermalmonitord 内）据此维护
+// 插电时限流档、拔线回 off 的会话语义。写方仅限 root 进程（daemon CLI 动词 /
+// daemon 防御清理）；App（mobile）经 spawnDaemonCLIVerb_C 间接写入。
+static NSString* const CLLimitOnlySessionSuite = @"com.apple.cltm";
+static NSString* const CLLimitOnlySessionEnabledKey = @"clLimitSessionEnabled";
+static NSString* const CLLimitOnlyLevelKey = @"clLimitMode";
+
+BOOL getLimitOnlySessionEnabled() {
+    NSUserDefaults* defs = [[NSUserDefaults alloc] initWithSuiteName:CLLimitOnlySessionSuite];
+    return [defs objectForKey:CLLimitOnlySessionEnabledKey] != nil && [defs boolForKey:CLLimitOnlySessionEnabledKey];
+}
+
+NSString* getLimitOnlyLevel() {
+    NSUserDefaults* defs = [[NSUserDefaults alloc] initWithSuiteName:CLLimitOnlySessionSuite];
+    NSString* mode = [defs stringForKey:CLLimitOnlyLevelKey];
+    if (![mode isEqualToString:@"off"] && ![mode isEqualToString:@"nominal"] &&
+        ![mode isEqualToString:@"light"] && ![mode isEqualToString:@"moderate"] &&
+        ![mode isEqualToString:@"heavy"]) {
+        return @"off";
+    }
+    return mode;
+}
+
+void setLimitOnlySession(BOOL enabled, NSString* mode, BOOL plugged) {
+    NSUserDefaults* defs = [[NSUserDefaults alloc] initWithSuiteName:CLLimitOnlySessionSuite];
+    if (enabled) {
+        [defs setObject:@YES forKey:CLLimitOnlySessionEnabledKey];
+        if (![mode isEqualToString:@"off"] && ![mode isEqualToString:@"nominal"] &&
+            ![mode isEqualToString:@"light"] && ![mode isEqualToString:@"moderate"] &&
+            ![mode isEqualToString:@"heavy"]) {
+            mode = @"moderate"; // CLI 已校验，此处防御兜底
+        }
+        [defs setObject:mode forKey:CLLimitOnlyLevelKey];
+        // 初始镜像：插电 → 限流档 + 锁定；未插电 → off（会话后续维护归 tweak）。
+        // 锁定语义：会话生效且档位非 off 时屏蔽系统自动覆盖（tweak CLTSShouldSuppressOverride）。
+        NSString* thermal = (plugged && ![mode isEqualToString:@"off"]) ? mode : @"off";
+        [defs setObject:thermal forKey:@"thermalSimulationMode"];
+        [defs setObject:@(![thermal isEqualToString:@"off"]) forKey:@"thermalSimulationLocked"];
+    } else {
+        [defs setObject:@NO forKey:CLLimitOnlySessionEnabledKey];
+        [defs setObject:@"off" forKey:@"thermalSimulationMode"];
+        [defs setObject:@NO forKey:@"thermalSimulationLocked"];
+    }
+    [defs synchronize];
+    CLPostThermalApplyNotification();
+}
+
+void clearLimitOnlySessionKeys() {
+    NSUserDefaults* defs = [[NSUserDefaults alloc] initWithSuiteName:CLLimitOnlySessionSuite];
+    [defs removeObjectForKey:CLLimitOnlySessionEnabledKey];
+    [defs removeObjectForKey:CLLimitOnlyLevelKey];
+    // 镜像归零：清掉会话后无人维护 thermal 键，防残留（daemon 完整控制随后自行重应用默认档）
+    [defs setObject:@"off" forKey:@"thermalSimulationMode"];
+    [defs setObject:@NO forKey:@"thermalSimulationLocked"];
+    [defs synchronize];
+    CLPostThermalApplyNotification();
+}
+
+// 插电判定（与 daemon isAdaptorConnect 常规分支一致）：ExternalChargeCapable 优先，
+// 缺失回退 ExternalConnected。仅限流模式无禁流覆盖写，派生键抖动前提不存在。
+BOOL isCLPowerConnected() {
+    io_service_t serv = IOServiceGetMatchingService(kIOMasterPortDefault,
+                                                    IOServiceMatching("AppleSmartBattery"));
+    if (serv == IO_OBJECT_NULL) {
+        return NO;
+    }
+    BOOL connected = NO;
+    CFTypeRef val = IORegistryEntryCreateCFProperty(serv, CFSTR("ExternalChargeCapable"), kCFAllocatorDefault, 0);
+    if (val == NULL) {
+        val = IORegistryEntryCreateCFProperty(serv, CFSTR("ExternalConnected"), kCFAllocatorDefault, 0);
+    }
+    if (val != NULL) {
+        if (CFGetTypeID(val) == CFBooleanGetTypeID()) {
+            connected = CFBooleanGetValue((CFBooleanRef)val);
+        }
+        CFRelease(val);
+    }
+    IOObjectRelease(serv);
+    return connected;
+}
+
+// App 侧：阻塞式 spawn daemon CLI 动词（一次性 root 进程，写偏好即退）。
+// 返回 spawn rc；动词执行结果经 stdout/退出码外播，App 侧用 thermalState 探针验证生效。
+int spawnDaemonCLIVerb_C(NSArray<NSString*>* verbArgs) {
+    NSString* daemonPath = CLDaemonPathForApp();
+    if (daemonPath.length == 0 || ![[NSFileManager defaultManager] fileExistsAtPath:daemonPath]) {
+        NSLog2(@"[CL] spawnDaemonCLIVerb daemon missing: %@", daemonPath);
+        return -3;
+    }
+    NSMutableArray* argv = [NSMutableArray arrayWithObject:daemonPath];
+    if ([verbArgs isKindOfClass:[NSArray class]]) {
+        [argv addObjectsFromArray:verbArgs];
+    }
+    int jbType = getJBType();
+    // relaxin/roothide 与 restartDaemonForApp_C 同口径：不用 root persona，daemon setuid 提权。
+    int spawnFlags = (jbType != JBTYPE_TROLLSTORE && jbType != JBTYPE_ROOTHIDE) ? SPAWN_FLAG_ROOT : 0;
+    int rc = spawn(argv, nil, nil, nil, spawnFlags, nil); // 无 NOWAIT = 阻塞等待动词退出
+    NSLog2(@"[CL] spawnDaemonCLIVerb rc=%d jbType=%d argv=%@", rc, jbType, argv);
+    return rc;
+}
+
 @interface PowerUISmartChargeClient : NSObject
 - (instancetype)initWithClientName:(NSString*)name;
 - (int)isSmartChargingCurrentlyEnabled:(NSError**)err;
