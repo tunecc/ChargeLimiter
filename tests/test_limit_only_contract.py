@@ -14,6 +14,10 @@
 - B1/B5：白名单放行 limit_only_mode；App 三态主开关 + 状态条 + 置灰门控 +
   限流卡片；档位写入走一次性 root 进程（spawnDaemonCLIVerb_C），daemon 不驻留；
   切换成功后内存模式状态先同步再发通知（operation-mode-live-refresh M1）。
+- B1 修订（fix-limit-only-restart-state）：切换先落盘模式标志与归一化档位
+  （off/未设置→moderate），再 enable=NO，最后 CLI；CLI 失败重试一次且 UI 弹窗
+  可见；applyConfigData 忽略 "off" 档、初始 moderate；共享配置 plist 写经
+  flock 跨进程串行（utils writeMergedConfigDictionaryToDisk 单一收口）。
 - B7：tweak 打包链接 IOKit.tbd。
 """
 from pathlib import Path
@@ -239,6 +243,18 @@ class UtilsSessionContractTests(unittest.TestCase):
         self.assertNotIn("ppmSimulationMode", self.utils)
         self.assertNotIn("PPMSimulationMode", self.utils_h)
 
+    def test_shared_config_write_serialized(self):
+        # 共享配置 plist 读-合并-写全程持跨进程排它 flock（fix-limit-only-restart-state B8 单一收口）
+        # wrapper 定义前有前向声明，不能用 function_body 锚定，改全文件顺序断言
+        lock_call = self.utils.index("int lockFd = acquireConfigWriteLock(lockPath);")
+        locked_call = self.utils.index("writeMergedConfigDictionaryToDiskLocked(fallbackPreferences,")
+        unlock_call = self.utils.index("releaseConfigWriteLock(lockFd);")
+        self.assertLess(lock_call, locked_call)
+        self.assertLess(locked_call, unlock_call)
+        helper = function_body(self.utils, "static int acquireConfigWriteLock(NSString* lockPath) {")
+        self.assertIn("flock(fd, LOCK_EX)", helper)
+        self.assertIn("O_RDWR | O_CREAT, 0666", helper)
+
     def test_clear_removes_session_keys(self):
         body = function_body(self.utils, "void clearLimitOnlySessionKeys() {")
         self.assertIn("removeObjectForKey:", body)
@@ -273,14 +289,46 @@ class AppContractTests(unittest.TestCase):
         self.assertIn('setlocalKV_C(@"limit_only_level", level)', body)
 
     def test_mode_switch_orchestration_order(self):
-        # 完整控制→仅限流：先 enable=NO（daemon 完整还原），后建会话——还原不清会话
+        # 完整控制→仅限流（spec B1 修订次序）：先落盘模式标志与档位（不被 daemon
+        # 关停写突发覆盖），再 enable=NO（daemon 完整还原），最后 CLI 建会话
         body = function_body(self.manager_m, "- (void)switchToMode:(CLOperationMode)mode completion:(void (^)(BOOL))completion {")
         limit_pos = body.index("CLOperationModeLimitOnly")
+        level_pos = body.index('setlocalKV_C(@"limit_only_level", level)')
+        mode_pos = body.index('setlocalKV_C(@"limit_only_mode", @YES)')
         enable_pos = body.index('saveConfigKey:@"enable" value:@NO')
-        session_pos = body.index('setlocalKV_C(@"limit_only_mode", @YES)')
         cli_pos = body.index('spawnDaemonCLIVerb_C(@[@"apply_limit_only", @"1"')
-        self.assertLess(enable_pos, session_pos)
-        self.assertLess(session_pos, cli_pos)
+        self.assertLess(limit_pos, level_pos)
+        self.assertLess(level_pos, mode_pos)
+        self.assertLess(mode_pos, enable_pos)
+        self.assertLess(enable_pos, cli_pos)
+
+    def test_level_normalized_to_moderate_on_switch(self):
+        # 进入仅限流自动中度（fix-limit-only-restart-state）：off/未设置一律归一化
+        body = function_body(self.manager_m, "- (void)switchToMode:(CLOperationMode)mode completion:(void (^)(BOOL))completion {")
+        self.assertIn('if (level.length == 0 || [level isEqualToString:@"off"])', body)
+        self.assertIn('level = @"moderate";', body)
+        self.assertIn("self.limitOnlyLevel = level;", body)
+
+    def test_cli_failure_retried_once(self):
+        # apply_limit_only spawn 失败自动重试一次（两个调用点各两处）
+        switch_body = function_body(self.manager_m, "- (void)switchToMode:(CLOperationMode)mode completion:(void (^)(BOOL))completion {")
+        self.assertEqual(switch_body.count('spawnDaemonCLIVerb_C(@[@"apply_limit_only", @"1"'), 2)
+        level_body = function_body(self.manager_m, "- (void)applyLimitOnlyLevel:(NSString *)mode completion:(void (^)(BOOL))completion {")
+        self.assertEqual(level_body.count('spawnDaemonCLIVerb_C(@[@"apply_limit_only", @"1"'), 2)
+
+    def test_off_level_seed_ignored(self):
+        # off 种子根除：applyConfigData 忽略 daemon 上报的 "off"，初始默认 moderate
+        body = function_body(self.manager_m, "- (void)applyConfigData:(NSDictionary *)data {")
+        self.assertIn('![limitOnlyLevelValue isEqualToString:@"off"]', body)
+        init_body = function_body(self.manager_m, "- (instancetype)init {")
+        self.assertIn('_limitOnlyLevel = @"moderate";', init_body)
+
+    def test_mode_switch_failure_alert(self):
+        # 切换失败必须可见：completion(NO) 弹窗提示（不再静默）
+        body = function_body(self.settings, "- (void)switchToOperationMode:(CLOperationMode)mode {")
+        self.assertIn("if (!success)", body)
+        self.assertIn("showModeSwitchFailureAlert", body)
+        self.assertIn("showModeSwitchFailureAlert", self.settings)
 
     def test_mode_switch_syncs_memory_before_notify(self):
         # operation-mode-live-refresh M1：切换成功后内存模式状态先对齐再发通知，
@@ -350,7 +398,7 @@ class PackagingAndStringsContractTests(unittest.TestCase):
 
     def test_strings_synced(self):
         for key in ("运行模式", "完整控制", "仅限流", "限流档位", "会话状态", "生效验证",
-                    "已插电 · 限流生效中", "未插电 · 限流已解除"):
+                    "已插电 · 限流生效中", "未插电 · 限流已解除", "切换失败"):
             self.assertIn('"%s"' % key, self.zh)
             self.assertIn('"%s"' % key, self.en)
 

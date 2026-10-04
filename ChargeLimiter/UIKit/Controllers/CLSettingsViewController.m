@@ -5667,7 +5667,19 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     [[CLBatteryManager shared] switchToMode:mode completion:^(BOOL success) {
         [weakSelf updateCardValue:weakSelf.controlCard title:CLL(@"启用") value:[weakSelf operationModeText]];
         [weakSelf applyLimitOnlyUIGating];
+        if (!success) {
+            [weakSelf showModeSwitchFailureAlert];
+        }
     }];
+}
+
+// 切换失败必须可见（fix-limit-only-restart-state M1）：一次性 CLI/daemon 写入失败不再静默
+- (void)showModeSwitchFailureAlert {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"切换失败")
+                                                                  message:CLL(@"充电限流配置未能写入，请确认越狱环境与守护进程权限后重试")
+                                                           preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"确定") style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 // 仅限流门控（spec B5）：状态条与限流卡片仅此模式可见；daemon 依赖卡片置灰禁用

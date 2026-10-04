@@ -140,7 +140,9 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
     _limitOnlyModeFlag = [data[@"limit_only_mode"] boolValue];
     _limitOnlySessionEnabled = [data[@"limit_only_session_enabled"] boolValue];
     NSString *limitOnlyLevelValue = data[@"limit_only_level"];
-    if ([limitOnlyLevelValue isKindOfClass:[NSString class]] && limitOnlyLevelValue.length > 0) {
+    // "off" 是 daemon 侧会话缺省的诊断值（完整控制下恒为 off），不得污染真实档位
+    if ([limitOnlyLevelValue isKindOfClass:[NSString class]] && limitOnlyLevelValue.length > 0 &&
+        ![limitOnlyLevelValue isEqualToString:@"off"]) {
         _limitOnlyLevel = limitOnlyLevelValue;
     }
     _fullChargeScheduleEnabled = [data[@"full_charge_sched_enabled"] boolValue];
@@ -213,6 +215,7 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
         _fullChargeScheduleIntervalDays = 7;
         _fullChargeScheduleStartMinute = 120;
         _fullChargeScheduleDurationHours = 4;
+        _limitOnlyLevel = @"moderate"; // 档位缺省中度（fix-limit-only-restart-state M4）
         _policyTransitionHistory = @[];
         _policyEventHistory = @[];
     }
@@ -483,12 +486,16 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
 }
 
 - (void)applyLimitOnlyLevel:(NSString *)mode completion:(void (^)(BOOL))completion {
-    NSString *level = mode ?: @"off";
+    // 档位归一化：off/未设置按 moderate（档位选择器不提供 off，缺省即中度）
+    NSString *level = (mode.length > 0 && ![mode isEqualToString:@"off"]) ? mode : @"moderate";
     self.limitOnlyLevel = level;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         // 一次性 root 进程写会话键 + thermal 镜像（spec B3/B5）：daemon 始终不驻留；
-        // 档位偏好走本地配置（setlocalKV_C），同样不拉起 daemon。
+        // 档位偏好走本地配置（setlocalKV_C），同样不拉起 daemon。失败重试一次。
         int rc = spawnDaemonCLIVerb_C(@[@"apply_limit_only", @"1", level]);
+        if (rc != 0) {
+            rc = spawnDaemonCLIVerb_C(@[@"apply_limit_only", @"1", level]);
+        }
         setlocalKV_C(@"limit_only_level", level);
         // 给 thermalState 一点收敛窗口（对齐 daemon D5 3s 探针）后刷新验证
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)1.5 * NSEC_PER_SEC),
@@ -510,15 +517,26 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
         BOOL ok = YES;
         switch (mode) {
             case CLOperationModeLimitOnly: {
-                // 完整控制→仅限流（spec B1 编排次序）：先停常驻（daemon 完整还原，
-                // 此时会话未启用 → thermal 照常归零），再写模式标志（本地键），
-                // 最后一次性 CLI 建立会话——保证还原不会清掉后写的会话配置。
+                // 档位归一化（fix-limit-only-restart-state）：off/未设置一律按 moderate
+                // 建立会话——完整控制阶段 get_conf 上报的 "off" 缺省值不得污染真实档位。
+                NSString *level = self.limitOnlyLevel;
+                if (level.length == 0 || [level isEqualToString:@"off"]) {
+                    level = @"moderate";
+                }
+                self.limitOnlyLevel = level;
+                // 先落盘模式标志与档位，再停常驻（spec B1 修订次序）：daemon 关停期的
+                // 配置写经共享锁与本写串行，limit_only_mode 不再被覆盖丢失；
+                // daemon 配置（模式/档位/enable）仍全部先于 CLI 会话建立。
+                setlocalKV_C(@"limit_only_level", level);
+                setlocalKV_C(@"limit_only_mode", @YES);
                 if (current == CLOperationModeFullControl) {
                     [self saveConfigKey:@"enable" value:@NO completion:nil];
                 }
-                setlocalKV_C(@"limit_only_mode", @YES);
-                NSString *level = self.limitOnlyLevel ?: @"moderate";
-                ok = (spawnDaemonCLIVerb_C(@[@"apply_limit_only", @"1", level]) == 0);
+                int rc = spawnDaemonCLIVerb_C(@[@"apply_limit_only", @"1", level]);
+                if (rc != 0) {
+                    rc = spawnDaemonCLIVerb_C(@[@"apply_limit_only", @"1", level]); // 一次性重试
+                }
+                ok = (rc == 0);
                 break;
             }
             case CLOperationModeFullControl: {

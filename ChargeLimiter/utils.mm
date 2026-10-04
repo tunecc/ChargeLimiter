@@ -1,11 +1,13 @@
 #include "utils.h"
 #import "CLLocalization.h"
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <poll.h>
 #include <pwd.h>
 #include <signal.h>
 #include <stdlib.h>
+#include <sys/file.h>
 #include <sys/wait.h>
 #include <sys/utsname.h>
 #include <sys/sysctl.h>
@@ -1606,7 +1608,7 @@ static NSDictionary* readConfigFromDiskWithLibroot(NSString** loadedPathOut) {
     return nil;
 }
 
-static BOOL writeMergedConfigDictionaryToDisk(NSDictionary* fallbackPreferences,
+static BOOL writeMergedConfigDictionaryToDiskLocked(NSDictionary* fallbackPreferences,
                                               NSDictionary* pendingChanges,
                                               NSSet<NSString*>* removedKeys,
                                               NSString** pathOut,
@@ -1669,6 +1671,86 @@ static BOOL writeMergedConfigDictionaryToDisk(NSDictionary* fallbackPreferences,
     // root 写盘成功后交还 mobile 所有权，避免 App 原子替换失败
     repairSharedConfigFileOwnership(writtenPath);
     return YES;
+}
+
+// 共享配置写锁（fix-limit-only-restart-state B8）：App(mobile) 与 daemon/CLI(root)
+// 对同一 plist 的读-合并-写无跨进程互斥时会整键互相覆盖（仅限流切换实测丢
+// limit_only_mode），故读写全程持同目录排它 flock 串行。
+static NSString* configLockFilePath(void) {
+    NSString* confPath = getConfigWritePathWithLibroot();
+    if (confPath.length == 0) {
+        confPath = g_confPath;
+    }
+    NSString* dir = [confPath stringByDeletingLastPathComponent];
+    if (dir.length == 0) {
+        return nil;
+    }
+    return [dir stringByAppendingPathComponent:@"com.chargelimiter.mod.lock"];
+}
+
+static void repairLockFileOwnership(NSString* lockPath) {
+    if (lockPath.length == 0 || geteuid() != 0) {
+        return;
+    }
+    struct passwd* pw = getpwnam("mobile");
+    if (pw == NULL) {
+        return;
+    }
+    if (chown(lockPath.fileSystemRepresentation, pw->pw_uid, pw->pw_gid) != 0) {
+        NSLog2(@"[CL] conf lock chown failed path=%@ errno=%d", lockPath, errno);
+    }
+    if (chmod(lockPath.fileSystemRepresentation, 0666) != 0) {
+        NSLog2(@"[CL] conf lock chmod failed path=%@ errno=%d", lockPath, errno);
+    }
+}
+
+static int acquireConfigWriteLock(NSString* lockPath) {
+    if (lockPath.length == 0) {
+        return -1;
+    }
+    int fd = open(lockPath.fileSystemRepresentation, O_RDWR | O_CREAT, 0666);
+    if (fd < 0 && errno == EACCES) {
+        // root 曾以更严权限创建：mobile 降级只读 FD，BSD flock 仍可排它
+        fd = open(lockPath.fileSystemRepresentation, O_RDONLY);
+    }
+    if (fd < 0) {
+        return -1;
+    }
+    if (flock(fd, LOCK_EX) != 0) {
+        close(fd);
+        return -1;
+    }
+    repairLockFileOwnership(lockPath);
+    return fd;
+}
+
+static void releaseConfigWriteLock(int fd) {
+    if (fd >= 0) {
+        flock(fd, LOCK_UN);
+        close(fd);
+    }
+}
+
+static BOOL writeMergedConfigDictionaryToDisk(NSDictionary* fallbackPreferences,
+                                              NSDictionary* pendingChanges,
+                                              NSSet<NSString*>* removedKeys,
+                                              NSString** pathOut,
+                                              NSError** errorOut,
+                                              NSMutableDictionary** mergedPreferencesOut) {
+    NSString* lockPath = configLockFilePath();
+    int lockFd = acquireConfigWriteLock(lockPath);
+    if (lockPath != nil && lockFd < 0) {
+        // 锁不可用按旧路径降级继续写（可用性优先），只记日志
+        NSLog2(@"[CL] conf lock unavailable path=%@ — proceeding unlocked", lockPath);
+    }
+    BOOL ok = writeMergedConfigDictionaryToDiskLocked(fallbackPreferences,
+                                                      pendingChanges,
+                                                      removedKeys,
+                                                      pathOut,
+                                                      errorOut,
+                                                      mergedPreferencesOut);
+    releaseConfigWriteLock(lockFd);
+    return ok;
 }
 
 /**
