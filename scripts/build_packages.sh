@@ -282,6 +282,7 @@ build_tweak_dylib() {
     -fobjc-arc \
     -miphoneos-version-min=11.0 \
     -framework Foundation \
+    "$ROOT_DIR/ChargeLimiter/IOKit.tbd" \
     "$TWEAK_SRC_DIR/CLThermalSimTweak.m" \
     -o "$TWEAK_OUT"
   ldid -S "$TWEAK_OUT"

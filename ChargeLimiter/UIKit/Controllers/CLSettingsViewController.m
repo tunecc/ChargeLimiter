@@ -17,6 +17,7 @@ extern NSString* const CLConfigWriteFailedNotification;
 NSUserDefaults* getAppUserDefaults(void);
 NSString* getAppDocumentsPath_C(void);
 NSString* getConfPath_C(void);
+int getJBType_C(void); // utils.mm：打包形态判定（巨魔口径提示用）
 NSString* getRuntimeDataRootPath_C(void);
 void reloadLocalKVFromDisk_C(void);
 void setlocalKV_C(NSString* key, id val);
@@ -5128,6 +5129,8 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
 @property (nonatomic, strong) UILabel *systemControlHintLabel;
 @property (nonatomic, strong) NSTimer *systemControlHintTimer;
 @property (nonatomic, strong) UIView *smartChargeRestoreBanner;
+@property (nonatomic, strong) UIView *limitOnlyBanner;      // 仅限流常驻状态条（spec B5）
+@property (nonatomic, strong) CLGlassCard *limitOnlyCard;   // 仅限流卡片：档位/会话状态/生效验证
 @property (nonatomic, assign) NSInteger lastChargeAboveForHint;
 @property (nonatomic, assign) BOOL lastSystemCapacityControlActiveForHint;
 @property (nonatomic, assign) BOOL didCheckLegacyMigrationPrompt;
@@ -5142,6 +5145,15 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
 - (BOOL)usesSystemCapacityControlForManager:(CLBatteryManager *)manager chargeAbove:(NSInteger)chargeAbove;
 - (BOOL)isHoldSuppressedBySystemCapacityControlForManager:(CLBatteryManager *)manager;
 - (void)updatePowerPathHoldVisibilityForManager:(CLBatteryManager *)manager;
+- (void)setupLimitOnlyBanner;
+- (void)setupLimitOnlyCard;
+- (void)applyLimitOnlyUIGating;
+- (void)updateLimitOnlyRows;
+- (void)presentOperationModePicker;
+- (void)presentLimitOnlyLevelPicker;
+- (void)switchToOperationMode:(CLOperationMode)mode;
+- (NSString *)operationModeText;
+- (NSString *)limitOnlyLevelText;
 @end
 
 @implementation CLSettingsViewController
@@ -5518,11 +5530,178 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
 
 - (void)setupControlCard {
     self.controlCard = [[CLGlassCard alloc] init];
-    [self.controlCard addSwitchRowWithIcon:@"bolt.fill" title:CLL(@"启用") isOn:YES color:[UIColor systemGreenColor] tag:100 onChange:^(BOOL isOn) {
-        [CLBatteryManager shared].enabled = isOn;
-    }];
-    
+    self.controlCard.viewController = self;
+    // 三态主开关（limit-only spec B2/D2）：关闭 / 完整控制 / 仅限流。
+    // 行值显示当前模式，点按弹出模式选择——一个控件表达全部语义。
+    [self.controlCard addRowWithIcon:@"bolt.fill" title:CLL(@"启用") value:[self operationModeText] color:[UIColor systemGreenColor]];
+    UIView *modeRow = self.controlCard.contentStack.arrangedSubviews.lastObject;
+    UITapGestureRecognizer *modeTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(presentOperationModePicker)];
+    [modeRow addGestureRecognizer:modeTap];
+    modeRow.userInteractionEnabled = YES;
     [self.mainStack addArrangedSubview:self.controlCard];
+
+    [self setupLimitOnlyBanner];
+    [self setupLimitOnlyCard];
+}
+
+// 仅限流常驻状态条（spec B5）：模式生效期间常驻，明示「其他控制已关、daemon 未运行」
+- (void)setupLimitOnlyBanner {
+    UIView *banner = [[UIView alloc] init];
+    banner.translatesAutoresizingMaskIntoConstraints = NO;
+    banner.backgroundColor = [[UIColor systemIndigoColor] colorWithAlphaComponent:0.14];
+    banner.layer.cornerRadius = 12;
+    banner.hidden = YES;
+
+    UIImageView *icon = [[UIImageView alloc] init];
+    icon.translatesAutoresizingMaskIntoConstraints = NO;
+    icon.tintColor = [UIColor systemIndigoColor];
+    UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:15 weight:UIFontWeightSemibold];
+    icon.image = CLSymbolImage(@"tortoise.fill", config);
+
+    UILabel *label = [[UILabel alloc] init];
+    label.translatesAutoresizingMaskIntoConstraints = NO;
+    label.font = [UIFont systemFontOfSize:13];
+    label.textColor = [UIColor labelColor];
+    label.numberOfLines = 0;
+    label.text = CLL(@"仅限流模式 · 守护进程未运行\n电量上限由系统负责（优化充电 / 80% 限制）");
+
+    [banner addSubview:icon];
+    [banner addSubview:label];
+    [NSLayoutConstraint activateConstraints:@[
+        [icon.leadingAnchor constraintEqualToAnchor:banner.leadingAnchor constant:12],
+        [icon.centerYAnchor constraintEqualToAnchor:banner.centerYAnchor],
+        [icon.widthAnchor constraintEqualToConstant:18],
+        [icon.heightAnchor constraintEqualToConstant:18],
+        [label.leadingAnchor constraintEqualToAnchor:icon.trailingAnchor constant:8],
+        [label.topAnchor constraintEqualToAnchor:banner.topAnchor constant:11],
+        [label.bottomAnchor constraintEqualToAnchor:banner.bottomAnchor constant:-11],
+        [label.trailingAnchor constraintLessThanOrEqualToAnchor:banner.trailingAnchor constant:-12],
+    ]];
+    self.limitOnlyBanner = banner;
+    [self.mainStack addArrangedSubview:banner];
+}
+
+// 仅限流卡片（spec B5）：档位选择 + 会话状态 + 生效验证——全部零 daemon 依赖
+- (void)setupLimitOnlyCard {
+    self.limitOnlyCard = [[CLGlassCard alloc] init];
+    self.limitOnlyCard.viewController = self;
+    [self.limitOnlyCard addRowWithIcon:@"gauge.with.dots.needle.33percent" title:CLL(@"限流档位") value:[self limitOnlyLevelText] color:[UIColor systemOrangeColor]];
+    UIView *levelRow = self.limitOnlyCard.contentStack.arrangedSubviews.lastObject;
+    UITapGestureRecognizer *levelTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(presentLimitOnlyLevelPicker)];
+    [levelRow addGestureRecognizer:levelTap];
+    levelRow.userInteractionEnabled = YES;
+    [self.limitOnlyCard addRowWithIcon:@"bolt.horizontal.circle" title:CLL(@"会话状态") value:@"--" color:[UIColor systemBlueColor]];
+    [self.limitOnlyCard addRowWithIcon:@"checkmark.seal" title:CLL(@"生效验证") value:CLL(@"未知") color:[UIColor systemGreenColor]];
+    // 巨魔形态口径（spec B6 / D4）：无注入执行端，沿用充电限流既有提示
+    if (getJBType_C() == 8 /* JBTYPE_TROLLSTORE */) {
+        UILabel *tip = [[UILabel alloc] init];
+        tip.translatesAutoresizingMaskIntoConstraints = NO;
+        tip.font = [UIFont systemFontOfSize:12];
+        tip.textColor = [UIColor secondaryLabelColor];
+        tip.numberOfLines = 0;
+        tip.text = CLL(@"巨魔环境无执行端：档位仅写入系统偏好，是否生效由系统决定");
+        [self.limitOnlyCard.contentStack addArrangedSubview:tip];
+        [NSLayoutConstraint activateConstraints:@[
+            [tip.leadingAnchor constraintEqualToAnchor:self.limitOnlyCard.contentStack.leadingAnchor constant:16],
+            [tip.trailingAnchor constraintLessThanOrEqualToAnchor:self.limitOnlyCard.contentStack.trailingAnchor constant:-16],
+        ]];
+    }
+    self.limitOnlyCard.hidden = YES;
+    [self.mainStack addArrangedSubview:self.limitOnlyCard];
+}
+
+- (NSString *)operationModeText {
+    switch ([CLBatteryManager shared].operationMode) {
+        case CLOperationModeLimitOnly: return CLL(@"仅限流");
+        case CLOperationModeFullControl: return CLL(@"完整控制");
+        default: return CLL(@"关闭");
+    }
+}
+
+- (NSString *)limitOnlyLevelText {
+    NSString *level = [CLBatteryManager shared].limitOnlyLevel ?: @"moderate";
+    NSDictionary *map = @{@"off": CLL(@"关闭"),
+                          @"nominal": CLL(@"正常"),
+                          @"light": CLL(@"轻度"),
+                          @"moderate": CLL(@"中度"),
+                          @"heavy": CLL(@"重度")};
+    return map[level] ?: level;
+}
+
+- (void)presentOperationModePicker {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"运行模式")
+        message:CLL(@"完整控制：守护进程常驻，全部功能。\n仅限流：守护进程不运行，只保留充电限流，电量上限交给系统（优化充电 / 80% 限制）。\n关闭：停止一切控制并还原系统状态。")
+        preferredStyle:UIAlertControllerStyleAlert];
+    __weak typeof(self) weakSelf = self;
+    NSArray *titles = @[CLL(@"关闭"), CLL(@"完整控制"), CLL(@"仅限流")];
+    NSArray *values = @[@(CLOperationModeOff), @(CLOperationModeFullControl), @(CLOperationModeLimitOnly)];
+    for (NSInteger i = 0; i < titles.count; i++) {
+        UIAlertAction *action = [UIAlertAction actionWithTitle:titles[i] style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull a) {
+            [weakSelf switchToOperationMode:(CLOperationMode)[values[i] integerValue]];
+        }];
+        [alert addAction:action];
+    }
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"取消") style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)presentLimitOnlyLevelPicker {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"充电限流") message:CLL(@"插电时限流生效，拔线自动解除\n档位越高，充电电流越小") preferredStyle:UIAlertControllerStyleAlert];
+    NSArray *modes = @[CLL(@"关闭"), CLL(@"正常"), CLL(@"轻度"), CLL(@"中度"), CLL(@"重度")];
+    NSArray *modeValues = @[@"off", @"nominal", @"light", @"moderate", @"heavy"];
+    __weak typeof(self) weakSelf = self;
+    for (NSInteger i = 0; i < modes.count; i++) {
+        UIAlertAction *action = [UIAlertAction actionWithTitle:modes[i] style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull a) {
+            [[CLBatteryManager shared] applyLimitOnlyLevel:modeValues[i] completion:^(BOOL success) {
+                [weakSelf updateLimitOnlyRows];
+            }];
+        }];
+        [alert addAction:action];
+    }
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"取消") style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)switchToOperationMode:(CLOperationMode)mode {
+    __weak typeof(self) weakSelf = self;
+    [[CLBatteryManager shared] switchToMode:mode completion:^(BOOL success) {
+        [weakSelf updateCardValue:weakSelf.controlCard title:CLL(@"启用") value:[weakSelf operationModeText]];
+        [weakSelf applyLimitOnlyUIGating];
+    }];
+}
+
+// 仅限流门控（spec B5）：状态条与限流卡片仅此模式可见；daemon 依赖卡片置灰禁用
+- (void)applyLimitOnlyUIGating {
+    CLBatteryManager *manager = [CLBatteryManager shared];
+    BOOL limitOnly = (manager.operationMode == CLOperationModeLimitOnly);
+    self.limitOnlyBanner.hidden = !limitOnly;
+    self.limitOnlyCard.hidden = !limitOnly;
+    NSArray *gatedCards = @[self.limitCard ?: [NSNull null],
+                            self.tempCard ?: [NSNull null],
+                            self.powerPathCard ?: [NSNull null]];
+    for (id card in gatedCards) {
+        if (card == [NSNull null]) continue;
+        ((CLGlassCard *)card).alpha = limitOnly ? 0.35 : 1.0;
+        ((CLGlassCard *)card).userInteractionEnabled = !limitOnly;
+    }
+    self.systemControlHintView.hidden = limitOnly ? YES : self.systemControlHintView.hidden;
+    if (limitOnly) {
+        [manager refreshDirectSessionState];
+        [self updateLimitOnlyRows];
+    }
+}
+
+- (void)updateLimitOnlyRows {
+    CLBatteryManager *manager = [CLBatteryManager shared];
+    NSString *session;
+    if (manager.directPlugConnected) {
+        session = manager.limitOnlyApplied ? CLL(@"已插电 · 限流生效中") : CLL(@"已插电 · 生效验证中");
+    } else {
+        session = CLL(@"未插电 · 限流已解除");
+    }
+    [self updateCardValue:self.limitOnlyCard title:CLL(@"会话状态") value:session];
+    [self updateCardValue:self.limitOnlyCard title:CLL(@"生效验证") value:(manager.limitOnlyApplied ? CLL(@"已生效") : CLL(@"未验证"))];
+    [self updateCardValue:self.limitOnlyCard title:CLL(@"限流档位") value:[self limitOnlyLevelText]];
 }
 
 // 系统优化充电残留提示条：优化充电被留在"临时停用"且无本工具协调会话时显示，
@@ -6682,6 +6861,12 @@ static BOOL CLDisplayedPowerStateUsesExternalPower(CLBatteryManager *manager) {
     [self updateSetChargeAboveCurrentButtonState];
     [self updatePowerPathHoldVisibilityForManager:manager];
 
+    // 仅限流模式：直读会话状态随电池事件刷新（插拔边沿 → 会话状态行/验证行）
+    if (manager.operationMode == CLOperationModeLimitOnly) {
+        [manager refreshDirectSessionState];
+        [self updateLimitOnlyRows];
+    }
+
     // 更新电池状态
     [self.batteryStatus applyBatteryManager:manager statusText:powerStateLabel];
     
@@ -6867,9 +7052,10 @@ static BOOL CLDisplayedPowerStateUsesExternalPower(CLBatteryManager *manager) {
 - (void)configDidUpdate {
     CLBatteryManager *manager = [CLBatteryManager shared];
     [self updatePowerPathHoldVisibilityForManager:manager];
-    
-    // 更新控制卡片的开关和值
-    [self updateSwitchInCard:self.controlCard tag:100 value:manager.enabled];
+
+    // 更新控制卡片的模式行（三态主开关，limit-only spec B2）+ 门控
+    [self updateCardValue:self.controlCard title:CLL(@"启用") value:[self operationModeText]];
+    [self applyLimitOnlyUIGating];
     [self updateChargeBelowVisibility];
     
     // 更新充电阈值

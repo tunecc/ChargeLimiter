@@ -24,6 +24,13 @@ typedef NS_ENUM(NSInteger, CLThermalMode) {
     CLThermalModeHeavy
 };
 
+// 运行模式（三态主开关，limit-only daemon-free spec B1）
+typedef NS_ENUM(NSInteger, CLOperationMode) {
+    CLOperationModeOff = 0,      // 关闭：master-off，daemon 不驻留
+    CLOperationModeFullControl,  // 完整控制：常驻策略（现状全部功能）
+    CLOperationModeLimitOnly     // 仅限流：daemon 零驻留，tweak 会话限流
+};
+
 typedef NS_ENUM(NSInteger, CLHoldModeBehavior) {
     CLHoldModeBehaviorBalanced = 0,
     CLHoldModeBehaviorPowerFirst,
@@ -129,6 +136,23 @@ extern NSNotificationName const CLDaemonStatusDidChangeNotification;
 @property(nonatomic, assign) NSInteger fullChargeScheduleIntervalDays;
 @property(nonatomic, assign) NSInteger fullChargeScheduleStartMinute;
 @property(nonatomic, assign) NSInteger fullChargeScheduleDurationHours;
+
+#pragma mark - 仅限流模式（daemon-free）
+@property(nonatomic, assign, readonly) CLOperationMode operationMode; // 由 enable/limit_only_mode 派生
+@property(nonatomic, copy) NSString *limitOnlyLevel;             // 仅限流档位 off/nominal/light/moderate/heavy
+@property(nonatomic, assign, readonly) BOOL limitOnlySessionEnabled; // daemon 报告的 root 域会话键
+@property(nonatomic, assign, readonly) BOOL directPlugConnected;     // 直读插电状态（零 daemon 依赖）
+@property(nonatomic, assign, readonly) BOOL directReadAvailable;     // 直读是否成功（失败回退 daemon API）
+@property(nonatomic, assign, readonly) BOOL limitOnlyApplied;        // thermalState 探针判定已生效
+
+// 直读会话状态：AppleSmartBattery 插电判定 + thermalState 生效验证（零 daemon 依赖）
+- (void)refreshDirectSessionState;
+
+// 仅限流档位写入：一次性 root 进程（daemon CLI 动词 apply_limit_only）+ 本进程探针验证
+- (void)applyLimitOnlyLevel:(NSString *)mode completion:(nullable void (^)(BOOL success))completion;
+
+// 三态主开关编排（spec B1：先改 daemon 状态，后写 tweak 会话，保证还原不清会话）
+- (void)switchToMode:(CLOperationMode)mode completion:(nullable void (^)(BOOL success))completion;
 
 #pragma mark - 系统信息
 @property(nonatomic, copy, readonly, nullable) NSString *systemVersion;
