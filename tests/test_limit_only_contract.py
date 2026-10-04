@@ -19,6 +19,10 @@
   可见；applyConfigData 忽略 "off" 档、初始 moderate；共享配置 plist 写经
   flock 跨进程串行（utils writeMergedConfigDictionaryToDisk 单一收口）。
 - B7：tweak 打包链接 IOKit.tbd。
+- fix-thermal-limit-stuck-verifying：安装后 killall thermalmonitord（三形态 postinst，
+  升级即时换掉内存中旧版 tweak）；退役键随写清洗（thermalSimulationLocked /
+  ppmSimulationMode 残留会让旧版已注入 tweak 保持屏蔽/低温模拟）；tweak 既有
+  hook 点通用镜像收敛（镜像≠最近下发即重发，兜住通知丢失与偏好读取竞态）。
 """
 from pathlib import Path
 import unittest
@@ -30,6 +34,9 @@ UTILS_MM = ROOT / "ChargeLimiter" / "utils.mm"
 UTILS_H = ROOT / "ChargeLimiter" / "utils.h"
 TWEAK_M = ROOT / "ChargeLimiter" / "Tweak" / "CLThermalSimTweak.m"
 BUILD_SH = ROOT / "scripts" / "build_packages.sh"
+POSTINST_ROOTFUL = ROOT / "ChargeLimiter" / "Package" / "DEBIAN" / "postinst"
+POSTINST_ROOTLESS = ROOT / "ChargeLimiter" / "Package_rootless" / "DEBIAN" / "postinst"
+POSTINST_ROOTHIDE = ROOT / "ChargeLimiter" / "Package_roothide" / "DEBIAN" / "postinst"
 BATTERY_M = ROOT / "ChargeLimiter" / "UIKit" / "CLBatteryManager.m"
 BATTERY_H = ROOT / "ChargeLimiter" / "UIKit" / "CLBatteryManager.h"
 SETTINGS_M = ROOT / "ChargeLimiter" / "UIKit" / "Controllers" / "CLSettingsViewController.m"
@@ -126,6 +133,33 @@ class TweakSessionContractTests(unittest.TestCase):
     def test_apply_notification_recomputes_session(self):
         body = function_body(self.tweak, "static void CLTSApplyNotificationCallback(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {")
         self.assertIn("CLTSSessionEvaluate();", body)
+
+    def test_generic_mirror_convergence(self):
+        # fix-thermal-limit-stuck-verifying A3：镜像≠最近下发 → 重发（含 off）。
+        # 收敛只读镜像不写（无 CFPreferencesSetValue），一致零动作早退。
+        body = function_body(self.tweak, "static void CLTSConvergeThermalMirror(void) {")
+        self.assertIn("CLTSReadMode(CLTSKeyThermalMode)", body)
+        self.assertIn("CLTSLastAppliedThermal", body)
+        self.assertIn("CLTSApplyOnProduct(CLTSCurrentProduct);", body)
+        self.assertNotIn("CFPreferencesSetValue", body)
+
+    def test_apply_records_last_applied(self):
+        body = function_body(self.tweak, "static void CLTSApplyOnProduct(id product) {")
+        self.assertIn("CLTSLastAppliedThermal = thermal;", body)
+
+    def test_hooks_converge_mirror(self):
+        # 三个既有 hook 点 + 电池 interest 回调都做通用镜像收敛
+        for sig in ("static void CLTSTryTakeActionOverride(id self, SEL _cmd) {",
+                    "static void CLTSSimulateLightOverride(id self, SEL _cmd) {",
+                    "static void CLTSUpdateTelemetryOverride(id self, SEL _cmd) {",
+                    "static void CLTSBatteryInterestCallback(void *refcon, io_service_t service, natural_t messageType, void *messageArgument) {"):
+            body = function_body(self.tweak, sig)
+            self.assertIn("CLTSConvergeThermalMirror();", body)
+
+    def test_no_periodic_timer_added(self):
+        # 收敛节拍 = thermalmonitord 自身评估节拍：不新增任何定时器
+        self.assertNotIn("NSTimer", self.tweak)
+        self.assertNotIn("dispatch_after", self.tweak)
 
 
 class DaemonCLIVerbContractTests(unittest.TestCase):
@@ -237,11 +271,28 @@ class UtilsSessionContractTests(unittest.TestCase):
         self.assertIn('setObject:@"off" forKey:@"thermalSimulationMode"', body)
 
     def test_no_ppm_and_lock_mirror_in_utils(self):
-        # locked 镜像与 PPM 帮助函数退役（fix-thermal-limit-powercuff A2/A3/D3）
-        self.assertNotIn("thermalSimulationLocked", self.utils)
-        self.assertNotIn("PPMSimulationMode", self.utils)
-        self.assertNotIn("ppmSimulationMode", self.utils)
+        # locked 镜像与 PPM 帮助函数退役（fix-thermal-limit-powercuff A2/A3/D3）：
+        # 退役键不得有任何写入（setObject/setValue），只允许清洗路径移除
+        for line in self.utils.splitlines():
+            if "setObject" in line or "setValue" in line:
+                self.assertNotIn("thermalSimulationLocked", line)
+                self.assertNotIn("ppmSimulationMode", line)
+        self.assertNotIn("setPPMSimulationMode", self.utils)
+        self.assertNotIn("getPPMSimulationMode", self.utils)
         self.assertNotIn("PPMSimulationMode", self.utils_h)
+
+    def test_retired_keys_scrubbed_on_mirror_writes(self):
+        # fix-thermal-limit-stuck-verifying A2：随写清洗升级残留（旧版 tweak 的
+        # thermalSimulationLocked=YES 会保持屏蔽行为，ppmSimulationMode 同类）
+        scrub = function_body(self.utils, "static void CLScrubRetiredThermalKeys(NSUserDefaults* defs) {")
+        self.assertIn('removeObjectForKey:@"thermalSimulationLocked"', scrub)
+        self.assertIn('removeObjectForKey:@"ppmSimulationMode"', scrub)
+        for sig in ("void setThermalSimulationMode(NSString* mode) {",
+                    "void setLimitOnlySession(BOOL enabled, NSString* mode, BOOL plugged) {",
+                    "void clearLimitOnlySessionKeys() {"):
+            body = function_body(self.utils, sig)
+            self.assertIn("CLScrubRetiredThermalKeys(defs);", body)
+            self.assertIn("synchronize", body)
 
     def test_shared_config_write_serialized(self):
         # 共享配置 plist 读-合并-写全程持跨进程排它 flock（fix-limit-only-restart-state B8 单一收口）
@@ -381,6 +432,26 @@ class AppContractTests(unittest.TestCase):
 
     def test_old_switch_update_removed(self):
         self.assertNotIn("updateSwitchInCard:self.controlCard tag:100", self.settings)
+
+
+class ThermalmonitordReloadContractTests(unittest.TestCase):
+    """fix-thermal-limit-stuck-verifying A1：安装后重载 thermalmonitord（三形态）。"""
+
+    def test_rootful_postinst_reloads_thermalmonitord(self):
+        text = POSTINST_ROOTFUL.read_text()
+        self.assertIn("killall thermalmonitord", text)
+
+    def test_rootless_postinst_reloads_thermalmonitord(self):
+        text = POSTINST_ROOTLESS.read_text()
+        self.assertIn("killall thermalmonitord", text)
+
+    def test_roothide_postinst_reloads_thermalmonitord(self):
+        # roothide：killall 不能假定在 PATH（DISABLE_TWEAKS 安装器无注入），经
+        # PATH → jbroot → 真实 rootfs 推导；失败仅放弃重载不阻塞安装
+        text = POSTINST_ROOTHIDE.read_text()
+        self.assertIn("reload_thermalmonitord() {", text)
+        self.assertIn('"$KILLALL_BIN" thermalmonitord 2>/dev/null || true', text)
+        self.assertIn("reload_thermalmonitord\n", text)
 
 
 class PackagingAndStringsContractTests(unittest.TestCase):

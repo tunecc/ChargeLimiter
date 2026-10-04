@@ -139,6 +139,27 @@ if ! "$LAUNCHCTL_BIN" bootstrap system "$REAL_PLIST" 2>/dev/null; then
         fail_install "launchctl failed to load daemon plist (launchctl=$LAUNCHCTL_BIN plist=$REAL_PLIST)"
 fi
 
+# CLThermalSim 只在 thermalmonitord 启动时注入（Powercuff 同款重载）：升级后必须
+# 重启 thermalmonitord 才能换掉内存中的旧版 tweak。killall 与 plutil/launchctl
+# 同理不能假定在 PATH（DISABLE_TWEAKS 安装器无注入无 /usr/bin），按 PATH →
+# jbroot → 真实 rootfs 推导；找不到仅放弃重载，不阻塞安装。
+reload_thermalmonitord() {
+    KILLALL_BIN="$(command -v killall 2>/dev/null || true)"
+    if [ -z "$KILLALL_BIN" ]; then
+        for cand in \
+            "$(jbroot /usr/bin/killall 2>/dev/null)" \
+            "$ROOTFS_PREFIX/usr/bin/killall"; do
+            if [ -n "$cand" ] && [ -x "$cand" ]; then
+                KILLALL_BIN="$cand"
+                break
+            fi
+        done
+    fi
+    [ -n "$KILLALL_BIN" ] && [ -x "$KILLALL_BIN" ] || return 0
+    "$KILLALL_BIN" thermalmonitord 2>/dev/null || true
+}
+reload_thermalmonitord
+
 uicache -p "$APP_DIR" 2>/dev/null
 
 exit 0

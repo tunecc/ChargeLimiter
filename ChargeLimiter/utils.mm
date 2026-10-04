@@ -3642,10 +3642,19 @@ static void CLPostThermalApplyNotification() {
                                          NULL, NULL, YES);
 }
 
+// 退役键随写清洗（fix-thermal-limit-stuck-verifying R2）：thermalSimulationLocked /
+// ppmSimulationMode 已无读取方，但旧版 tweak 写入的残留值会让仍在运行的旧代码
+// （升级未重启 thermalmonitord 时）保持屏蔽/低温模拟行为；每次写 thermal 镜像顺带清除。
+static void CLScrubRetiredThermalKeys(NSUserDefaults* defs) {
+    [defs removeObjectForKey:@"thermalSimulationLocked"];
+    [defs removeObjectForKey:@"ppmSimulationMode"];
+}
+
 void setThermalSimulationMode(NSString* mode) {
     if (@available(iOS 11.0, *)) {
         NSUserDefaults* defs = [[NSUserDefaults alloc] initWithSuiteName:CLThermalPrefsSuite];
         [defs setObject:mode forKey:@"thermalSimulationMode"]; // off/nominal/light/moderate/heavy
+        CLScrubRetiredThermalKeys(defs);
         [defs synchronize];
         CLPostThermalApplyNotification();
     }
@@ -3692,6 +3701,7 @@ void setLimitOnlySession(BOOL enabled, NSString* mode, BOOL plugged) {
         [defs setObject:@NO forKey:CLLimitOnlySessionEnabledKey];
         [defs setObject:@"off" forKey:@"thermalSimulationMode"];
     }
+    CLScrubRetiredThermalKeys(defs);
     [defs synchronize];
     CLPostThermalApplyNotification();
 }
@@ -3702,6 +3712,7 @@ void clearLimitOnlySessionKeys() {
     [defs removeObjectForKey:CLLimitOnlyLevelKey];
     // 镜像归零：清掉会话后无人维护 thermal 键，防残留（daemon 完整控制随后自行重应用默认档）
     [defs setObject:@"off" forKey:@"thermalSimulationMode"];
+    CLScrubRetiredThermalKeys(defs);
     [defs synchronize];
     CLPostThermalApplyNotification();
 }

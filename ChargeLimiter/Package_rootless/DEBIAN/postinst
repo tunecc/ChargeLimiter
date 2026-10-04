@@ -89,6 +89,10 @@ chown root:wheel "$DAEMON_PLIST"
 launchctl bootout system "$DAEMON_PLIST" 2>/dev/null
 launchctl bootstrap system "$DAEMON_PLIST" 2>/dev/null || launchctl load "$DAEMON_PLIST" 2>/dev/null
 
+# CLThermalSim 只在 thermalmonitord 启动时注入（Powercuff 同款重载）：升级后必须
+# 重启 thermalmonitord 才能换掉内存中的旧版 tweak，否则旧代码继续驻留执行。
+killall thermalmonitord 2>/dev/null
+
 uicache -p "$APP_DIR" 2>/dev/null
 
 exit 0

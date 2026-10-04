@@ -1,10 +1,15 @@
 // CLThermalSim —— ChargeLimiter 温控模拟执行端（design: thermal-sim-companion-tweak D1–D4；
-// fix-thermal-limit-powercuff 对齐 Powercuff 语义）。
+// fix-thermal-limit-powercuff 对齐 Powercuff 语义；fix-thermal-limit-stuck-verifying
+// 增加通用镜像收敛）。
 // 仅注入 thermalmonitord（见 CLThermalSim.plist）：把 daemon/CLI 写入 com.apple.cltm 的
 // 温控模拟档位推进到 CommonProduct 的系统模拟 API，并在通知与进程重启时重放。
 // 与 Powercuff 一致：不干预 thermalmonitord 自身缓解链路（tryTakeAction 等原实现始终
 // 执行，hook 仅作会话复查观察者），无低温/PPM 模拟。全部 hook 点做能力探测：
 // 类/selector 缺失时静默跳过，退回偏好通路现状。
+//
+// 通用镜像收敛：记录最近一次实际下发的档位，镜像（thermalSimulationMode）与之一致
+// 则零动作、不一致则重发（含 off 清除）——兜住通知丢失、偏好读取竞态（写应答≠读
+// 可见）与系统清除；完整控制（会话未启用）与仅限流两种模式同样受益。只读不写镜像。
 //
 // 仅限流会话（limit-only daemon-free，spec B2）：daemon 不驻留的形态下，会话键
 // clLimitSessionEnabled/clLimitMode 由一次性 CLI 写入；本 tweak 据此维护插电时限流档、
@@ -46,6 +51,7 @@ static NSString *CLTSReadMode(NSString *key) {
 #pragma mark - 仅限流会话（spec B2）
 
 static void CLTSApplyOnProduct(id product); // 前置声明：会话收敛时即时下发
+static void CLTSConvergeThermalMirror(void); // 前置声明：电池 interest 回调早于定义引用
 
 static BOOL CLTSReadSessionEnabled(void) {
     CFTypeRef val = CFPreferencesCopyAppValue((__bridge CFStringRef)CLTSKeySessionEnabled, (__bridge CFStringRef)CLTSPrefsSuite);
@@ -116,13 +122,18 @@ static void CLTSSessionEvaluate(void) {
     CLTSApplyOnProduct(CLTSCurrentProduct);
 }
 
-// 电池属性变化（插拔边沿）回调：会话重算。消息类型不区分——任何属性变化都重收敛，
-// 幂等早退保证代价可忽略。
+// 电池属性变化（插拔边沿）回调：会话重算 + 通用镜像收敛。消息类型不区分——任何
+// 属性变化都重收敛，幂等早退保证代价可忽略。
 static void CLTSBatteryInterestCallback(void *refcon, io_service_t service, natural_t messageType, void *messageArgument) {
     CLTSSessionEvaluate();
+    CLTSConvergeThermalMirror();
 }
 
 #pragma mark - 档位应用
+
+// 最近一次经 putDeviceInThermalSimulationMode: 实际下发的档位（进程内记忆），
+// 供通用镜像收敛比对；thermalmonitord 重启后自然归零（重启重放会先补一次下发）。
+static NSString *CLTSLastAppliedThermal = nil;
 
 static void CLTSApplyOnProduct(id product) {
     if (product == nil) return;
@@ -131,10 +142,21 @@ static void CLTSApplyOnProduct(id product) {
         if ([product respondsToSelector:@selector(putDeviceInThermalSimulationMode:)]) {
             NSString *thermal = CLTSReadMode(CLTSKeyThermalMode);
             ((void (*)(id, SEL, NSString *))objc_msgSend)(product, @selector(putDeviceInThermalSimulationMode:), thermal);
+            CLTSLastAppliedThermal = thermal;
         }
     } @catch (NSException *exc) {
         NSLog(@"[CLThermalSim] apply exception: %@", exc);
     }
+}
+
+// 通用镜像收敛：镜像与最近下发一致则零动作早退，不一致则重发。只读镜像不写。
+// 覆盖会话未启用（完整控制）时的通知丢失/偏好竞态/系统清除；会话模式下与
+// 会话收敛叠加（会话写镜像 → 本函数推进到 product），语义一致。
+static void CLTSConvergeThermalMirror(void) {
+    if (CLTSCurrentProduct == nil) return;
+    NSString *mirror = CLTSReadMode(CLTSKeyThermalMode);
+    if ([mirror isEqualToString:CLTSLastAppliedThermal]) return;
+    CLTSApplyOnProduct(CLTSCurrentProduct);
 }
 
 #pragma mark - Hook 替换实现
@@ -155,20 +177,24 @@ static id CLTSInitProductOverride(id self, SEL _cmd, id data) {
     return result;
 }
 
-// 以下三个 hook 仅作会话机会性复查观察者：原实现始终执行（Powercuff 已验证语义，
-// 屏蔽缓解链路会让模拟档位永远不被执行），复查幂等早退，代价可忽略。
+// 以下三个 hook：会话机会性复查 + 通用镜像收敛（thermalmonitord 自身评估节拍即
+// 收敛节拍，不新增定时器）；原实现始终执行（Powercuff 已验证语义，屏蔽缓解链路
+// 会让模拟档位永远不被执行）。
 static void CLTSTryTakeActionOverride(id self, SEL _cmd) {
     CLTSSessionEvaluate(); // 机会性复查（spec B2）：策略评估频率即复查频率
+    CLTSConvergeThermalMirror();
     if (CLTSOrigTryTakeAction) ((void (*)(id, SEL))CLTSOrigTryTakeAction)(self, _cmd);
 }
 
 static void CLTSSimulateLightOverride(id self, SEL _cmd) {
     CLTSSessionEvaluate();
+    CLTSConvergeThermalMirror();
     if (CLTSOrigSimulateLight) ((void (*)(id, SEL))CLTSOrigSimulateLight)(self, _cmd);
 }
 
 static void CLTSUpdateTelemetryOverride(id self, SEL _cmd) {
     CLTSSessionEvaluate(); // 机会性复查：电源域遥测更新常伴随供电状态变化
+    CLTSConvergeThermalMirror();
     if (CLTSOrigTelemetry) ((void (*)(id, SEL))CLTSOrigTelemetry)(self, _cmd);
 }
 
@@ -192,6 +218,8 @@ static void CLTSHookCommonProduct(Class cls) {
 static void CLTSApplyNotificationCallback(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
     CLTSSessionEvaluate(); // 配置可能刚变：先重算会话镜像，再按镜像下发
     CLTSApplyOnProduct(CLTSCurrentProduct);
+    // 偏好读取可能滞后于通知（写应答≠读可见）：本拍未对齐时由收敛路径在
+    // thermalmonitord 自身评估节拍内补发，此处无需额外重试。
 }
 
 static IONotificationPortRef CLTSNotifyPort = NULL;
