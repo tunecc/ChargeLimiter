@@ -1,12 +1,15 @@
-// CLThermalSim —— ChargeLimiter 温控模拟执行端（design: thermal-sim-companion-tweak D1–D4）。
-// 仅注入 thermalmonitord（见 CLThermalSim.plist）：把 daemon 写入 com.apple.cltm 的
-// 温控/PPM 模拟档位推进到 CommonProduct 的系统模拟 API，并在通知与进程重启时重放。
-// 全部 hook 点做能力探测：类/selector 缺失时静默跳过，退回偏好通路现状。
+// CLThermalSim —— ChargeLimiter 温控模拟执行端（design: thermal-sim-companion-tweak D1–D4；
+// fix-thermal-limit-powercuff 对齐 Powercuff 语义）。
+// 仅注入 thermalmonitord（见 CLThermalSim.plist）：把 daemon/CLI 写入 com.apple.cltm 的
+// 温控模拟档位推进到 CommonProduct 的系统模拟 API，并在通知与进程重启时重放。
+// 与 Powercuff 一致：不干预 thermalmonitord 自身缓解链路（tryTakeAction 等原实现始终
+// 执行，hook 仅作会话复查观察者），无低温/PPM 模拟。全部 hook 点做能力探测：
+// 类/selector 缺失时静默跳过，退回偏好通路现状。
 //
 // 仅限流会话（limit-only daemon-free，spec B2）：daemon 不驻留的形态下，会话键
 // clLimitSessionEnabled/clLimitMode 由一次性 CLI 写入；本 tweak 据此维护插电时限流档、
 // 拔线回 off 的会话语义（幂等收敛），并经电池属性 interest 通知与既有 hook 点复查。
-// 会话关闭时不碰 thermal 镜像键——写方归 CLI/常驻 daemon。PPM 模拟不属于会话。
+// 会话关闭时不碰 thermal 镜像键——写方归 CLI/常驻 daemon。
 
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
@@ -15,8 +18,6 @@
 
 static NSString * const CLTSPrefsSuite = @"com.apple.cltm";
 static NSString * const CLTSKeyThermalMode = @"thermalSimulationMode";
-static NSString * const CLTSKeyPPMMode = @"ppmSimulationMode";
-static NSString * const CLTSKeyLocked = @"thermalSimulationLocked";
 static NSString * const CLTSApplyNotification = @"com.chargelimiter.thermalapply";
 static NSString * const CLTSKeySessionEnabled = @"clLimitSessionEnabled";
 static NSString * const CLTSKeyLimitMode = @"clLimitMode";
@@ -40,26 +41,6 @@ static NSString *CLTSReadMode(NSString *key) {
         return @"off"; // 缺省/无效值按 off，不沿用旧档位
     }
     return mode;
-}
-
-static BOOL CLTSIsLocked(void) {
-    CFTypeRef val = CFPreferencesCopyAppValue((__bridge CFStringRef)CLTSKeyLocked, (__bridge CFStringRef)CLTSPrefsSuite);
-    BOOL locked = NO;
-    if (val) {
-        if (CFGetTypeID(val) == CFBooleanGetTypeID()) {
-            locked = CFBooleanGetValue((CFBooleanRef)val);
-        } else if (CFGetTypeID(val) == CFNumberGetTypeID()) {
-            locked = [(__bridge NSNumber *)val boolValue];
-        }
-        CFRelease(val);
-    }
-    return locked;
-}
-
-// 锁定开启且档位非 off 时屏蔽系统覆盖；off 档永不屏蔽。
-static BOOL CLTSShouldSuppressOverride(void) {
-    if (!CLTSIsLocked()) return NO;
-    return ![CLTSReadMode(CLTSKeyThermalMode) isEqualToString:@"off"];
 }
 
 #pragma mark - 仅限流会话（spec B2）
@@ -117,23 +98,18 @@ static BOOL CLTSPowerConnected(void) {
     return connected;
 }
 
-// 会话收敛（幂等）：目标 = 插电且档位非 off → 限流档；否则 off。镜像键与锁定镜像
-// 未变化时不重写（读回比对），变化时写偏好并即时下发。会话关闭时直接返回——
-// thermal 镜像写方归 CLI / 常驻 daemon，tweak 不得越权。
+// 会话收敛（幂等）：目标 = 插电且档位非 off → 限流档；否则 off。镜像未变化时不重写
+// （读回比对），变化时写偏好并即时下发。会话关闭时直接返回——thermal 镜像写方归
+// CLI / 常驻 daemon，tweak 不得越权。
 static void CLTSSessionEvaluate(void) {
     if (!CLTSReadSessionEnabled()) return;
     NSString *limit = CLTSReadSessionLimitMode();
     NSString *target = (!CLTSPowerConnected() || [limit isEqualToString:@"off"]) ? @"off" : limit;
-    BOOL locked = ![target isEqualToString:@"off"];
-    if ([CLTSReadMode(CLTSKeyThermalMode) isEqualToString:target] && CLTSIsLocked() == locked) {
+    if ([CLTSReadMode(CLTSKeyThermalMode) isEqualToString:target]) {
         return;
     }
     CFPreferencesSetValue((__bridge CFStringRef)CLTSKeyThermalMode,
                           (__bridge CFTypeRef)target,
-                          (__bridge CFStringRef)CLTSPrefsSuite,
-                          kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-    CFPreferencesSetValue((__bridge CFStringRef)CLTSKeyLocked,
-                          (__bridge CFTypeRef)@(locked),
                           (__bridge CFStringRef)CLTSPrefsSuite,
                           kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
     CFPreferencesSynchronize((__bridge CFStringRef)CLTSPrefsSuite, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
@@ -155,12 +131,6 @@ static void CLTSApplyOnProduct(id product) {
         if ([product respondsToSelector:@selector(putDeviceInThermalSimulationMode:)]) {
             NSString *thermal = CLTSReadMode(CLTSKeyThermalMode);
             ((void (*)(id, SEL, NSString *))objc_msgSend)(product, @selector(putDeviceInThermalSimulationMode:), thermal);
-        }
-        // PPM：off 不调用低温模拟 API（spec 行为）。
-        NSString *ppm = CLTSReadMode(CLTSKeyPPMMode);
-        if (![ppm isEqualToString:@"off"] &&
-            [product respondsToSelector:@selector(putDeviceInLowTempSimulationMode:)]) {
-            ((void (*)(id, SEL, NSString *))objc_msgSend)(product, @selector(putDeviceInLowTempSimulationMode:), ppm);
         }
     } @catch (NSException *exc) {
         NSLog(@"[CLThermalSim] apply exception: %@", exc);
@@ -185,20 +155,20 @@ static id CLTSInitProductOverride(id self, SEL _cmd, id data) {
     return result;
 }
 
+// 以下三个 hook 仅作会话机会性复查观察者：原实现始终执行（Powercuff 已验证语义，
+// 屏蔽缓解链路会让模拟档位永远不被执行），复查幂等早退，代价可忽略。
 static void CLTSTryTakeActionOverride(id self, SEL _cmd) {
-    CLTSSessionEvaluate(); // 机会性复查（spec B2）：策略评估频率即复查频率，幂等早退
-    if (CLTSShouldSuppressOverride()) return; // 每次调用实时判定（D4）
+    CLTSSessionEvaluate(); // 机会性复查（spec B2）：策略评估频率即复查频率
     if (CLTSOrigTryTakeAction) ((void (*)(id, SEL))CLTSOrigTryTakeAction)(self, _cmd);
 }
 
 static void CLTSSimulateLightOverride(id self, SEL _cmd) {
-    if (CLTSShouldSuppressOverride()) return;
+    CLTSSessionEvaluate();
     if (CLTSOrigSimulateLight) ((void (*)(id, SEL))CLTSOrigSimulateLight)(self, _cmd);
 }
 
 static void CLTSUpdateTelemetryOverride(id self, SEL _cmd) {
     CLTSSessionEvaluate(); // 机会性复查：电源域遥测更新常伴随供电状态变化
-    if (CLTSShouldSuppressOverride()) return;
     if (CLTSOrigTelemetry) ((void (*)(id, SEL))CLTSOrigTelemetry)(self, _cmd);
 }
 

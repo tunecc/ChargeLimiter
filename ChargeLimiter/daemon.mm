@@ -3188,12 +3188,10 @@ static void restoreThermalSimulationForReset(void) {
     }
     // limit-only carve-out（spec B4）：仅限流会话在场时 thermal 镜像归 tweak 会话管理，
     // 自检/退出/还原路径不得写 off 覆盖会话（否则未插电收敛与插电重放被打断）。
-    // PPM 不属于会话，照常归零；会话未启用（mode 切换窗口）时 thermal 照常归零。
+    // 会话未启用（mode 切换窗口）时 thermal 照常归零。
     if (!(getLocalBool(@"limit_only_mode", NO) && getLimitOnlySessionEnabled())) {
         setThermalSimulationMode(@"off");
     }
-    // spec『还原的对象与语义』第 5 条：温控与 PPM 模拟双双归零。
-    setPPMSimulationMode(@"off");
     // 诊断与归零后的配置保持一致（M3）：还原即时生效，无系统通路可验证。
     setLocalString(@"thermal_apply_status", @"applied");
     setLocalString(@"thermal_apply_checked_at", [NSString stringWithFormat:@"%ld", (long)time(0)]);
@@ -5054,7 +5052,6 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             // 仅限流会话诊断（spec B5）：root 域会话键状态与当前档位
             kv[@"limit_only_session_enabled"] = @(getLimitOnlySessionEnabled());
             kv[@"limit_only_level"] = getLimitOnlyLevel();
-            kv[@"ppm_simulate_mode"] = getPPMSimulationMode();
             kv[@"use_smart"] = @(g_use_smart);
             kv[@"smart_charge_status"] = @(g_smartChargeStatus);
             kv[@"smart_charge_managed_by_daemon"] = @(g_tempSmartChargeDisabledByCL);
@@ -5077,8 +5074,6 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
         if ([key isEqualToString:@"floatwnd"]) {
             g_enable_floatwnd = [val boolValue];
             showFloatwnd(g_enable_floatwnd);
-        } else if ([key isEqualToString:@"ppm_simulate_mode"]) {
-            setPPMSimulationMode(val);
         } else {
             setConfigValueForKey(key, val);
         }

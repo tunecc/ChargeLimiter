@@ -3564,34 +3564,7 @@ void setThermalSimulationMode(NSString* mode) {
     if (@available(iOS 11.0, *)) {
         NSUserDefaults* defs = [[NSUserDefaults alloc] initWithSuiteName:CLThermalPrefsSuite];
         [defs setObject:mode forKey:@"thermalSimulationMode"]; // off/nominal/light/moderate/heavy
-        // 锁定标志镜像给执行端（design D4：单写入方，随 thermal 模式写入同步镜像）
-        [defs setObject:@(getLocalBool(@"adv_thermal_mode_lock", NO)) forKey:@"thermalSimulationLocked"];
         [defs synchronize];
-        CLPostThermalApplyNotification();
-    }
-}
-
-static NSString* ppm_mode = nil;
-NSString* getPPMSimulationMode() {
-    if (@available(iOS 11.0, *)) {
-        if (ppm_mode == nil) {
-            NSUserDefaults* defs = [[NSUserDefaults alloc] initWithSuiteName:@"com.apple.cltm"];
-            ppm_mode = [defs objectForKey:@"ppmSimulationMode"];
-            if (ppm_mode == nil) {
-                ppm_mode = @"off";
-            }
-        }
-        return ppm_mode;
-    }
-    return @"off";
-}
-
-void setPPMSimulationMode(NSString* mode) {
-    if (@available(iOS 11.0, *)) {
-        NSUserDefaults* defs = [[NSUserDefaults alloc] initWithSuiteName:CLThermalPrefsSuite];
-        [defs setObject:mode forKey:@"ppmSimulationMode"]; // off/nominal/light/moderate/heavy
-        [defs synchronize];
-        ppm_mode = mode;
         CLPostThermalApplyNotification();
     }
 }
@@ -3630,15 +3603,12 @@ void setLimitOnlySession(BOOL enabled, NSString* mode, BOOL plugged) {
             mode = @"moderate"; // CLI 已校验，此处防御兜底
         }
         [defs setObject:mode forKey:CLLimitOnlyLevelKey];
-        // 初始镜像：插电 → 限流档 + 锁定；未插电 → off（会话后续维护归 tweak）。
-        // 锁定语义：会话生效且档位非 off 时屏蔽系统自动覆盖（tweak CLTSShouldSuppressOverride）。
+        // 初始镜像：插电 → 限流档；未插电 → off（会话后续维护归 tweak）。
         NSString* thermal = (plugged && ![mode isEqualToString:@"off"]) ? mode : @"off";
         [defs setObject:thermal forKey:@"thermalSimulationMode"];
-        [defs setObject:@(![thermal isEqualToString:@"off"]) forKey:@"thermalSimulationLocked"];
     } else {
         [defs setObject:@NO forKey:CLLimitOnlySessionEnabledKey];
         [defs setObject:@"off" forKey:@"thermalSimulationMode"];
-        [defs setObject:@NO forKey:@"thermalSimulationLocked"];
     }
     [defs synchronize];
     CLPostThermalApplyNotification();
@@ -3650,7 +3620,6 @@ void clearLimitOnlySessionKeys() {
     [defs removeObjectForKey:CLLimitOnlyLevelKey];
     // 镜像归零：清掉会话后无人维护 thermal 键，防残留（daemon 完整控制随后自行重应用默认档）
     [defs setObject:@"off" forKey:@"thermalSimulationMode"];
-    [defs setObject:@NO forKey:@"thermalSimulationLocked"];
     [defs synchronize];
     CLPostThermalApplyNotification();
 }

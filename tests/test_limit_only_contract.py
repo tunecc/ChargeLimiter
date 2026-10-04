@@ -2,14 +2,18 @@
 
 仅限流模式（三态主开关的一态）= 只保留充电限流，daemon 零驻留（spec B1-B7）：
 - B2：CLThermalSim tweak 会话执行——会话键 clLimitSessionEnabled/clLimitMode，
-  插电时限流档、拔线回 off（幂等收敛）；会话关闭不碰 thermal 镜像；PPM 不属于会话；
-  电池 interest 通知 + hook 点机会性复查 + thermalmonitord 重启重放。
+  插电时限流档、拔线回 off（幂等收敛）；会话关闭不碰 thermal 镜像；
+  电池 interest 通知 + hook 点机会性复查 + thermalmonitord 重启重放；
+  执行端对齐 Powercuff（fix-thermal-limit-powercuff）：档位仅经
+  putDeviceInThermalSimulationMode: 下发，不屏蔽 tryTakeAction 等缓解链路，
+  无低温/PPM 模拟，无 thermalSimulationLocked 镜像。
 - B3：daemon 一次性 CLI 动词 apply_limit_only——写会话键 + thermal 初始镜像 + 通知即退，
   不启动 HTTP/策略循环。
-- B4：master-off 还原 carve-out——limit_only 模式下 thermal 会话键不被还原清除，
-  PPM 照常归零；enable=YES 防御清理回收会话键。
+- B4：master-off 还原 carve-out——limit_only 模式下 thermal 会话键不被还原清除；
+  enable=YES 防御清理回收会话键；PPM 复位随 PPM 面退役移除。
 - B1/B5：白名单放行 limit_only_mode；App 三态主开关 + 状态条 + 置灰门控 +
-  限流卡片；档位写入走一次性 root 进程（spawnDaemonCLIVerb_C），daemon 不驻留。
+  限流卡片；档位写入走一次性 root 进程（spawnDaemonCLIVerb_C），daemon 不驻留；
+  切换成功后内存模式状态先同步再发通知（operation-mode-live-refresh M1）。
 - B7：tweak 打包链接 IOKit.tbd。
 """
 from pathlib import Path
@@ -55,12 +59,11 @@ class TweakSessionContractTests(unittest.TestCase):
         self.assertIn('"clLimitMode"', self.tweak)
 
     def test_session_evaluate_unplug_converges_off(self):
-        # 会话收敛：未插电或档位 off → 目标 off；锁定随目标镜像
+        # 会话收敛：未插电或档位 off → 目标 off
         body = function_body(self.tweak, "static void CLTSSessionEvaluate(void) {")
         self.assertIn("CLTSPowerConnected()", body)
         self.assertIn('@"off"', body)
         self.assertIn("CLTSKeyThermalMode", body)
-        self.assertIn("CLTSKeyLocked", body)
         self.assertIn("kCFPreferencesCurrentUser", body)
 
     def test_session_disabled_does_not_touch_mirror(self):
@@ -69,10 +72,26 @@ class TweakSessionContractTests(unittest.TestCase):
         self.assertIn("if (!CLTSReadSessionEnabled()) return;", body)
 
     def test_session_evaluate_idempotent(self):
-        # 幂等：镜像与锁定均未变化时早退，不重写偏好
+        # 幂等：镜像读回比对未变化时早退，不重写偏好
         body = function_body(self.tweak, "static void CLTSSessionEvaluate(void) {")
-        self.assertIn("CLTSIsLocked() == locked", body)
+        self.assertIn("if ([CLTSReadMode(CLTSKeyThermalMode) isEqualToString:target])", body)
         self.assertIn("return;", body)
+
+    def test_no_lock_mirror_and_no_suppression(self):
+        # Powercuff 对齐（fix-thermal-limit-powercuff A2）：锁定镜像与屏蔽路径整体退役
+        self.assertNotIn("thermalSimulationLocked", self.tweak)
+        self.assertNotIn("CLTSShouldSuppressOverride", self.tweak)
+        self.assertNotIn("CLTSIsLocked", self.tweak)
+        for sig in ("static void CLTSTryTakeActionOverride(id self, SEL _cmd) {",
+                    "static void CLTSSimulateLightOverride(id self, SEL _cmd) {",
+                    "static void CLTSUpdateTelemetryOverride(id self, SEL _cmd) {"):
+            body = function_body(self.tweak, sig)
+            self.assertNotIn("return;", body)  # 原实现无条件执行，无提前返回
+
+    def test_no_low_temp_ppm_simulation(self):
+        # Powercuff 对齐（fix-thermal-limit-powercuff A3）：低温/PPM 模拟不在执行端
+        self.assertNotIn("putDeviceInLowTempSimulationMode", self.tweak)
+        self.assertNotIn("ppmSimulationMode", self.tweak)
 
     def test_plug_predicate_prefers_external_charge_capable(self):
         body = function_body(self.tweak, "static BOOL CLTSPowerConnected(void) {")
@@ -94,9 +113,11 @@ class TweakSessionContractTests(unittest.TestCase):
 
     def test_opportunistic_recheck_in_hooks(self):
         for sig in ("static void CLTSTryTakeActionOverride(id self, SEL _cmd) {",
+                    "static void CLTSSimulateLightOverride(id self, SEL _cmd) {",
                     "static void CLTSUpdateTelemetryOverride(id self, SEL _cmd) {"):
             body = function_body(self.tweak, sig)
             self.assertIn("CLTSSessionEvaluate();", body)
+            self.assertIn("CLTSOrig", body)  # 观察者：原实现始终执行
 
     def test_apply_notification_recomputes_session(self):
         body = function_body(self.tweak, "static void CLTSApplyNotificationCallback(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {")
@@ -141,15 +162,21 @@ class RestoreCarveOutContractTests(unittest.TestCase):
         self.assertIn("getLimitOnlySessionEnabled()", body)
         self.assertIn("setThermalSimulationMode(@\"off\");", body)
 
-    def test_ppm_restore_not_gated(self):
-        # PPM 不属于会话：归零无条件执行（位于 carve-out if 块之后）
+    def test_ppm_restore_removed(self):
+        # PPM 面整体退役（fix-thermal-limit-powercuff A3）：还原路径无 PPM 归零调用
         body = function_body(self.daemon, "static void restoreThermalSimulationForReset(void) {")
+        self.assertNotIn("setPPMSimulationMode", body)
+        self.assertNotIn("ppmSimulationMode", body)
+        # carve-out 语义保留：gate 只包裹 thermal 归零
         gate_pos = body.index("getLimitOnlySessionEnabled()")
         thermal_pos = body.index("setThermalSimulationMode")
-        ppm_pos = body.index("setPPMSimulationMode")
-        self.assertLess(gate_pos, thermal_pos)   # gate 只包裹 thermal
-        between = body[thermal_pos:ppm_pos]
-        self.assertIn("}", between)              # thermal 调用与 PPM 调用之间已出 if 块
+        self.assertLess(gate_pos, thermal_pos)
+
+    def test_no_ppm_api_surface(self):
+        # ppm_simulate_mode 处理与诊断随 PPM 面退役
+        self.assertNotIn("ppm_simulate_mode", self.daemon)
+        self.assertNotIn("setPPMSimulationMode", self.daemon)
+        self.assertNotIn("getPPMSimulationMode", self.daemon)
 
     def test_full_control_cleanup_clears_session_keys(self):
         # enable=YES：回收会话键 + 模式标志（完整控制与 tweak 会话不得同时管理 thermal）
@@ -199,13 +226,18 @@ class UtilsSessionContractTests(unittest.TestCase):
     def test_set_limit_only_session_writes_mirror(self):
         body = function_body(self.utils, "void setLimitOnlySession(BOOL enabled, NSString* mode, BOOL plugged) {")
         self.assertIn('"thermalSimulationMode"', body)
-        self.assertIn('"thermalSimulationLocked"', body)
         self.assertIn("CLPostThermalApplyNotification();", body)
 
     def test_disable_resets_mirror_off(self):
         body = function_body(self.utils, "void setLimitOnlySession(BOOL enabled, NSString* mode, BOOL plugged) {")
         self.assertIn('setObject:@"off" forKey:@"thermalSimulationMode"', body)
-        self.assertIn('setObject:@NO forKey:@"thermalSimulationLocked"', body)
+
+    def test_no_ppm_and_lock_mirror_in_utils(self):
+        # locked 镜像与 PPM 帮助函数退役（fix-thermal-limit-powercuff A2/A3/D3）
+        self.assertNotIn("thermalSimulationLocked", self.utils)
+        self.assertNotIn("PPMSimulationMode", self.utils)
+        self.assertNotIn("ppmSimulationMode", self.utils)
+        self.assertNotIn("PPMSimulationMode", self.utils_h)
 
     def test_clear_removes_session_keys(self):
         body = function_body(self.utils, "void clearLimitOnlySessionKeys() {")
@@ -249,6 +281,23 @@ class AppContractTests(unittest.TestCase):
         cli_pos = body.index('spawnDaemonCLIVerb_C(@[@"apply_limit_only", @"1"')
         self.assertLess(enable_pos, session_pos)
         self.assertLess(session_pos, cli_pos)
+
+    def test_mode_switch_syncs_memory_before_notify(self):
+        # operation-mode-live-refresh M1：切换成功后内存模式状态先对齐再发通知，
+        # 否则 operationMode 派生自过期字段，UI 要重启才能看到新模式
+        body = function_body(self.manager_m, "- (void)switchToMode:(CLOperationMode)mode completion:(void (^)(BOOL))completion {")
+        sync_pos = body.index("[self alignModeStateInMemory:mode]")
+        notify_pos = body.index("postNotificationName:CLConfigDidUpdateNotification")
+        self.assertLess(sync_pos, notify_pos)
+        # 失败路径以磁盘真值为准重取
+        self.assertIn("[self refreshConfig];", body)
+
+    def test_align_mode_state_maps_three_states(self):
+        body = function_body(self.manager_m, "- (void)alignModeStateInMemory:(CLOperationMode)mode {")
+        self.assertIn("case CLOperationModeFullControl:", body)
+        self.assertIn("case CLOperationModeLimitOnly:", body)
+        self.assertIn("case CLOperationModeOff:", body)
+        self.assertIn("_limitOnlyModeFlag", body)
 
     def test_direct_read_uses_smart_battery_registry(self):
         body = function_body(self.manager_m, "- (void)refreshDirectSessionState {")

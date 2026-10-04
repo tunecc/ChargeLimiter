@@ -543,10 +543,36 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
         }
         dispatch_async(dispatch_get_main_queue(), ^{
             [self refreshDirectSessionState];
+            if (ok) {
+                // 切换成功：乐观同步内存模式状态（operation-mode-live-refresh M1）。
+                // _enabled/_limitOnlyModeFlag 仅在 refreshConfig 中赋值，不同步的话
+                // operationMode 派生自过期字段，UI 要等重进页面/重启才能看到新模式。
+                [self alignModeStateInMemory:mode];
+            } else {
+                [self refreshConfig]; // 失败：以磁盘真值为准重取，完成后自行发通知
+            }
             [[NSNotificationCenter defaultCenter] postNotificationName:CLConfigDidUpdateNotification object:self];
             if (completion) completion(ok);
         });
     });
+}
+
+// 三态与配置键映射是静态的（enable + limit_only_mode）：切换成功后直接对齐派生源。
+- (void)alignModeStateInMemory:(CLOperationMode)mode {
+    switch (mode) {
+        case CLOperationModeFullControl:
+            _enabled = YES;
+            _limitOnlyModeFlag = NO;
+            break;
+        case CLOperationModeLimitOnly:
+            _enabled = NO;
+            _limitOnlyModeFlag = YES;
+            break;
+        case CLOperationModeOff:
+            _enabled = NO;
+            _limitOnlyModeFlag = NO;
+            break;
+    }
 }
 
 #pragma mark - 私有方法
