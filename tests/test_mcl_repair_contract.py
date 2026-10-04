@@ -525,7 +525,9 @@ class MCLRepairUIContractTests(unittest.TestCase):
         body = function_body(self.adv_settings_m, "- (void)setupContent {")
         self.assertIn('title:CLL(@"强制修复 80% 限制")', body)
         self.assertIn("repairMCLLimitTapped:", body)
-        self.assertIn("tag:931", body)
+        # 4feb99f 起行 tag 改用命名常量（CLAdvMCLRepairRowTag=931），断言常量接线与取值
+        self.assertIn("tag:CLAdvMCLRepairRowTag", body)
+        self.assertIn("CLAdvMCLRepairRowTag = 931", self.adv_settings_m)
 
     def test_tap_asks_confirmation_then_runs(self):
         body = function_body(self.adv_settings_m, "- (void)repairMCLLimitTapped:(UITapGestureRecognizer *)tap {")
@@ -548,7 +550,7 @@ class MCLRepairUIContractTests(unittest.TestCase):
 
     def test_repair_button_disables_while_running(self):
         body = function_body(self.adv_settings_m, "- (void)setMCLRepairButtonEnabled:(BOOL)enabled {")
-        self.assertIn("931", body)
+        self.assertIn("CLAdvMCLRepairRowTag", body)
         self.assertIn("userInteractionEnabled", body)
 
     def test_bilingual_strings_synced(self):
