@@ -3623,6 +3623,7 @@ NSString* getThermalSimulationMode() {
 // 模拟档位配置域与执行端（CLThermalSim tweak）共享；通知只作"配置已变"触发信号（design D2）。
 static NSString* const CLThermalPrefsSuite = @"com.apple.cltm";
 static NSString* const CLThermalApplyNotification = @"com.chargelimiter.thermalapply";
+static NSString* const CLThermalSessionNotification = @"com.chargelimiter.thermalsession";
 
 NSString* getThermalConfigMode() {
     if (@available(iOS 11.0, *)) {
@@ -3636,9 +3637,41 @@ NSString* getThermalConfigMode() {
     return @"off";
 }
 
-static void CLPostThermalApplyNotification() {
+// Powercuff 档位编码（thermal-sim-mikasa-rewrite）：0=off/1=nominal/2=light/3=moderate/4=heavy。
+static uint64_t CLThermalModeValue(NSString* mode) {
+    if ([mode isEqualToString:@"nominal"]) return 1;
+    if ([mode isEqualToString:@"light"]) return 2;
+    if ([mode isEqualToString:@"moderate"]) return 3;
+    if ([mode isEqualToString:@"heavy"]) return 4;
+    return 0;
+}
+
+// 档位通道内核态推送：执行端（thermalmonitord）唯一读取源——真机实证偏好跨进程
+// 读取不可见，内核 notify state 为生效通路（Powercuff 同款）。token 进程内注册一次。
+static void CLPostThermalApplyNotification(NSString* mode) {
+    static int token = -1;
+    if (token == -1) {
+        if (notify_register_check([CLThermalApplyNotification UTF8String], &token) != NOTIFY_STATUS_OK) {
+            return; // 注册失败仍广播通知（旧通路兜底为零成本）
+        }
+    }
+    notify_set_state(token, CLThermalModeValue(mode));
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
                                          (__bridge CFStringRef)CLThermalApplyNotification,
+                                         NULL, NULL, YES);
+}
+
+// 会话通道内核态推送（tweak 插拔边沿数据源）：state = enabled(bit0) | 档位值(bit8-15)。
+static void CLPostThermalSessionNotification(BOOL enabled, NSString* mode) {
+    static int token = -1;
+    if (token == -1) {
+        if (notify_register_check([CLThermalSessionNotification UTF8String], &token) != NOTIFY_STATUS_OK) {
+            return;
+        }
+    }
+    notify_set_state(token, (enabled ? 1ULL : 0ULL) | (CLThermalModeValue(mode) << 8));
+    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                         (__bridge CFStringRef)CLThermalSessionNotification,
                                          NULL, NULL, YES);
 }
 
@@ -3656,7 +3689,7 @@ void setThermalSimulationMode(NSString* mode) {
         [defs setObject:mode forKey:@"thermalSimulationMode"]; // off/nominal/light/moderate/heavy
         CLScrubRetiredThermalKeys(defs);
         [defs synchronize];
-        CLPostThermalApplyNotification();
+        CLPostThermalApplyNotification(mode); // 记录面 + 生效通路（内核态）
     }
 }
 
@@ -3703,7 +3736,9 @@ void setLimitOnlySession(BOOL enabled, NSString* mode, BOOL plugged) {
     }
     CLScrubRetiredThermalKeys(defs);
     [defs synchronize];
-    CLPostThermalApplyNotification();
+    // 双通道：会话配置（tweak 插拔边沿数据源）+ 档位（即时生效）。
+    CLPostThermalSessionNotification(enabled, mode);
+    CLPostThermalApplyNotification((enabled && plugged && ![mode isEqualToString:@"off"]) ? mode : @"off");
 }
 
 void clearLimitOnlySessionKeys() {
@@ -3714,7 +3749,8 @@ void clearLimitOnlySessionKeys() {
     [defs setObject:@"off" forKey:@"thermalSimulationMode"];
     CLScrubRetiredThermalKeys(defs);
     [defs synchronize];
-    CLPostThermalApplyNotification();
+    CLPostThermalSessionNotification(NO, @"off");
+    CLPostThermalApplyNotification(@"off");
 }
 
 // 插电判定（与 daemon isAdaptorConnect 常规分支一致）：ExternalChargeCapable 优先，

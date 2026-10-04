@@ -1,90 +1,70 @@
-// CLThermalSim —— ChargeLimiter 温控模拟执行端（design: thermal-sim-companion-tweak D1–D4；
-// fix-thermal-limit-powercuff 对齐 Powercuff 语义；fix-thermal-limit-stuck-verifying
-// 增加通用镜像收敛）。
-// 仅注入 thermalmonitord（见 CLThermalSim.plist）：把 daemon/CLI 写入 com.apple.cltm 的
-// 温控模拟档位推进到 CommonProduct 的系统模拟 API，并在通知与进程重启时重放。
-// 与 Powercuff 一致：不干预 thermalmonitord 自身缓解链路（tryTakeAction 等原实现始终
-// 执行，hook 仅作会话复查观察者），无低温/PPM 模拟。全部 hook 点做能力探测：
-// 类/selector 缺失时静默跳过，退回偏好通路现状。
+// CLThermalSim —— ChargeLimiter 温控模拟执行端（thermal-sim-mikasa-rewrite：
+// 完全模仿 Mikasa-san:Powercuff 机制）。仅注入 thermalmonitord（见 CLThermalSim.plist）。
+// 档位经内核 notify state 传输——真机实证 thermalmonitord 内 CFPreferences 读不到
+// root 进程的偏好写入（偏好镜像通路全链无效），内核态是唯一生效通路（Powercuff
+// 全系同款）。零运行时偏好读取；唯一例外：进程启动时单次 best-effort 读会话键
+// 做跨重启重挂（重启后内核态归零）。
 //
-// 通用镜像收敛：记录最近一次实际下发的档位，镜像（thermalSimulationMode）与之一致
-// 则零动作、不一致则重发（含 off 清除）——兜住通知丢失、偏好读取竞态（写应答≠读
-// 可见）与系统清除；完整控制（会话未启用）与仅限流两种模式同样受益。只读不写镜像。
+// 双通道（写方 = daemon/CLI root 进程；会话启用期间本 tweak 亦写档位通道）：
+//   com.chargelimiter.thermalapply   档位通道，state = 0=off/1=nominal/2=light/3=moderate/4=heavy
+//   com.chargelimiter.thermalsession 会话通道，state = enabled(bit0) | 档位值(bit8-15)
+// 完整控制模式（会话未启用）档位通道归 daemon 独写，本 tweak 不干预。
 //
-// 仅限流会话（limit-only daemon-free，spec B2）：daemon 不驻留的形态下，会话键
-// clLimitSessionEnabled/clLimitMode 由一次性 CLI 写入；本 tweak 据此维护插电时限流档、
-// 拔线回 off 的会话语义（幂等收敛），并经电池属性 interest 通知与既有 hook 点复查。
-// 会话关闭时不碰 thermal 镜像键——写方归 CLI/常驻 daemon。
+// 仅限流会话（limit-only daemon-free，spec B2）：插电 → 限流档、拔线/档位 off → off，
+// 由电池属性 interest 与会话通道通知驱动（IOKit 插电判定，不碰偏好）。
 
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
+#import <notify.h>
 #import <IOKit/IOKitLib.h>
 
-static NSString * const CLTSPrefsSuite = @"com.apple.cltm";
-static NSString * const CLTSKeyThermalMode = @"thermalSimulationMode";
 static NSString * const CLTSApplyNotification = @"com.chargelimiter.thermalapply";
-static NSString * const CLTSKeySessionEnabled = @"clLimitSessionEnabled";
-static NSString * const CLTSKeyLimitMode = @"clLimitMode";
+static NSString * const CLTSSessionNotification = @"com.chargelimiter.thermalsession";
 
-// 当前可操作的 CommonProduct 实例；随 initProduct: 更新（weak，不延长生命周期）。
-static __weak id CLTSCurrentProduct = nil;
+static int CLTSApplyToken = -1;
+static int CLTSSessionToken = -1;
 
-#pragma mark - 配置读取
+// Mikasa 同款：强引用捕获，无 dealloc hook。
+static id CLTSCurrentProduct = nil;
 
-static NSString *CLTSReadMode(NSString *key) {
-    CFTypeRef val = CFPreferencesCopyAppValue((__bridge CFStringRef)key, (__bridge CFStringRef)CLTSPrefsSuite);
-    NSString *mode = nil;
-    if (val) {
-        if (CFGetTypeID(val) == CFStringGetTypeID()) {
-            mode = [(__bridge NSString *)val copy];
-        }
-        CFRelease(val);
+#pragma mark - 档位编码（Powercuff 编码）
+
+static NSString *CLTSStringForThermalMode(uint64_t mode) {
+    switch (mode) {
+        case 1: return @"nominal";
+        case 2: return @"light";
+        case 3: return @"moderate";
+        case 4: return @"heavy";
+        default: return @"off";
     }
-    if (![mode isEqualToString:@"nominal"] && ![mode isEqualToString:@"light"] &&
-        ![mode isEqualToString:@"moderate"] && ![mode isEqualToString:@"heavy"]) {
-        return @"off"; // 缺省/无效值按 off，不沿用旧档位
-    }
-    return mode;
 }
 
-#pragma mark - 仅限流会话（spec B2）
-
-static void CLTSApplyOnProduct(id product); // 前置声明：会话收敛时即时下发
-static void CLTSConvergeThermalMirror(void); // 前置声明：电池 interest 回调早于定义引用
-
-static BOOL CLTSReadSessionEnabled(void) {
-    CFTypeRef val = CFPreferencesCopyAppValue((__bridge CFStringRef)CLTSKeySessionEnabled, (__bridge CFStringRef)CLTSPrefsSuite);
-    BOOL enabled = NO;
-    if (val) {
-        if (CFGetTypeID(val) == CFBooleanGetTypeID()) {
-            enabled = CFBooleanGetValue((CFBooleanRef)val);
-        } else if (CFGetTypeID(val) == CFNumberGetTypeID()) {
-            enabled = [(__bridge NSNumber *)val boolValue];
-        }
-        CFRelease(val);
-    }
-    return enabled;
+static uint64_t CLTSModeValueForString(NSString *mode) {
+    if ([mode isEqualToString:@"nominal"]) return 1;
+    if ([mode isEqualToString:@"light"]) return 2;
+    if ([mode isEqualToString:@"moderate"]) return 3;
+    if ([mode isEqualToString:@"heavy"]) return 4;
+    return 0;
 }
 
-static NSString *CLTSReadSessionLimitMode(void) {
-    CFTypeRef val = CFPreferencesCopyAppValue((__bridge CFStringRef)CLTSKeyLimitMode, (__bridge CFStringRef)CLTSPrefsSuite);
-    NSString *mode = nil;
-    if (val) {
-        if (CFGetTypeID(val) == CFStringGetTypeID()) {
-            mode = [(__bridge NSString *)val copy];
-        }
-        CFRelease(val);
-    }
-    if (![mode isEqualToString:@"nominal"] && ![mode isEqualToString:@"light"] &&
-        ![mode isEqualToString:@"moderate"] && ![mode isEqualToString:@"heavy"]) {
-        return @"off"; // 缺省/无效档不产生限流（安全侧）
-    }
-    return mode;
+#pragma mark - 档位应用（Mikasa ApplyThermals 同款）
+
+static void CLTSApplyThermals(void) {
+    if (CLTSCurrentProduct == nil) return;
+    if (![CLTSCurrentProduct respondsToSelector:@selector(putDeviceInThermalSimulationMode:)]) return;
+    uint64_t mode = 0;
+    notify_get_state(CLTSApplyToken, &mode);
+    // off 也下发：清除已生效档位（还原语义）。
+    ((void (*)(id, SEL, NSString *))objc_msgSend)(CLTSCurrentProduct,
+                                                  @selector(putDeviceInThermalSimulationMode:),
+                                                  CLTSStringForThermalMode(mode));
 }
+
+#pragma mark - 会话边沿（内核态 + IOKit，零偏好）
 
 // 插电判定（与 daemon isAdaptorConnect 常规分支一致）：ExternalChargeCapable 优先，
-// 缺失回退 ExternalConnected。仅限流模式无禁流覆盖写，派生键抖动前提不存在。
+// 缺失回退 ExternalConnected。
 static BOOL CLTSPowerConnected(void) {
     io_service_t serv = IOServiceGetMatchingService(0, // kIOMasterPortDefault：iOS SDK 标记不可用，值即 0
                                                     IOServiceMatching("AppleSmartBattery"));
@@ -104,98 +84,71 @@ static BOOL CLTSPowerConnected(void) {
     return connected;
 }
 
-// 会话收敛（幂等）：目标 = 插电且档位非 off → 限流档；否则 off。镜像未变化时不重写
-// （读回比对），变化时写偏好并即时下发。会话关闭时直接返回——thermal 镜像写方归
-// CLI / 常驻 daemon，tweak 不得越权。
-static void CLTSSessionEvaluate(void) {
-    if (!CLTSReadSessionEnabled()) return;
-    NSString *limit = CLTSReadSessionLimitMode();
-    NSString *target = (!CLTSPowerConnected() || [limit isEqualToString:@"off"]) ? @"off" : limit;
-    if ([CLTSReadMode(CLTSKeyThermalMode) isEqualToString:target]) {
-        return;
-    }
-    CFPreferencesSetValue((__bridge CFStringRef)CLTSKeyThermalMode,
-                          (__bridge CFTypeRef)target,
-                          (__bridge CFStringRef)CLTSPrefsSuite,
-                          kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-    CFPreferencesSynchronize((__bridge CFStringRef)CLTSPrefsSuite, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-    CLTSApplyOnProduct(CLTSCurrentProduct);
+// 会话通道解码：enabled(bit0) + 档位值(bit8-15)。
+static BOOL CLTSSessionConfig(uint64_t *limitMode) {
+    uint64_t state = 0;
+    notify_get_state(CLTSSessionToken, &state);
+    *limitMode = (state >> 8) & 0xFF;
+    return (state & 1ULL) != 0;
 }
 
-// 电池属性变化（插拔边沿）回调：会话重算 + 通用镜像收敛。消息类型不区分——任何
-// 属性变化都重收敛，幂等早退保证代价可忽略。
+// 会话重算：插电且档位非 0 → 档位；否则 off（正确性底线：不允许限流档未插电残留）。
+// 会话未启用直接返回——完整控制模式档位通道归 daemon 独写。
+static void CLTSSessionEvaluate(void) {
+    uint64_t limit = 0;
+    if (!CLTSSessionConfig(&limit)) return;
+    uint64_t target = (CLTSPowerConnected() && limit != 0) ? limit : 0;
+    notify_set_state(CLTSApplyToken, target);
+    CLTSApplyThermals();
+}
+
+// 电池属性变化（插拔边沿）回调：会话重算。消息类型不区分——任何属性变化都重算。
 static void CLTSBatteryInterestCallback(void *refcon, io_service_t service, natural_t messageType, void *messageArgument) {
     CLTSSessionEvaluate();
-    CLTSConvergeThermalMirror();
 }
 
-#pragma mark - 档位应用
+#pragma mark - 跨重启重挂（单次 best-effort 偏好读取）
 
-// 最近一次经 putDeviceInThermalSimulationMode: 实际下发的档位（进程内记忆），
-// 供通用镜像收敛比对；thermalmonitord 重启后自然归零（重启重放会先补一次下发）。
-static NSString *CLTSLastAppliedThermal = nil;
-
-static void CLTSApplyOnProduct(id product) {
-    if (product == nil) return;
-    @try {
-        // thermal：off 也主动下发以清除已生效档位（还原语义）。
-        if ([product respondsToSelector:@selector(putDeviceInThermalSimulationMode:)]) {
-            NSString *thermal = CLTSReadMode(CLTSKeyThermalMode);
-            ((void (*)(id, SEL, NSString *))objc_msgSend)(product, @selector(putDeviceInThermalSimulationMode:), thermal);
-            CLTSLastAppliedThermal = thermal;
+// 重启后内核态归零。从持久化会话键尽力恢复会话通道并重算（本进程首次偏好访问，
+// 与运行期缓存不可见问题不同路径）；读不到/未启用则维持 off。此后运行期零偏好读取。
+static void CLTSRestoreSessionFromPrefs(void) {
+    CFTypeRef enabledRef = CFPreferencesCopyAppValue(CFSTR("clLimitSessionEnabled"),
+                                                     CFSTR("com.apple.cltm"));
+    BOOL enabled = NO;
+    if (enabledRef != NULL) {
+        if (CFGetTypeID(enabledRef) == CFBooleanGetTypeID()) {
+            enabled = CFBooleanGetValue((CFBooleanRef)enabledRef);
+        } else if (CFGetTypeID(enabledRef) == CFNumberGetTypeID()) {
+            enabled = [(__bridge NSNumber *)enabledRef boolValue];
         }
-    } @catch (NSException *exc) {
-        NSLog(@"[CLThermalSim] apply exception: %@", exc);
+        CFRelease(enabledRef);
     }
+    if (!enabled) return;
+    NSString *mode = nil;
+    CFTypeRef modeRef = CFPreferencesCopyAppValue(CFSTR("clLimitMode"), CFSTR("com.apple.cltm"));
+    if (modeRef != NULL) {
+        if (CFGetTypeID(modeRef) == CFStringGetTypeID()) {
+            mode = [(__bridge NSString *)modeRef copy];
+        }
+        CFRelease(modeRef);
+    }
+    uint64_t value = CLTSModeValueForString(mode);
+    notify_set_state(CLTSSessionToken, 1ULL | (value << 8));
+    CLTSSessionEvaluate();
 }
 
-// 通用镜像收敛：镜像与最近下发一致则零动作早退，不一致则重发。只读镜像不写。
-// 覆盖会话未启用（完整控制）时的通知丢失/偏好竞态/系统清除；会话模式下与
-// 会话收敛叠加（会话写镜像 → 本函数推进到 product），语义一致。
-static void CLTSConvergeThermalMirror(void) {
-    if (CLTSCurrentProduct == nil) return;
-    NSString *mirror = CLTSReadMode(CLTSKeyThermalMode);
-    if ([mirror isEqualToString:CLTSLastAppliedThermal]) return;
-    CLTSApplyOnProduct(CLTSCurrentProduct);
-}
-
-#pragma mark - Hook 替换实现
+#pragma mark - Hook 替换实现（仅 initProduct:，Mikasa 同款）
 
 static IMP CLTSOrigInitProduct = NULL;
-static IMP CLTSOrigTryTakeAction = NULL;
-static IMP CLTSOrigSimulateLight = NULL;
-static IMP CLTSOrigTelemetry = NULL;
 
 static id CLTSInitProductOverride(id self, SEL _cmd, id data) {
     id result = CLTSOrigInitProduct ? ((id (*)(id, SEL, id))CLTSOrigInitProduct)(self, _cmd, data) : nil;
     if (result == nil) return nil; // 原实现失败：不捕获不应用
-    CLTSCurrentProduct = self;
-    // thermalmonitord 重启重放（spec B2 触发之一）：先按会话重算镜像（自愈对齐
-    // 当前插电状态），再应用既有镜像语义。
-    CLTSSessionEvaluate();
-    CLTSApplyOnProduct(self);
+    if ([result respondsToSelector:@selector(putDeviceInThermalSimulationMode:)]) {
+        CLTSCurrentProduct = result; // 强引用捕获（Mikasa 同款）
+    }
+    CLTSApplyThermals(); // thermalmonitord 重启重放：内核态即真相
     return result;
-}
-
-// 以下三个 hook：会话机会性复查 + 通用镜像收敛（thermalmonitord 自身评估节拍即
-// 收敛节拍，不新增定时器）；原实现始终执行（Powercuff 已验证语义，屏蔽缓解链路
-// 会让模拟档位永远不被执行）。
-static void CLTSTryTakeActionOverride(id self, SEL _cmd) {
-    CLTSSessionEvaluate(); // 机会性复查（spec B2）：策略评估频率即复查频率
-    CLTSConvergeThermalMirror();
-    if (CLTSOrigTryTakeAction) ((void (*)(id, SEL))CLTSOrigTryTakeAction)(self, _cmd);
-}
-
-static void CLTSSimulateLightOverride(id self, SEL _cmd) {
-    CLTSSessionEvaluate();
-    CLTSConvergeThermalMirror();
-    if (CLTSOrigSimulateLight) ((void (*)(id, SEL))CLTSOrigSimulateLight)(self, _cmd);
-}
-
-static void CLTSUpdateTelemetryOverride(id self, SEL _cmd) {
-    CLTSSessionEvaluate(); // 机会性复查：电源域遥测更新常伴随供电状态变化
-    CLTSConvergeThermalMirror();
-    if (CLTSOrigTelemetry) ((void (*)(id, SEL))CLTSOrigTelemetry)(self, _cmd);
 }
 
 static void CLTSHookSelector(Class cls, SEL sel, IMP newImp, IMP *origOut) {
@@ -205,37 +158,31 @@ static void CLTSHookSelector(Class cls, SEL sel, IMP newImp, IMP *origOut) {
     if (prev && *origOut == NULL) *origOut = prev;
 }
 
-static void CLTSHookCommonProduct(Class cls) {
-    if (cls == nil) return; // 类缺失（系统变更）：静默退回
-    CLTSHookSelector(cls, @selector(initProduct:), (IMP)CLTSInitProductOverride, &CLTSOrigInitProduct);
-    CLTSHookSelector(cls, @selector(tryTakeAction), (IMP)CLTSTryTakeActionOverride, &CLTSOrigTryTakeAction);
-    CLTSHookSelector(cls, @selector(simulateLightThermalPressure), (IMP)CLTSSimulateLightOverride, &CLTSOrigSimulateLight);
-    CLTSHookSelector(cls, @selector(updatePowerzoneTelemetry), (IMP)CLTSUpdateTelemetryOverride, &CLTSOrigTelemetry);
-}
-
-#pragma mark - 通知与入口
-
-static void CLTSApplyNotificationCallback(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
-    CLTSSessionEvaluate(); // 配置可能刚变：先重算会话镜像，再按镜像下发
-    CLTSApplyOnProduct(CLTSCurrentProduct);
-    // 偏好读取可能滞后于通知（写应答≠读可见）：本拍未对齐时由收敛路径在
-    // thermalmonitord 自身评估节拍内补发，此处无需额外重试。
-}
+#pragma mark - 入口
 
 static IONotificationPortRef CLTSNotifyPort = NULL;
 static io_object_t CLTSBatteryNotifier = IO_OBJECT_NULL;
 
 __attribute__((constructor)) static void CLTSInit(void) {
     @autoreleasepool {
-        CLTSHookCommonProduct(objc_getClass("CommonProduct"));
-        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
-                                        NULL,
-                                        CLTSApplyNotificationCallback,
-                                        (__bridge CFStringRef)CLTSApplyNotification,
-                                        NULL,
-                                        CFNotificationSuspensionBehaviorCoalesce);
-        // 仅限流会话主触发（spec B2）：AppleSmartBattery 属性变化（插拔边沿）驱动
-        // 会话重算。注册失败静默降级——既有 hook 点机会性复查兜底。
+        Class productClass = objc_getClass("CommonProduct");
+        if (productClass != nil) { // 类缺失（系统变更）：静默退回
+            CLTSHookSelector(productClass, @selector(initProduct:), (IMP)CLTSInitProductOverride, &CLTSOrigInitProduct);
+        }
+        // 双通道（Mikasa 同款 notify_register_dispatch，主队列）：
+        // 档位通知 → 即时下发；会话通知 → 会话边沿重算。
+        notify_register_dispatch([CLTSApplyNotification UTF8String], &CLTSApplyToken,
+                                 dispatch_get_main_queue(), ^(int token) {
+            CLTSApplyThermals();
+        });
+        notify_register_dispatch([CLTSSessionNotification UTF8String], &CLTSSessionToken,
+                                 dispatch_get_main_queue(), ^(int token) {
+            CLTSSessionEvaluate();
+        });
+        // 跨重启重挂：会话偏好仍启用则恢复会话通道并重算（产品实例就绪前只落内核态，
+        // 由 initProduct 重放补一次下发）。
+        CLTSRestoreSessionFromPrefs();
+        // 电池属性 interest（插拔边沿）：注册失败静默降级——会话通道通知兜底。
         CLTSNotifyPort = IONotificationPortCreate(0); // master port 0（iOS）
         if (CLTSNotifyPort != NULL) {
             CFRunLoopAddSource(CFRunLoopGetMain(),

@@ -1,14 +1,14 @@
 """limit-only-daemon-free 合约测试。
 
 仅限流模式（三态主开关的一态）= 只保留充电限流，daemon 零驻留（spec B1-B7）：
-- B2：CLThermalSim tweak 会话执行——会话键 clLimitSessionEnabled/clLimitMode，
-  插电时限流档、拔线回 off（幂等收敛）；会话关闭不碰 thermal 镜像；
-  电池 interest 通知 + hook 点机会性复查 + thermalmonitord 重启重放；
-  执行端对齐 Powercuff（fix-thermal-limit-powercuff）：档位仅经
-  putDeviceInThermalSimulationMode: 下发，不屏蔽 tryTakeAction 等缓解链路，
-  无低温/PPM 模拟，无 thermalSimulationLocked 镜像。
-- B3：daemon 一次性 CLI 动词 apply_limit_only——写会话键 + thermal 初始镜像 + 通知即退，
-  不启动 HTTP/策略循环。
+- B2：CLThermalSim tweak 会话执行（thermal-sim-mikasa-rewrite 重写）——档位经
+  内核 notify state 双通道（apply=档位 0-4 / session=enabled+档位编码），
+  thermalmonitord 内零运行时偏好读取（真机实证偏好跨进程不可见）；
+  仅 hook initProduct:（强引用捕获，Mikasa 同款），无缓解链路 hook；
+  电池 interest + 会话通道通知驱动插拔边沿（插电档/拔线 off）；
+  进程启动单次 best-effort 读会话偏好做跨重启重挂。
+- B3：daemon 一次性 CLI 动词 apply_limit_only——写会话键（记录面）+ 双通道
+  内核态推送 + 通知即退，不启动 HTTP/策略循环。
 - B4：master-off 还原 carve-out——limit_only 模式下 thermal 会话键不被还原清除；
   enable=YES 防御清理回收会话键；PPM 复位随 PPM 面退役移除。
 - B1/B5：白名单放行 limit_only_mode；App 三态主开关 + 状态条 + 置灰门控 +
@@ -21,8 +21,9 @@
 - B7：tweak 打包链接 IOKit.tbd。
 - fix-thermal-limit-stuck-verifying：安装后 killall thermalmonitord（三形态 postinst，
   升级即时换掉内存中旧版 tweak）；退役键随写清洗（thermalSimulationLocked /
-  ppmSimulationMode 残留会让旧版已注入 tweak 保持屏蔽/低温模拟）；tweak 既有
-  hook 点通用镜像收敛（镜像≠最近下发即重发，兜住通知丢失与偏好读取竞态）。
+  ppmSimulationMode 残留会让旧版已注入 tweak 保持屏蔽/低温模拟）。
+- thermal-sim-mikasa-rewrite：生效通路改内核 notify state（thermalmonitord 内
+  CFPreferences 读不到 root 写入，真机实证；Mikasa fork 同机生效）。
 """
 from pathlib import Path
 import unittest
@@ -59,48 +60,79 @@ def function_body(source: str, signature: str) -> str:
 
 
 class TweakSessionContractTests(unittest.TestCase):
-    """B2：CLThermalSim 会话执行端。"""
+    """B2：CLThermalSim 会话执行端（Mikasa 机制重写）。"""
 
     @classmethod
     def setUpClass(cls):
         cls.tweak = TWEAK_M.read_text()
 
-    def test_session_keys_defined(self):
-        self.assertIn('"clLimitSessionEnabled"', self.tweak)
-        self.assertIn('"clLimitMode"', self.tweak)
+    def test_session_keys_only_used_for_boot_restore(self):
+        # 会话偏好键仅出现在跨重启重挂函数（进程启动单次读取）
+        restore = function_body(self.tweak, "static void CLTSRestoreSessionFromPrefs(void) {")
+        self.assertIn('CFSTR("clLimitSessionEnabled")', restore)
+        self.assertIn('CFSTR("clLimitMode")', restore)
 
-    def test_session_evaluate_unplug_converges_off(self):
-        # 会话收敛：未插电或档位 off → 目标 off
+    def test_zero_runtime_pref_reads(self):
+        # thermal-sim-mikasa-rewrite A1：运行时零偏好读取——CFPreferences 仅在重挂函数
+        restore = function_body(self.tweak, "static void CLTSRestoreSessionFromPrefs(void) {")
+        total = self.tweak.count("CFPreferencesCopyAppValue")
+        self.assertEqual(total, restore.count("CFPreferencesCopyAppValue"))
+        self.assertNotIn("NSUserDefaults", self.tweak)
+
+    def test_apply_reads_kernel_state_only(self):
+        # 档位唯一读取源 = 档位通道 notify_get_state；off 也下发
+        body = function_body(self.tweak, "static void CLTSApplyThermals(void) {")
+        self.assertIn("notify_get_state", body)
+        self.assertIn("putDeviceInThermalSimulationMode:", body)
+        self.assertNotIn("CFPreferences", body)
+
+    def test_dual_channels_registered(self):
+        # ctor 双通道 notify_register_dispatch（主队列）
+        self.assertIn('notify_register_dispatch([CLTSApplyNotification UTF8String]', self.tweak)
+        self.assertIn('notify_register_dispatch([CLTSSessionNotification UTF8String]', self.tweak)
+        self.assertIn("dispatch_get_main_queue()", self.tweak)
+
+    def test_only_initproduct_hook(self):
+        # Mikasa 同款：仅 hook initProduct:，无缓解链路 hook
+        self.assertEqual(self.tweak.count("CLTSHookSelector(productClass"), 1)
+        self.assertIn("CLTSHookSelector(productClass, @selector(initProduct:)", self.tweak)
+        for sel in ("tryTakeAction", "simulateLightThermalPressure", "updatePowerzoneTelemetry"):
+            self.assertNotIn(sel, self.tweak)
+
+    def test_strong_product_capture(self):
+        # 强引用捕获（Mikasa 同款，非 __weak）
+        self.assertIn("static id CLTSCurrentProduct = nil;", self.tweak)
+        self.assertNotIn("__weak", self.tweak)
+        body = function_body(self.tweak, "static id CLTSInitProductOverride(id self, SEL _cmd, id data) {")
+        self.assertIn("CLTSCurrentProduct = result;", body)
+        self.assertIn("CLTSApplyThermals();", body)  # 重启重放：内核态即真相
+
+    def test_session_evaluate_kernel_edges(self):
+        # 会话边沿：读会话通道 + IOKit 插电判定；未启用不动档位通道（daemon 独写）
         body = function_body(self.tweak, "static void CLTSSessionEvaluate(void) {")
+        self.assertIn("CLTSSessionConfig", body)
+        self.assertIn("if (!CLTSSessionConfig(&limit)) return;", body)
         self.assertIn("CLTSPowerConnected()", body)
-        self.assertIn('@"off"', body)
-        self.assertIn("CLTSKeyThermalMode", body)
-        self.assertIn("kCFPreferencesCurrentUser", body)
+        self.assertIn("notify_set_state", body)
+        self.assertIn("CLTSApplyThermals();", body)
+        self.assertNotIn("CFPreferences", body)
 
-    def test_session_disabled_does_not_touch_mirror(self):
-        # 会话关闭时直接返回：镜像写方归 CLI/常驻 daemon，tweak 不得越权
-        body = function_body(self.tweak, "static void CLTSSessionEvaluate(void) {")
-        self.assertIn("if (!CLTSReadSessionEnabled()) return;", body)
+    def test_session_channel_encoding(self):
+        # 会话通道编码：enabled(bit0) | 档位值(bit8-15)
+        body = function_body(self.tweak, "static BOOL CLTSSessionConfig(uint64_t *limitMode) {")
+        self.assertIn("(state >> 8) & 0xFF", body)
+        self.assertIn("(state & 1ULL) != 0", body)
 
-    def test_session_evaluate_idempotent(self):
-        # 幂等：镜像读回比对未变化时早退，不重写偏好
-        body = function_body(self.tweak, "static void CLTSSessionEvaluate(void) {")
-        self.assertIn("if ([CLTSReadMode(CLTSKeyThermalMode) isEqualToString:target])", body)
-        self.assertIn("return;", body)
-
-    def test_no_lock_mirror_and_no_suppression(self):
-        # Powercuff 对齐（fix-thermal-limit-powercuff A2）：锁定镜像与屏蔽路径整体退役
-        self.assertNotIn("thermalSimulationLocked", self.tweak)
-        self.assertNotIn("CLTSShouldSuppressOverride", self.tweak)
-        self.assertNotIn("CLTSIsLocked", self.tweak)
-        for sig in ("static void CLTSTryTakeActionOverride(id self, SEL _cmd) {",
-                    "static void CLTSSimulateLightOverride(id self, SEL _cmd) {",
-                    "static void CLTSUpdateTelemetryOverride(id self, SEL _cmd) {"):
-            body = function_body(self.tweak, sig)
-            self.assertNotIn("return;", body)  # 原实现无条件执行，无提前返回
+    def test_powercuff_mode_encoding(self):
+        # Powercuff 编码：1=nominal/2=light/3=moderate/4=heavy，其余 off
+        body = function_body(self.tweak, "static uint64_t CLTSModeValueForString(NSString *mode) {")
+        self.assertIn('return 1;', body)
+        self.assertIn('return 2;', body)
+        self.assertIn('return 3;', body)
+        self.assertIn('return 4;', body)
 
     def test_no_low_temp_ppm_simulation(self):
-        # Powercuff 对齐（fix-thermal-limit-powercuff A3）：低温/PPM 模拟不在执行端
+        # 低温/PPM 模拟不在执行端
         self.assertNotIn("putDeviceInLowTempSimulationMode", self.tweak)
         self.assertNotIn("ppmSimulationMode", self.tweak)
 
@@ -116,48 +148,8 @@ class TweakSessionContractTests(unittest.TestCase):
         self.assertIn('"IOServiceInterestNotifications"', self.tweak)
         self.assertIn("CLTSBatteryInterestCallback", self.tweak)
 
-    def test_replay_on_thermalmonitord_restart(self):
-        # thermalmonitord 重启重放：initProduct hook 先重算会话再应用
-        body = function_body(self.tweak, "static id CLTSInitProductOverride(id self, SEL _cmd, id data) {")
-        self.assertIn("CLTSSessionEvaluate();", body)
-        self.assertIn("CLTSApplyOnProduct(self);", body)
-
-    def test_opportunistic_recheck_in_hooks(self):
-        for sig in ("static void CLTSTryTakeActionOverride(id self, SEL _cmd) {",
-                    "static void CLTSSimulateLightOverride(id self, SEL _cmd) {",
-                    "static void CLTSUpdateTelemetryOverride(id self, SEL _cmd) {"):
-            body = function_body(self.tweak, sig)
-            self.assertIn("CLTSSessionEvaluate();", body)
-            self.assertIn("CLTSOrig", body)  # 观察者：原实现始终执行
-
-    def test_apply_notification_recomputes_session(self):
-        body = function_body(self.tweak, "static void CLTSApplyNotificationCallback(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {")
-        self.assertIn("CLTSSessionEvaluate();", body)
-
-    def test_generic_mirror_convergence(self):
-        # fix-thermal-limit-stuck-verifying A3：镜像≠最近下发 → 重发（含 off）。
-        # 收敛只读镜像不写（无 CFPreferencesSetValue），一致零动作早退。
-        body = function_body(self.tweak, "static void CLTSConvergeThermalMirror(void) {")
-        self.assertIn("CLTSReadMode(CLTSKeyThermalMode)", body)
-        self.assertIn("CLTSLastAppliedThermal", body)
-        self.assertIn("CLTSApplyOnProduct(CLTSCurrentProduct);", body)
-        self.assertNotIn("CFPreferencesSetValue", body)
-
-    def test_apply_records_last_applied(self):
-        body = function_body(self.tweak, "static void CLTSApplyOnProduct(id product) {")
-        self.assertIn("CLTSLastAppliedThermal = thermal;", body)
-
-    def test_hooks_converge_mirror(self):
-        # 三个既有 hook 点 + 电池 interest 回调都做通用镜像收敛
-        for sig in ("static void CLTSTryTakeActionOverride(id self, SEL _cmd) {",
-                    "static void CLTSSimulateLightOverride(id self, SEL _cmd) {",
-                    "static void CLTSUpdateTelemetryOverride(id self, SEL _cmd) {",
-                    "static void CLTSBatteryInterestCallback(void *refcon, io_service_t service, natural_t messageType, void *messageArgument) {"):
-            body = function_body(self.tweak, sig)
-            self.assertIn("CLTSConvergeThermalMirror();", body)
-
     def test_no_periodic_timer_added(self):
-        # 收敛节拍 = thermalmonitord 自身评估节拍：不新增任何定时器
+        # 无定时器：触发 = 通知 + 电池 interest + initProduct 重放
         self.assertNotIn("NSTimer", self.tweak)
         self.assertNotIn("dispatch_after", self.tweak)
 
@@ -264,7 +256,24 @@ class UtilsSessionContractTests(unittest.TestCase):
     def test_set_limit_only_session_writes_mirror(self):
         body = function_body(self.utils, "void setLimitOnlySession(BOOL enabled, NSString* mode, BOOL plugged) {")
         self.assertIn('"thermalSimulationMode"', body)
-        self.assertIn("CLPostThermalApplyNotification();", body)
+        self.assertIn("CLPostThermalSessionNotification(enabled, mode);", body)
+        self.assertIn("CLPostThermalApplyNotification(", body)
+
+    def test_kernel_state_push_on_writers(self):
+        # thermal-sim-mikasa-rewrite A2：档位通道 notify_set_state（Powercuff 编码）+ 广播
+        body = function_body(self.utils, "static void CLPostThermalApplyNotification(NSString* mode) {")
+        self.assertIn("notify_register_check", body)
+        self.assertIn("notify_set_state(token, CLThermalModeValue(mode));", body)
+        self.assertIn("CFNotificationCenterPostNotification", body)
+        # 会话通道编码：enabled(bit0) | 档位值(bit8-15)
+        session = function_body(self.utils, "static void CLPostThermalSessionNotification(BOOL enabled, NSString* mode) {")
+        self.assertIn("(enabled ? 1ULL : 0ULL) | (CLThermalModeValue(mode) << 8)", session)
+        # 三个写入路径全部推送内核态
+        thermal = function_body(self.utils, "void setThermalSimulationMode(NSString* mode) {")
+        self.assertIn("CLPostThermalApplyNotification(mode);", thermal)
+        clear = function_body(self.utils, "void clearLimitOnlySessionKeys() {")
+        self.assertIn("CLPostThermalSessionNotification(NO, @\"off\");", clear)
+        self.assertIn("CLPostThermalApplyNotification(@\"off\");", clear)
 
     def test_disable_resets_mirror_off(self):
         body = function_body(self.utils, "void setLimitOnlySession(BOOL enabled, NSString* mode, BOOL plugged) {")
