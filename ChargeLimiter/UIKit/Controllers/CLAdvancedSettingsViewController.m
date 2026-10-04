@@ -878,6 +878,8 @@ static const NSInteger CLAdvSystemCapacityControlAt100Tag = 315;
 static const NSInteger CLAdvHoldTempDisableSmartChargeTag = 312;
 static const NSInteger CLAdvDisableSmartChargeTag = 311;
 static const NSInteger CLAdvRestoreSmartChargeTag = 316;
+static const NSInteger CLAdvMCLCopyReportRowTag = 930;   // 复制 MCL 诊断报告（只读）
+static const NSInteger CLAdvMCLRepairRowTag = 931;       // 强制修复 80% 限制（B7/D1 主开关关闭时保留）
 static const NSInteger CLAdvHoldModeBandTag = 305;
 static const NSInteger CLAdvHoldModeBehaviorTag = 313;
 static const NSInteger CLAdvAccChargeMainTag = 399;       // 加速充电主开关（含 disclosure）
@@ -1066,7 +1068,7 @@ static const NSInteger CLAdvAccChargeLPMTag = 405;
                             title:CLL(@"复制 MCL 诊断报告")
                             value:CLL(@"复制")
                             color:[UIColor systemBlueColor]
-                              tag:930
+                              tag:CLAdvMCLCopyReportRowTag
                            target:self
                            action:@selector(copyMCLDiagnosticsTapped:)];
     [mclCard addSeparator];
@@ -1074,7 +1076,7 @@ static const NSInteger CLAdvAccChargeLPMTag = 405;
                             title:CLL(@"强制修复 80% 限制")
                             value:CLL(@"执行修复")
                             color:[UIColor systemOrangeColor]
-                              tag:931
+                              tag:CLAdvMCLRepairRowTag
                            target:self
                            action:@selector(repairMCLLimitTapped:)];
     [self addTipRowToCard:mclCard text:CLL(@"「代理内存层」为系统代理读回语义，非执行层证据；判定「脱节」时可执行强制修复。")];
@@ -1891,7 +1893,7 @@ static const NSInteger CLAdvAccChargeLPMTag = 405;
         if (![card isKindOfClass:[CLAdvSettingsCard class]]) continue;
         CLAdvSettingsCard *mclCard = (CLAdvSettingsCard *)card;
         for (UIView *row in mclCard.contentStack.arrangedSubviews) {
-            if (row.tag == 931) {
+            if (row.tag == CLAdvMCLRepairRowTag) {
                 row.userInteractionEnabled = enabled;
                 row.alpha = enabled ? 1.0 : 0.5;
             }
@@ -2365,7 +2367,7 @@ static const NSInteger CLAdvAccChargeLPMTag = 405;
 
 /* ---------------- 主开关灰锁（master-off-full-disable B7，用户决定 D1） ----------------
  * 主页面「启用」关闭时：高级设置全部功能行禁用（daemon 侧白名单是最终防线，此处为 UX）；
- * 保留可用：「还原系统优化充电」行（软件的核心修复用途）与只读提示行；
+ * 保留可用：「还原系统优化充电」「强制修复 80% 限制」「复制 MCL 诊断报告」（核心修复用途）与只读提示行；
  * 「重置所有设置」一并禁用（其 daemon API 同样被白名单拒绝）。 */
 
 static const NSInteger CLAdvMasterOffBannerTag = 901;
@@ -2419,7 +2421,9 @@ static const NSInteger CLAdvMasterOffBannerTag = 901;
         CLAdvSettingsCard *card = (CLAdvSettingsCard *)view;
         for (UIView *row in card.contentStack.arrangedSubviews) {
             NSInteger tag = row.tag;
-            BOOL keepInteractive = (tag == CLAdvRestoreSmartChargeTag);
+            BOOL keepInteractive = (tag == CLAdvRestoreSmartChargeTag ||
+                                    tag == CLAdvMCLCopyReportRowTag ||
+                                    tag == CLAdvMCLRepairRowTag);
             BOOL shouldLock = locked && !keepInteractive;
             row.userInteractionEnabled = shouldLock ? NO : YES;
             row.alpha = shouldLock ? 0.45 : 1.0;
