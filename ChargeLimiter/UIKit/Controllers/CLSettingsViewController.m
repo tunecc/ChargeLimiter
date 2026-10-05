@@ -5592,9 +5592,12 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     levelRow.userInteractionEnabled = YES;
     [self.limitOnlyCard addRowWithIcon:@"bolt.horizontal.circle" title:CLL(@"会话状态") value:@"--" color:[UIColor systemBlueColor]];
     [self.limitOnlyCard addRowWithIcon:@"checkmark.seal" title:CLL(@"生效验证") value:CLL(@"未知") color:[UIColor systemGreenColor]];
-    // 验证失败态点按卡片重试（fix-thermal-limit-live-loop D4）
-    UITapGestureRecognizer *limitOnlyCardTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(limitOnlyCardTapped)];
-    [self.limitOnlyCard addGestureRecognizer:limitOnlyCardTap];
+    // 验证失败态点按"生效验证"行重试（fix-thermal-limit-live-loop D4；集成审查修复：
+    // 挂整卡会与档位行的档位选择器手势嵌套）
+    UIView *verifyRow = self.limitOnlyCard.contentStack.arrangedSubviews.lastObject;
+    UITapGestureRecognizer *verifyTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(limitOnlyCardTapped)];
+    [verifyRow addGestureRecognizer:verifyTap];
+    verifyRow.userInteractionEnabled = YES;
     // 巨魔形态口径（spec B6 / D4）：无注入执行端，沿用充电限流既有提示
     if (getJBType_C() == 8 /* JBTYPE_TROLLSTORE */) {
         UILabel *tip = [[UILabel alloc] init];

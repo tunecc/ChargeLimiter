@@ -3733,10 +3733,11 @@ NSString *CLThermalModeName(uint64_t mode) {
 }
 
 // 外部模拟源在场检测（D3 污染标注）："可能"级判据——任一证据即报；卸载后内核态
-// 可残留至重启，调用方只标注不推翻生效判定。只读。
+// 可残留至重启，调用方只标注不推翻生效判定。只读。token 进程内注册一次复用
+//（集成审查修复：验证窗口 1Hz tick 场景不得每次注册泄漏）。
 NSString *CLThermalExternalSimulationSource(void) {
-    int token = -1;
-    if (notify_register_check("com.rpetrich.powercuff.thermals", &token) == NOTIFY_STATUS_OK) {
+    static int token = -1;
+    if (CLThermalEnsureToken("com.rpetrich.powercuff.thermals", &token)) {
         uint64_t state = 0;
         notify_get_state(token, &state);
         if (state != 0) return @"powercuff";

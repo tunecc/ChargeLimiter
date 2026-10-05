@@ -408,10 +408,10 @@ class ExportSnapshotTests(unittest.TestCase):
     def test_export_assembles_app_face(self):
         body = function_body(self.adv, "- (void)exportThermalDiagnosticsSnapshot {")
         for field in ("sessionChannelEnabled", "sessionChannelMode", "thermalApplySource",
-                      "thermalApplyStatus", "externalSimulationSource", "limitOnlyVerifyState",
-                      "thermalSimulateMode"):
+                      "thermalApplyStatus", "externalSimulationSource", "limitOnlyVerifyState"):
             self.assertIn(field, body)
-        # 审查修复 4：apply 通道须内核态直读（raw+解码），非配置派生值
+        # thermal_state 本进程活读（IntegrationReviewFixesTests.test_export_thermal_state_live_probe 覆盖）
+        # apply 通道须内核态直读（raw+解码），非配置派生值
         self.assertIn("CLThermalReadApplyChannel", body)
         self.assertIn("CLThermalModeName(applyRaw)", body)
         # 审查修复 5：补写失败可见（快照含重建结果字段）
@@ -536,6 +536,54 @@ class VerifyWindowPlugGateTests(unittest.TestCase):
         body = function_body(self.manager, "- (void)refreshDirectSessionState {")
         edge = body[body.index("_previousDirectPlugConnected != _directPlugConnected"):]
         self.assertIn("applyLimitOnlyLevel", edge)
+
+
+class IntegrationReviewFixesTests(unittest.TestCase):
+    """Verify 集成审查修复（2026-10-05）：导出热状态活读、token 复用、顺序/门控/手势修正。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.adv = ADVANCED_M.read_text()
+        cls.manager = BATTERY_M.read_text()
+        cls.settings = SETTINGS_M.read_text()
+        cls.utils = UTILS_MM.read_text()
+
+    def test_export_thermal_state_live_probe(self):
+        # IMPORTANT：导出快照 thermal_state 须本进程活读（daemon 镜像键在仅限流模式恒 off）
+        body = function_body(self.adv, "- (void)exportThermalDiagnosticsSnapshot {")
+        self.assertIn("NSProcessInfo", body)
+        self.assertNotIn("manager.thermalSimulateMode", body)
+
+    def test_external_source_reuses_static_token(self):
+        # MINOR：污染检测 token 复用（1Hz tick 场景不得每次注册泄漏）
+        body = function_body(self.utils, "NSString *CLThermalExternalSimulationSource(void) {")
+        self.assertIn("CLThermalEnsureToken", body)
+        self.assertIn("static int token = -1;", body)
+
+    def test_switch_aligns_mode_before_refresh(self):
+        # MINOR：先对齐内存模式再刷新——插电边沿以新派生模式判定（防窄窗口会话复活竞态）
+        body = function_body(self.manager, "- (void)switchToMode:(CLOperationMode)mode completion:(void (^)(BOOL))completion {")
+        self.assertLess(body.index("alignModeStateInMemory"), body.index("refreshDirectSessionState"))
+
+    def test_apply_failure_does_not_open_window(self):
+        # MINOR：下发失败（rc!=0）不开验证窗——"下发失败"不混入"探针超窗"终态
+        body = function_body(self.manager, "- (void)applyLimitOnlyLevel:(NSString *)mode completion:(void (^)(BOOL))completion {")
+        self.assertLess(body.index("if (rc == 0)"), body.index("startLimitOnlyVerifyWindow"))
+
+    def test_refresh_failure_observes_direct_state(self):
+        # MINOR：daemon 死亡路径复用既有 1s 刷新链观察插拔边沿（仅限流模式，无新增常驻轮询）
+        body = function_body(self.manager, "- (void)refreshBatteryInfo {")
+        err = body.index("if (error || !response) {")
+        seg = body[err:body.index("NSDictionary *data")]
+        self.assertIn("refreshDirectSessionState", seg)
+        self.assertIn("CLOperationModeLimitOnly", seg)
+
+    def test_retry_gesture_on_verify_row_not_card(self):
+        # MINOR：重试手势挂"生效验证"行（整卡手势与档位行选择器嵌套）
+        src = self.settings
+        self.assertIn("verifyRow", src)
+        card_tap = "[self.limitOnlyCard addGestureRecognizer"
+        self.assertNotIn(card_tap, src)
 
 
 if __name__ == "__main__":

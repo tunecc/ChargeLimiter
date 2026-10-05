@@ -2314,7 +2314,15 @@ static const NSInteger CLAdvAccChargeLPMTag = 405;
             @"enabled": @(manager.sessionChannelEnabled),
             @"mode": manager.sessionChannelMode ?: @"unreadable",
         },
-        @"thermal_state": [self thermalModeText:manager.thermalSimulateMode],
+        @"thermal_state": ({
+            // 集成审查修复（2026-10-05）：本进程活读——daemon 镜像键在仅限流模式下
+            // 恒 off（get_conf 不再合成），用镜像会与同快照内活探针自相矛盾
+            NSProcessInfoThermalState st = NSProcessInfo.processInfo.thermalState;
+            [self thermalModeText:(st == NSProcessInfoThermalStateNominal ? CLThermalModeNominal :
+                                     st == NSProcessInfoThermalStateFair ? CLThermalModeLight :
+                                     st == NSProcessInfoThermalStateSerious ? CLThermalModeModerate :
+                                     st == NSProcessInfoThermalStateCritical ? CLThermalModeHeavy : CLThermalModeOff)];
+        }),
         @"thermal_config_mode": manager.thermalConfigMode ?: @"off",
         @"thermal_apply": @{
             @"status": manager.thermalApplyStatus ?: @"unknown",

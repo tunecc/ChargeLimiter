@@ -251,6 +251,11 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
     [[CLAPIClient shared] getBatteryInfoWithCompletion:^(NSDictionary * _Nullable response, NSError * _Nullable error) {
         if (error || !response) {
             [self updateDaemonStatus:NO];
+            // 仅限流模式：daemon 死亡路径无电池事件通知——复用既有 1s 刷新链观察
+            // 插拔边沿与探针（会话状态行不滞留旧值；不新增常驻轮询，timer 本就存在）
+            if (self.operationMode == CLOperationModeLimitOnly) {
+                [self refreshDirectSessionState];
+            }
             return;
         }
         
@@ -662,7 +667,9 @@ static NSTimeInterval const CLLimitOnlyVerifyWindowSeconds = 15.0;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)1.5 * NSEC_PER_SEC),
                        dispatch_get_main_queue(), ^{
             [self refreshDirectSessionState];
-            [self startLimitOnlyVerifyWindow]; // D4：下发成功即开验证窗口
+            if (rc == 0) {
+                [self startLimitOnlyVerifyWindow]; // D4：仅下发成功才开窗（失败≠探针超窗）
+            }
             [[NSNotificationCenter defaultCenter] postNotificationName:CLConfigDidUpdateNotification object:self];
             if (completion) completion(rc == 0);
         });
@@ -722,12 +729,15 @@ static NSTimeInterval const CLLimitOnlyVerifyWindowSeconds = 15.0;
             }
         }
         dispatch_async(dispatch_get_main_queue(), ^{
-            [self refreshDirectSessionState];
             if (ok) {
                 // 切换成功：乐观同步内存模式状态（operation-mode-live-refresh M1）。
                 // _enabled/_limitOnlyModeFlag 仅在 refreshConfig 中赋值，不同步的话
                 // operationMode 派生自过期字段，UI 要等重进页面/重启才能看到新模式。
+                // （集成审查修复：先对齐再刷新——插电边沿以新派生模式判定，防会话复活竞态）
                 [self alignModeStateInMemory:mode];
+            }
+            [self refreshDirectSessionState];
+            if (ok) {
                 if (mode == CLOperationModeLimitOnly) {
                     [self startLimitOnlyVerifyWindow]; // D4：切换成功即开验证窗口
                 }
