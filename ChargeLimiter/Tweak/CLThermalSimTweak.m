@@ -19,6 +19,11 @@
 #import <notify.h>
 #import <IOKit/IOKitLib.h>
 
+// IOKit 电源源通知（HIPCharge 同款原语，iOS SDK 无公开头——IOKit.tbd 已导出符号）。
+// 电源状态任何变化（插/拔/适配器细节）都会触发回调，是"App 不在场"插拔边沿的主修复。
+extern CFRunLoopSourceRef IOPSNotificationCreateRunLoopSource(void (*callback)(void *context),
+                                                              void *context);
+
 static NSString * const CLTSApplyNotification = @"com.chargelimiter.thermalapply";
 static NSString * const CLTSSessionNotification = @"com.chargelimiter.thermalsession";
 
@@ -97,8 +102,13 @@ static BOOL CLTSSessionConfig(uint64_t *limitMode) {
 
 // 会话重算：插电且档位非 0 → 档位；否则 off（正确性底线：不允许限流档未插电残留）。
 // 会话未启用直接返回——完整控制模式档位通道归 daemon 独写。
+static void CLTSUpdateReassertTimer(void); // 前置声明（定义在会话重算之后）
+
 static void CLTSSessionEvaluate(void) {
     uint64_t limit = 0;
+    // 门控刷新先于早退（Verifier risks 修复）：会话禁用时也要停表——否则
+    // enabled→disabled 切换后 30s 定时器永不停止（tick 空转早退，无行为影响但不卫生）
+    CLTSUpdateReassertTimer();
     if (!CLTSSessionConfig(&limit)) return;
     BOOL plugged = CLTSPowerConnected();
     uint64_t target = (plugged && limit != 0) ? limit : 0;
@@ -108,8 +118,46 @@ static void CLTSSessionEvaluate(void) {
     CLTSApplyThermals();
 }
 
+// === 会话 watchdog（thermal-limit-edge-reliability；Verifier 失败轮修订）===
+// 会话启用期间 30s 周期性完整会话重评估：重读插电态（IOKit）→ 应用/清除档位 → 刷新
+// 门控。修复盲重放缺陷：旧版 handler 只重放档位通道、不复查门控——拔电/注销后若边沿
+// （IOPS/interest）失灵，旧档位被每 30s 钉死。现为 watchdog 语义：无论边沿死活，
+// 会话启用期间世界必然在 ≤30s 内收敛（用户认可的 30s 检查一次模型）。
+// 注销（respring）只重启 SpringBoard，thermalmonitord 与本定时器都存活——拔电残留
+// 由 tick 重评估清除。单次成本=IOKit 插电读+内核态读+一次重放，30s 节奏可忽略。
+static dispatch_source_t CLTSReassertTimer = NULL;
+
+static void CLTSUpdateReassertTimer(void) {
+    uint64_t limit = 0;
+    BOOL enabled = CLTSSessionConfig(&limit);
+    BOOL shouldRun = enabled; // 会话启用即运行：未插电时 tick 评估→应用 off（幂等自愈）
+    if (shouldRun && CLTSReassertTimer == NULL) {
+        CLTSReassertTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+                                                   dispatch_get_main_queue());
+        if (CLTSReassertTimer != NULL) {
+            dispatch_source_set_timer(CLTSReassertTimer,
+                                      dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC),
+                                      30 * NSEC_PER_SEC, 5 * NSEC_PER_SEC);
+            dispatch_source_set_event_handler(CLTSReassertTimer, ^{
+                NSLog(@"[CLThermalSim] watchdog tick"); // A3/恢复取证：log show 可检索
+                CLTSSessionEvaluate(); // 完整重评估：重读插电态→应用/清除→刷新门控（含本定时器起停）
+            });
+            dispatch_resume(CLTSReassertTimer);
+        }
+    } else if (!shouldRun && CLTSReassertTimer != NULL) {
+        dispatch_source_cancel(CLTSReassertTimer);
+        // cancel 后由 block 持有的引用释放；置 nil 允许下次重建
+        CLTSReassertTimer = NULL;
+    }
+}
+
 // 电池属性变化（插拔边沿）回调：会话重算。消息类型不区分——任何属性变化都重算。
 static void CLTSBatteryInterestCallback(void *refcon, io_service_t service, natural_t messageType, void *messageArgument) {
+    CLTSSessionEvaluate();
+}
+
+// IOPS 电源源变化回调（主边沿）：会话重算——插/拔/适配器细节变化均触发。
+static void CLTSPowerSourceChanged(void *context) {
     CLTSSessionEvaluate();
 }
 
@@ -158,6 +206,19 @@ static id CLTSInitProductOverride(id self, SEL _cmd, id data) {
     return result;
 }
 
+// 产品对象释放（break98pl 同款卫生 hook）：thermalmonitord 会重建产品对象——
+// 旧捕获若不清空，后续下发打到已释放对象上（僵尸下发：无效甚至有害）。
+// initProduct: 重建路径会重新捕获并即时重放，此处只负责清旧。
+static IMP CLTSOrigDealloc = NULL;
+
+static void CLTSDeallocOverride(id self, SEL _cmd) {
+    if (CLTSCurrentProduct == self) {
+        CLTSCurrentProduct = nil; // 清捕获，防僵尸下发
+        NSLog(@"[CLThermalSim] product released");
+    }
+    if (CLTSOrigDealloc) ((void (*)(id, SEL))CLTSOrigDealloc)(self, _cmd);
+}
+
 static void CLTSHookSelector(Class cls, SEL sel, IMP newImp, IMP *origOut) {
     Method m = class_getInstanceMethod(cls, sel);
     if (m == nil) return; // selector 缺失：跳过，不产生副作用
@@ -176,6 +237,8 @@ __attribute__((constructor)) static void CLTSInit(void) {
         NSLog(@"[CLThermalSim] ctor loaded productClass=%@", productClass != nil ? @"yes" : @"no");
         if (productClass != nil) { // 类缺失（系统变更）：静默退回
             CLTSHookSelector(productClass, @selector(initProduct:), (IMP)CLTSInitProductOverride, &CLTSOrigInitProduct);
+            // 捕获卫生（break98pl）：产品对象释放时清捕获，防僵尸下发
+            CLTSHookSelector(productClass, sel_registerName("dealloc"), (IMP)CLTSDeallocOverride, &CLTSOrigDealloc);
         }
         // 双通道（Mikasa 同款 notify_register_dispatch，主队列）：
         // 档位通知 → 即时下发；会话通知 → 会话边沿重算。
@@ -194,7 +257,7 @@ __attribute__((constructor)) static void CLTSInit(void) {
         // 跨重启重挂：会话偏好仍启用则恢复会话通道并重算（产品实例就绪前只落内核态，
         // 由 initProduct 重放补一次下发）。重启后内核态归零，此处是偏好 best-effort 兜底。
         CLTSRestoreSessionFromPrefs();
-        // 电池属性 interest（插拔边沿）：注册失败静默降级——会话通道通知兜底。
+        // 电池属性 interest（插拔边沿，次要）：注册失败静默降级——IOPS 通知兜底。
         CLTSNotifyPort = IONotificationPortCreate(0); // master port 0（iOS）
         if (CLTSNotifyPort != NULL) {
             CFRunLoopAddSource(CFRunLoopGetMain(),
@@ -212,13 +275,20 @@ __attribute__((constructor)) static void CLTSInit(void) {
                 IOObjectRelease(battery);
             }
         }
+        // IOPS 电源源通知（主边沿，HIPCharge 同款原语）：插/拔/适配器细节变化 → 会话
+        // 重算——App 不在场时的插拔可靠性由它承担（D3：进 tweak 而非独立守护进程）。
+        CFRunLoopSourceRef CLTSPowerSourceRef = IOPSNotificationCreateRunLoopSource(CLTSPowerSourceChanged, NULL);
+        if (CLTSPowerSourceRef != NULL) {
+            CFRunLoopAddSource(CFRunLoopGetMain(), CLTSPowerSourceRef, kCFRunLoopDefaultMode);
+        }
         // 生命周期日志（零行为改动）：注入/注册/重挂一次性快照，log show 按
         // thermalmonitord 进程检索（[CLThermalSim] 前缀）。
         uint64_t restoredLimit = 0;
         BOOL restoredEnabled = CLTSSessionConfig(&restoredLimit);
-        NSLog(@"[CLThermalSim] ctor done apply_reg=%u session_reg=%u interest=%@ restore_enabled=%d restore_mode=%llu",
+        NSLog(@"[CLThermalSim] ctor done apply_reg=%u session_reg=%u interest=%@ iops=%@ restore_enabled=%d restore_mode=%llu",
               applyReg, sessionReg,
               CLTSBatteryNotifier != IO_OBJECT_NULL ? @"ok" : @"failed",
+              CLTSPowerSourceRef != NULL ? @"ok" : @"failed",
               restoredEnabled, (unsigned long long)restoredLimit);
     }
 }

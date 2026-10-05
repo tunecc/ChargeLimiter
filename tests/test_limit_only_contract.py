@@ -93,9 +93,11 @@ class TweakSessionContractTests(unittest.TestCase):
         self.assertIn("dispatch_get_main_queue()", self.tweak)
 
     def test_only_initproduct_hook(self):
-        # Mikasa 同款：仅 hook initProduct:，无缓解链路 hook
-        self.assertEqual(self.tweak.count("CLTSHookSelector(productClass"), 1)
+        # hook 面（thermal-limit-edge-reliability 修订）：initProduct: + dealloc（捕获卫生），
+        # 仍无缓解链路 hook
+        self.assertEqual(self.tweak.count("CLTSHookSelector(productClass"), 2)
         self.assertIn("CLTSHookSelector(productClass, @selector(initProduct:)", self.tweak)
+        self.assertIn('CLTSHookSelector(productClass, sel_registerName("dealloc")', self.tweak)
         for sel in ("tryTakeAction", "simulateLightThermalPressure", "updatePowerzoneTelemetry"):
             self.assertNotIn(sel, self.tweak)
 

@@ -539,6 +539,12 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
             _limitOnlyVerifyState = CLLimitOnlyVerifyUnknown;
             [self stopLimitOnlyVerifyWindow];
             [[NSNotificationCenter defaultCenter] postNotificationName:CLConfigDidUpdateNotification object:self];
+            // thermal-limit-edge-reliability：拔电边沿纵深——重下发一次会话（verb 内部按
+            // 当前插电态落 off），与 tweak 的 IOPS/interest 边沿互为冗余
+            if (self.operationMode == CLOperationModeLimitOnly) {
+                NSString *unplugLevel = (_limitOnlyLevel.length > 0 && ![_limitOnlyLevel isEqualToString:@"off"]) ? _limitOnlyLevel : @"moderate";
+                [self applyLimitOnlyLevel:unplugLevel completion:nil];
+            }
         }
     }
 }

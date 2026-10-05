@@ -586,5 +586,57 @@ class IntegrationReviewFixesTests(unittest.TestCase):
         self.assertNotIn(card_tap, src)
 
 
+class EdgeReliabilityTests(unittest.TestCase):
+    """thermal-limit-edge-reliability：IOPS 边沿 + dealloc 卫生 + 自持重申 + App 拔电重下发。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tweak = TWEAK_M.read_text()
+        cls.manager = BATTERY_M.read_text()
+
+    def test_iops_notification_registered(self):
+        # HIPCharge 同款原语：IOPS 电源源通知挂主 runloop，回调触发会话重算
+        self.assertIn("IOPSNotificationCreateRunLoopSource", self.tweak)
+        body = function_body(self.tweak, "static void CLTSPowerSourceChanged(void *context) {")
+        self.assertIn("CLTSSessionEvaluate();", body)
+
+    def test_dealloc_clears_capture(self):
+        # break98pl 同款：产品对象释放时清空捕获（防僵尸下发）
+        body = function_body(self.tweak, "static void CLTSDeallocOverride(id self, SEL _cmd) {")
+        self.assertIn("CLTSCurrentProduct = nil", body)
+        self.assertIn("CLTSOrigDealloc", body)
+        self.assertIn('CLTSHookSelector(productClass, sel_registerName("dealloc")', self.tweak)
+
+    def test_reassert_timer_gated(self):
+        # 30s watchdog（Verifier 失败轮修订）：门控=会话启用即运行（不再依赖插电/档位/捕获）；
+        # 每次 tick 做完整会话重评估（重读插电态→应用或清除→刷新门控）——拔电/注销后
+        # 边沿失灵时 30s 内必然收敛，杜绝盲重放钉死旧档位。
+        body = function_body(self.tweak, "static void CLTSUpdateReassertTimer(void) {")
+        self.assertIn("CLTSSessionConfig", body)
+        self.assertIn("BOOL shouldRun = enabled;", body)
+        self.assertIn("30 * NSEC_PER_SEC", body)
+        handler = body[body.index("dispatch_source_set_event_handler"):]
+        self.assertIn("CLTSSessionEvaluate();", handler)  # tick=完整重评估，非盲重放
+        self.assertNotIn("notify_set_state", handler)  # handler 自身不写通道（评估函数才写）
+
+    def test_ctor_logs_iops_registration(self):
+        body = function_body(self.tweak, "__attribute__((constructor)) static void CLTSInit(void) {")
+        self.assertIn("CLTSPowerSourceRef", body)
+
+    def test_gate_refresh_precedes_early_return(self):
+        # Verifier risks 修复：门控刷新必须先于会话禁用早退——否则 enabled→disabled
+        # 切换后 30s 定时器空转不停（tick 早退无写入但不卫生）
+        body = function_body(self.tweak, "static void CLTSSessionEvaluate(void) {")
+        self.assertLess(body.index("CLTSUpdateReassertTimer();"),
+                        body.index("if (!CLTSSessionConfig(&limit)) return;"))
+
+    def test_app_unplug_edge_reissues(self):
+        # App 侧纵深：拔电边沿同样经 CLI 重下发（verb 按当前插电态落 off）
+        body = function_body(self.manager, "- (void)refreshDirectSessionState {")
+        edge = body[body.index("_previousDirectPlugConnected != _directPlugConnected"):]
+        unplugged = edge[edge.index("!_directPlugConnected"):]
+        self.assertIn("applyLimitOnlyLevel", unplugged)
+
+
 if __name__ == "__main__":
     unittest.main()
