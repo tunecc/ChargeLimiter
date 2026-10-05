@@ -5049,6 +5049,13 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             kv[@"thermal_config_mode"] = getThermalConfigMode();
             kv[@"thermal_apply_status"] = getLocalString(@"thermal_apply_status", @"unknown");
             kv[@"thermal_apply_checked_at"] = getLocalString(@"thermal_apply_checked_at", @"");
+            // 诚实诊断（fix-thermal-limit-live-loop D3）：完整控制模式来源恒 daemon-probe；
+            // 会话通道内核态为 daemon 视角读数（App 侧另有独立读法，互相印证写侧是否存活）
+            kv[@"thermal_apply_source"] = @"daemon-probe";
+            BOOL loChannelEnabled = NO;
+            uint64_t loChannelMode = 0;
+            CLThermalReadSessionChannel(&loChannelEnabled, &loChannelMode);
+            kv[@"limit_only_session_channel"] = loChannelEnabled ? CLThermalModeName(loChannelMode) : @"off";
             // 仅限流会话诊断（spec B5）：root 域会话键状态与当前档位
             kv[@"limit_only_session_enabled"] = @(getLimitOnlySessionEnabled());
             kv[@"limit_only_level"] = getLimitOnlyLevel();
@@ -5865,6 +5872,124 @@ void detectUPSBattery() {
 @end
 
 
+// === 限流通路排障动词（fix-thermal-limit-live-loop D1/D6）===
+
+// dump_thermal：只读 dump——双通道内核态及解码、本进程热状态、com.apple.cltm
+// 会话键/镜像键/退役键残留、外部模拟源。单行 JSON（stdout + 日志），严格只读。
+static int dumpThermalDiagnostics(void) {
+    uint64_t applyRaw = 0;
+    BOOL applyRead = CLThermalReadApplyChannel(&applyRaw);
+    BOOL sessionEnabled = NO;
+    uint64_t sessionMode = 0;
+    BOOL sessionRead = CLThermalReadSessionChannel(&sessionEnabled, &sessionMode);
+    NSString* thermalState = getThermalSimulationMode(); // 本进程热状态探针
+    NSString* external = CLThermalExternalSimulationSource();
+    // 偏好面：root 域读方仅 root 进程有效；mobile 下值不代表 root 域真相。
+    BOOL isRoot = (geteuid() == 0);
+    NSDictionary* cltm = nil;
+    if (isRoot) {
+        NSUserDefaults* defs = [[NSUserDefaults alloc] initWithSuiteName:@"com.apple.cltm"];
+        cltm = [defs dictionaryRepresentation];
+    }
+    id prefEnabled = isRoot ? (cltm[@"clLimitSessionEnabled"] ?: @(getLimitOnlySessionEnabled() ? YES : NO)) : nil;
+    id prefMode = isRoot ? (cltm[@"clLimitMode"] ?: getLimitOnlyLevel()) : nil;
+    id prefMirror = isRoot ? (cltm[@"thermalSimulationMode"] ?: getThermalConfigMode()) : nil;
+    BOOL retiredLocked = isRoot && cltm[@"thermalSimulationLocked"] != nil;
+    BOOL retiredPpm = isRoot && cltm[@"ppmSimulationMode"] != nil;
+    NSString* json = [NSString stringWithFormat:
+        @"{"
+        @"\"verb\":\"dump_thermal\","
+        @"\"ts\":%ld,"
+        @"\"uid\":%d,"
+        @"\"apply_channel\":{"
+        @"\"read\":%@,\"raw\":%llu,\"mode\":\"%@\"},"
+        @"\"session_channel\":{"
+        @"\"read\":%@,\"raw\":%llu,\"enabled\":%@,\"mode\":\"%@\"},"
+        @"\"thermal_state\":\"%@\","
+        @"\"prefs\":{"
+        @"\"source\":\"%@\","
+        @"\"cl_limit_session_enabled\":%@,"
+        @"\"cl_limit_mode\":%@,"
+        @"\"thermal_simulation_mode\":%@,"
+        @"\"retired_locked_present\":%@,"
+        @"\"retired_ppm_present\":%@},"
+        @"\"external_simulation\":%@}",
+        (long)time(0), geteuid(),
+        applyRead ? @"true" : @"false", (unsigned long long)applyRaw, CLThermalModeName(applyRaw),
+        sessionRead ? @"true" : @"false", (unsigned long long)(sessionEnabled ? 1ULL : 0ULL),
+        sessionEnabled ? @"true" : @"false", CLThermalModeName(sessionMode),
+        thermalState,
+        isRoot ? @"root_domain" : @"unreadable_from_mobile",
+        isRoot ? ([prefEnabled boolValue] ? @"true" : @"false") : @"\"unreadable\"",
+        isRoot ? [NSString stringWithFormat:@"\"%@\"", prefMode] : @"\"unreadable\"",
+        isRoot ? [NSString stringWithFormat:@"\"%@\"", prefMirror] : @"\"unreadable\"",
+        retiredLocked ? @"true" : @"false", retiredPpm ? @"true" : @"false",
+        external == nil ? @"null" : [NSString stringWithFormat:@"\"%@\"", external]];
+    printf("%s\n", json.UTF8String);
+    NSLog2(@"dump_thermal %@", json);
+    return 0;
+}
+
+// thermal_selftest <mode>：写-读-恢复三段自测（root）——①读原档位 ②写测试档+广播
+// ③收敛窗口 ④读回（内核态 + 本进程热状态）⑤恢复原档位并输出三段结果 JSON。
+// 会短暂真实改系统模拟档位（输出明示原档位与恢复结果；设备重启亦清零）。
+static int runThermalSelftest(NSString *mode) {
+    if (mode != nil && ![mode isEqualToString:@"off"] &&
+        ![mode isEqualToString:@"nominal"] && ![mode isEqualToString:@"light"] &&
+        ![mode isEqualToString:@"moderate"] && ![mode isEqualToString:@"heavy"]) {
+        printf("{\"verb\":\"thermal_selftest\",\"error\":\"invalid_mode\"}\n"); // stdout 同步（SSH 可见）
+        NSLog2(@"thermal_selftest invalid mode: %@", mode);
+        return -1;
+    }
+    if (mode == nil) {
+        mode = @"moderate"; // 缺省中度
+    }
+    uint64_t original = 0;
+    if (!CLThermalReadApplyChannel(&original)) {
+        NSLog2(@"thermal_selftest apply channel unreadable");
+        return -1;
+    }
+    NSString* originalName = CLThermalModeName(original);
+    CLThermalPushApplyChannel(mode);
+    [NSThread sleepForTimeInterval:5.0]; // 收敛窗口（对齐 daemon D5 探针节奏）
+    uint64_t readback = 0;
+    BOOL kernelRead = CLThermalReadApplyChannel(&readback);
+    NSString* thermalNow = getThermalSimulationMode();
+    CLThermalPushApplyChannel(originalName); // 结束必恢复原档位
+    [NSThread sleepForTimeInterval:1.0];     // 恢复短窗后读回验证（写应答≠写生效）
+    uint64_t restoredRaw = 0;
+    BOOL restoredRead = CLThermalReadApplyChannel(&restoredRaw);
+    NSString* restoredName = restoredRead ? CLThermalModeName(restoredRaw) : @"unreadable";
+    // off 的跟随语义：清除成功 = 热状态回到 nominal（NSProcessInfo 无更低值域）
+    BOOL followed;
+    if ([mode isEqualToString:@"off"]) {
+        followed = [thermalNow isEqualToString:@"nominal"];
+    } else {
+        followed = [thermalNow isEqualToString:mode] ||
+                   (thermalLevelForMode(mode) > 0 && thermalLevelForMode(thermalNow) >= thermalLevelForMode(mode));
+    }
+    NSString* json = [NSString stringWithFormat:
+        @"{"
+        @"\"verb\":\"thermal_selftest\","
+        @"\"ts\":%ld,"
+        @"\"uid\":%d,"
+        @"\"requested\":\"%@\","
+        @"\"original\":\"%@\","
+        @"\"kernel_readback\":%@,"
+        @"\"thermal_followed\":%@,"
+        @"\"thermal_state\":\"%@\","
+        @"\"restored\":\"%@\","
+        @"\"restore_verified\":%@}",
+        (long)time(0), geteuid(), mode, originalName,
+        kernelRead ? [NSString stringWithFormat:@"\"%@\"", CLThermalModeName(readback)] : @"\"unreadable\"",
+        followed ? @"true" : @"false", thermalNow, restoredName,
+        (restoredRead && restoredRaw == original) ? @"true" : @"false"];
+    printf("%s\n", json.UTF8String);
+    NSLog2(@"thermal_selftest %@", json);
+    return 0;
+}
+
+
 int main(int argc, char** argv) { // daemon_main
     @autoreleasepool {
         g_jbtype = getJBType();
@@ -6012,6 +6137,16 @@ int main(int argc, char** argv) { // daemon_main
                 NSLog2(@"%@ apply_limit_only enabled=%d mode=%@ plugged=%d",
                                log_prefix, enabled, mode, plugged);
                 return 0;
+            } else if (0 == strcmp(argv[argIndex], "dump_thermal")) {
+                // 限流通路只读排障 dump（fix-thermal-limit-live-loop D1）：SSH 调用。
+                return dumpThermalDiagnostics();
+            } else if (0 == strcmp(argv[argIndex], "thermal_selftest")) {
+                // 写-读-恢复三段自测：mode 缺省 moderate，非法值拒绝退出非零。
+                NSString* mode = @"moderate";
+                if ((argIndex + 1) < argc) {
+                    mode = @(argv[argIndex + 1]);
+                }
+                return runThermalSelftest(mode);
             }
         }
         return -1;

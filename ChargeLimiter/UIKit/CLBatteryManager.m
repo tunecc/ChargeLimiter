@@ -9,6 +9,10 @@
 extern NSDictionary* getAllKV_C(void);
 extern void setlocalKV_C(NSString* key, id val);
 extern int spawnDaemonCLIVerb_C(NSArray<NSString*>* verbArgs); // utils.mm：一次性 root CLI（仅限流会话写入）
+// utils.mm 内核态只读辅助（fix-thermal-limit-live-loop D3，C 链接，App/daemon 共用）
+extern BOOL CLThermalReadSessionChannel(BOOL *enabled, uint64_t *mode);
+extern NSString *CLThermalModeName(uint64_t mode);
+extern NSString *CLThermalExternalSimulationSource(void);
 
 NSNotificationName const CLBatteryInfoDidUpdateNotification = @"CLBatteryInfoDidUpdateNotification";
 NSNotificationName const CLConfigDidUpdateNotification = @"CLConfigDidUpdateNotification";
@@ -79,6 +83,19 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
 @property (nonatomic, assign) BOOL directPlugConnected;     // 直读插电（零 daemon 依赖）
 @property (nonatomic, assign) BOOL directReadAvailable;     // 直读是否成功
 @property (nonatomic, assign) BOOL limitOnlyApplied;        // thermalState 探针判定
+
+// 诚实诊断面内部状态（fix-thermal-limit-live-loop D3/D4）
+@property (nonatomic, assign) BOOL sessionChannelEnabled;
+@property (nonatomic, copy) NSString *sessionChannelMode;
+@property (nonatomic, copy) NSString *externalSimulationSource;
+@property (nonatomic, copy) NSString *thermalApplySource;
+@property (nonatomic, assign) NSTimeInterval thermalApplyCheckedAt;
+@property (nonatomic, assign) CLLimitOnlyVerifyState limitOnlyVerifyState;
+@property (nonatomic, assign) NSTimeInterval limitOnlyVerifyIssuedAt;
+@property (nonatomic, strong) NSTimer *limitOnlyVerifyTimer; // 窗口限定计时器（非常驻）
+@property (nonatomic, assign) BOOL previousDirectPlugConnected;
+@property (nonatomic, assign) BOOL limitOnlyReestablishDone;  // D5 启动重建每启动至多一次
+@property (nonatomic, copy) NSString *limitOnlyReestablishStatus; // D5 重建结果（诊断可见）
 @end
 
 @implementation CLBatteryManager
@@ -135,6 +152,12 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
     _thermalConfigMode = ([thermalConfigValue isKindOfClass:[NSString class]] && thermalConfigValue.length > 0) ? thermalConfigValue : @"off";
     NSString *thermalApplyStatusValue = data[@"thermal_apply_status"];
     _thermalApplyStatus = ([thermalApplyStatusValue isKindOfClass:[NSString class]] && thermalApplyStatusValue.length > 0) ? thermalApplyStatusValue : @"unknown";
+    // daemon-probe 口径的判定时间（D3 修复：完整控制模式显示 daemon 实际验证时间，
+    // 非 App 观察时刻；仅限流模式由 refreshLimitOnlyDiagnostics 覆写为活探针时间）
+    NSString *thermalApplyCheckedValue = data[@"thermal_apply_checked_at"];
+    if ([thermalApplyCheckedValue isKindOfClass:[NSString class]] && thermalApplyCheckedValue.length > 0) {
+        _thermalApplyCheckedAt = [thermalApplyCheckedValue doubleValue];
+    }
 
     // 仅限流模式（limit-only daemon-free）：模式标志 + root 域会话诊断
     _limitOnlyModeFlag = [data[@"limit_only_mode"] boolValue];
@@ -315,16 +338,18 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
                 [self applyConfigData:localData];
                 [[NSNotificationCenter defaultCenter] postNotificationName:CLConfigDidUpdateNotification object:self];
             }
+            [self reestablishLimitOnlySessionIfNeeded]; // D5：daemon 死亡路径（仅限流常态）
             return;
         }
-        
+
         [self updateDaemonStatus:YES];
-        
+
         NSDictionary *data = response[@"data"];
         if (!data) return;
         [self applyConfigData:data];
-        
+
         [[NSNotificationCenter defaultCenter] postNotificationName:CLConfigDidUpdateNotification object:self];
+        [self reestablishLimitOnlySessionIfNeeded]; // D5：daemon 在线路径
     }];
 }
 
@@ -483,6 +508,142 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
     _directReadAvailable = readOK;
     _directPlugConnected = readOK ? plugged : _externalConnected;
     _limitOnlyApplied = [self computeLimitOnlyApplied];
+    // 诚实诊断面（D3）：内核态会话通道 + 外部模拟污染检测（App mobile 可读，无特权；
+    // 会话通道 enabled 缺失而写方已写过 = 写侧问题的独立证据）
+    BOOL sessionEnabled = NO;
+    uint64_t sessionModeRaw = 0;
+    if (CLThermalReadSessionChannel(&sessionEnabled, &sessionModeRaw)) {
+        _sessionChannelEnabled = sessionEnabled;
+        _sessionChannelMode = CLThermalModeName(sessionModeRaw);
+    } else {
+        _sessionChannelEnabled = NO;    // 读取失败：不用过期值冒充（派生走本地键回退）
+        _sessionChannelMode = nil;
+    }
+    _externalSimulationSource = CLThermalExternalSimulationSource();
+    [self refreshLimitOnlyDiagnostics];
+    // D4 插电边沿：插电（仅限流模式）重开验证窗口并自愈重下发会话（Bug B2 2026-10-05
+    // 真机：首次插电 tweak 边沿评估可能缺位——App 侧重下发一次，走通知面直应用）；
+    // 拔线停窗回 Unknown（未插电无验证对象）
+    if (_previousDirectPlugConnected != _directPlugConnected) {
+        _previousDirectPlugConnected = _directPlugConnected;
+        if (_directPlugConnected && self.operationMode == CLOperationModeLimitOnly) {
+            [self startLimitOnlyVerifyWindow];
+            NSString *edgeLevel = (_limitOnlyLevel.length > 0 && ![_limitOnlyLevel isEqualToString:@"off"]) ? _limitOnlyLevel : @"moderate";
+            [self applyLimitOnlyLevel:edgeLevel completion:nil]; // 自愈：不等用户点重试
+        } else if (!_directPlugConnected) {
+            _limitOnlyVerifyState = CLLimitOnlyVerifyUnknown;
+            [self stopLimitOnlyVerifyWindow];
+            [[NSNotificationCenter defaultCenter] postNotificationName:CLConfigDidUpdateNotification object:self];
+        }
+    }
+}
+
+// D3 诚实诊断派生：仅限流模式下当前值以 App 侧活数据为准——档位=会话通道内核态
+// 解码（enabled 在场时如实显示，含合法 off；会话写方允许 off 配置），应用结果=App
+// 活探针当前判定；daemon 遗留 KV（daemon 死后的陈旧 thermal_apply_status/快照
+// thermal_config_mode）不冒充当前值。完整控制模式维持 daemon get_conf KV 口径，
+// 判定时间取 daemon 的 thermal_apply_checked_at（applyConfigData 解析），只标注来源。
+- (void)refreshLimitOnlyDiagnostics {
+    if (self.operationMode != CLOperationModeLimitOnly) {
+        _thermalApplySource = @"daemon-probe";
+        return;
+    }
+    _thermalApplySource = @"app-probe";
+    _thermalApplyCheckedAt = [[NSDate date] timeIntervalSince1970];
+    if (_sessionChannelEnabled && _sessionChannelMode.length > 0) {
+        _thermalConfigMode = _sessionChannelMode; // 如实显示（含 off）
+    } else {
+        // 会话不在内核态：回退本地档位键（off 如实显示），仅键缺失才显示 moderate 缺省
+        _thermalConfigMode = _limitOnlyLevel.length > 0 ? _limitOnlyLevel : @"moderate";
+    }
+    _thermalApplyStatus = _limitOnlyApplied ? @"applied" : @"unverified";
+}
+
+// D4 失败终态：下发后有限窗口内 1s tick 探针；达标=applied，超窗=failed（可重试）。
+// 窗口用自有计时器——不挂 CLBatteryInfoDidUpdateNotification（仅限流模式下 daemon
+// 已死，该通知根本不会发出，每秒刷新是空转失败路径）。
+static NSTimeInterval const CLLimitOnlyVerifyWindowSeconds = 15.0;
+
+- (void)startLimitOnlyVerifyWindow {
+    // Bug B1 修复（2026-10-05 真机）：未插电没有"待生效对象"——不开验证窗口，
+    // 直接置 Unknown（否则 15s 后必然跳假"验证失败"）。
+    if (!_directPlugConnected) {
+        _limitOnlyVerifyState = CLLimitOnlyVerifyUnknown;
+        [self stopLimitOnlyVerifyWindow];
+        return;
+    }
+    _limitOnlyVerifyIssuedAt = [[NSDate date] timeIntervalSince1970];
+    _limitOnlyVerifyState = CLLimitOnlyVerifyVerifying;
+    [_limitOnlyVerifyTimer invalidate];
+    _limitOnlyVerifyTimer = [NSTimer timerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *timer) {
+        [self tickLimitOnlyVerifyWindow];
+    }];
+    [[NSRunLoop mainRunLoop] addTimer:_limitOnlyVerifyTimer forMode:NSRunLoopCommonModes];
+    [[NSNotificationCenter defaultCenter] postNotificationName:CLConfigDidUpdateNotification object:self];
+}
+
+- (void)tickLimitOnlyVerifyWindow {
+    if (self.operationMode != CLOperationModeLimitOnly) {
+        [self stopLimitOnlyVerifyWindow];
+        return;
+    }
+    [self refreshDirectSessionState];
+    // 拔线竞态守卫：refresh 内的边沿处理可能已转移状态（拔线回 Unknown/停表，
+    // 或插电重开了新窗口）——本 tick 不得用旧窗口的判定覆盖它
+    if (_limitOnlyVerifyState != CLLimitOnlyVerifyVerifying || _limitOnlyVerifyTimer == nil) {
+        return;
+    }
+    if (self.limitOnlyApplied) {
+        _limitOnlyVerifyState = CLLimitOnlyVerifyApplied;
+        [self stopLimitOnlyVerifyWindow];
+        [[NSNotificationCenter defaultCenter] postNotificationName:CLConfigDidUpdateNotification object:self];
+        return;
+    }
+    NSTimeInterval elapsed = [[NSDate date] timeIntervalSince1970] - _limitOnlyVerifyIssuedAt;
+    if (elapsed >= CLLimitOnlyVerifyWindowSeconds) {
+        _limitOnlyVerifyState = CLLimitOnlyVerifyFailed;
+        [self stopLimitOnlyVerifyWindow];
+        [[NSNotificationCenter defaultCenter] postNotificationName:CLConfigDidUpdateNotification object:self];
+    }
+}
+
+- (void)stopLimitOnlyVerifyWindow {
+    [_limitOnlyVerifyTimer invalidate];
+    _limitOnlyVerifyTimer = nil;
+}
+
+// D5 重启重建：App 启动后首轮配置就绪时执行一次——仅限流模式且会话通道内核态
+// enabled 位缺失（重启后内核态归零且 tweak best-effort 重挂失败的场景）→ 复用
+// 既有 apply_limit_only verb 补写。失败入共享存储诊断键，不阻塞启动；完整控制/
+// 关闭模式不触发。
+- (void)reestablishLimitOnlySessionIfNeeded {
+    if (_limitOnlyReestablishDone) return;
+    _limitOnlyReestablishDone = YES;
+    if (self.operationMode != CLOperationModeLimitOnly) return;
+    [self refreshDirectSessionState]; // 先读会话通道内核态（判据数据源）
+    NSString *level = (_limitOnlyLevel.length > 0 && ![_limitOnlyLevel isEqualToString:@"off"]) ? _limitOnlyLevel : @"moderate";
+    // spec 口径：缺失（enabled 位不在）或不一致（在场但档位 ≠ 本地配置）都补写
+    BOOL missing = !_sessionChannelEnabled;
+    BOOL mismatch = _sessionChannelEnabled && ![_sessionChannelMode isEqualToString:level];
+    if (!missing && !mismatch) return; // 会话在内核态且一致：无需补写
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        int rc = spawnDaemonCLIVerb_C(@[@"apply_limit_only", @"1", level]);
+        if (rc != 0) {
+            rc = spawnDaemonCLIVerb_C(@[@"apply_limit_only", @"1", level]);
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSString *status = rc == 0 ? @"ok" : [NSString stringWithFormat:@"spawn_failed_%d", rc];
+            _limitOnlyReestablishStatus = status; // 诊断可见（D5 修复：不能只入 KV）
+            setlocalKV_C(@"limit_only_reestablish_status", status);
+            setlocalKV_C(@"limit_only_reestablish_ts",
+                         [NSString stringWithFormat:@"%ld", (long)[[NSDate date] timeIntervalSince1970]]);
+            if (rc == 0) {
+                [self refreshDirectSessionState];
+                [self startLimitOnlyVerifyWindow];
+                [[NSNotificationCenter defaultCenter] postNotificationName:CLConfigDidUpdateNotification object:self];
+            }
+        });
+    });
 }
 
 - (void)applyLimitOnlyLevel:(NSString *)mode completion:(void (^)(BOOL))completion {
@@ -501,6 +662,7 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)1.5 * NSEC_PER_SEC),
                        dispatch_get_main_queue(), ^{
             [self refreshDirectSessionState];
+            [self startLimitOnlyVerifyWindow]; // D4：下发成功即开验证窗口
             [[NSNotificationCenter defaultCenter] postNotificationName:CLConfigDidUpdateNotification object:self];
             if (completion) completion(rc == 0);
         });
@@ -566,6 +728,9 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
                 // _enabled/_limitOnlyModeFlag 仅在 refreshConfig 中赋值，不同步的话
                 // operationMode 派生自过期字段，UI 要等重进页面/重启才能看到新模式。
                 [self alignModeStateInMemory:mode];
+                if (mode == CLOperationModeLimitOnly) {
+                    [self startLimitOnlyVerifyWindow]; // D4：切换成功即开验证窗口
+                }
             } else {
                 [self refreshConfig]; // 失败：以磁盘真值为准重取，完成后自行发通知
             }

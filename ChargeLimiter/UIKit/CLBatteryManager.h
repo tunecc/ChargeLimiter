@@ -31,6 +31,14 @@ typedef NS_ENUM(NSInteger, CLOperationMode) {
     CLOperationModeLimitOnly     // 仅限流：daemon 零驻留，tweak 会话限流
 };
 
+// 仅限流会话生效验证状态（fix-thermal-limit-live-loop D4：失败终态）
+typedef NS_ENUM(NSInteger, CLLimitOnlyVerifyState) {
+    CLLimitOnlyVerifyUnknown = 0,   // 未下发/未插电
+    CLLimitOnlyVerifyVerifying,     // 已下发，验证窗口内
+    CLLimitOnlyVerifyApplied,       // 探针达标（生效中）
+    CLLimitOnlyVerifyFailed         // 超窗未达标（可重试）
+};
+
 typedef NS_ENUM(NSInteger, CLHoldModeBehavior) {
     CLHoldModeBehaviorBalanced = 0,
     CLHoldModeBehaviorPowerFirst,
@@ -144,6 +152,15 @@ extern NSNotificationName const CLDaemonStatusDidChangeNotification;
 @property(nonatomic, assign, readonly) BOOL directPlugConnected;     // 直读插电状态（零 daemon 依赖）
 @property(nonatomic, assign, readonly) BOOL directReadAvailable;     // 直读是否成功（失败回退 daemon API）
 @property(nonatomic, assign, readonly) BOOL limitOnlyApplied;        // thermalState 探针判定已生效
+@property(nonatomic, assign, readonly) CLLimitOnlyVerifyState limitOnlyVerifyState; // 生效验证三态（D4）
+@property(nonatomic, copy, readonly, nullable) NSString *limitOnlyReestablishStatus; // D5 启动重建结果（ok / spawn_failed_N，nil=未触发）
+
+#pragma mark - 诚实诊断面（fix-thermal-limit-live-loop D3）
+@property(nonatomic, assign, readonly) BOOL sessionChannelEnabled;          // 会话通道内核态 enabled 位
+@property(nonatomic, copy, readonly, nullable) NSString *sessionChannelMode; // 会话通道档位（内核态解码；nil=读取失败）
+@property(nonatomic, copy, readonly, nullable) NSString *externalSimulationSource; // 外部模拟源在场（powercuff）
+@property(nonatomic, copy, readonly) NSString *thermalApplySource;          // 应用结果来源：app-probe / daemon-probe
+@property(nonatomic, assign, readonly) NSTimeInterval thermalApplyCheckedAt; // 应用结果最近判定时间（App 探针口径）
 
 // 直读会话状态：AppleSmartBattery 插电判定 + thermalState 生效验证（零 daemon 依赖）
 - (void)refreshDirectSessionState;

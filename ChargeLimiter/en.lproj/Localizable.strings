@@ -515,9 +515,23 @@ Capacity limit is handled by the system (Optimized Charging / 80% limit)";
 "会话状态" = "Session Status";
 "已插电 · 限流生效中" = "Plugged in · limiting active";
 "已插电 · 生效验证中" = "Plugged in · verifying";
+"已插电 · 验证失败，点按重试" = "Plugged in · verification failed, tap to retry";
 "未插电 · 限流已解除" = "Unplugged · limit released";
 "生效验证" = "Verification";
 "未验证" = "Unverified";
+"验证中" = "Verifying";
+"验证失败" = "Verification failed";
+"（可能受外部模拟污染）" = " (may be polluted by external simulation)";
+"应用结果来源" = "Apply result source";
+"App 探针" = "App probe";
+"daemon 探针" = "daemon probe";
+"外部模拟源" = "External simulation source";
+"最近判定时间" = "Last checked";
+"无" = "None";
+"导出诊断快照" = "Export diagnostics snapshot";
+"仅限流重建" = "Limit-only re-establish";
+"成功" = "OK";
+"失败" = "Failed";
 "插电时限流生效，拔线自动解除
 档位越高，充电电流越小" = "Limiting applies while plugged in and clears on unplug.
 Higher levels mean lower charging current";

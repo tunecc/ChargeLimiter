@@ -3683,6 +3683,76 @@ static void CLScrubRetiredThermalKeys(NSUserDefaults* defs) {
     [defs removeObjectForKey:@"ppmSimulationMode"];
 }
 
+// === 内核态通道读取辅助（fix-thermal-limit-live-loop D1/D3）===
+// 双通道只读包装：token 进程内注册一次，注册失败返回 NO（调用方按未知处理）。
+// App（mobile）与 daemon（root）共用——darwin notify state 全局可读，无特权要求。
+static BOOL CLThermalEnsureToken(const char* name, int* token) {
+    if (*token == -1) {
+        if (notify_register_check(name, token) != NOTIFY_STATUS_OK) {
+            return NO;
+        }
+    }
+    return YES;
+}
+
+BOOL CLThermalReadApplyChannel(uint64_t *mode) {
+    static int token = -1;
+    if (!CLThermalEnsureToken([CLThermalApplyNotification UTF8String], &token)) {
+        return NO;
+    }
+    uint64_t state = 0;
+    if (notify_get_state(token, &state) != NOTIFY_STATUS_OK) {
+        return NO; // 读取失败不回填：调用方按未知处理，不用过期/默认值冒充
+    }
+    if (mode != nil) *mode = state;
+    return YES;
+}
+
+BOOL CLThermalReadSessionChannel(BOOL *enabled, uint64_t *mode) {
+    static int token = -1;
+    if (!CLThermalEnsureToken([CLThermalSessionNotification UTF8String], &token)) {
+        return NO;
+    }
+    uint64_t state = 0;
+    if (notify_get_state(token, &state) != NOTIFY_STATUS_OK) {
+        return NO; // 读取失败不回填：调用方按未知处理，不用过期/默认值冒充
+    }
+    if (enabled != nil) *enabled = (state & 1ULL) != 0;
+    if (mode != nil) *mode = (state >> 8) & 0xFF;
+    return YES;
+}
+
+NSString *CLThermalModeName(uint64_t mode) {
+    switch (mode) {
+        case 1: return @"nominal";
+        case 2: return @"light";
+        case 3: return @"moderate";
+        case 4: return @"heavy";
+        default: return @"off"; // 0 与未知值均按 off（无效档位安全语义）
+    }
+}
+
+// 外部模拟源在场检测（D3 污染标注）："可能"级判据——任一证据即报；卸载后内核态
+// 可残留至重启，调用方只标注不推翻生效判定。只读。
+NSString *CLThermalExternalSimulationSource(void) {
+    int token = -1;
+    if (notify_register_check("com.rpetrich.powercuff.thermals", &token) == NOTIFY_STATUS_OK) {
+        uint64_t state = 0;
+        notify_get_state(token, &state);
+        if (state != 0) return @"powercuff";
+    }
+    if ([[NSFileManager defaultManager] fileExistsAtPath:
+            @"/var/mobile/Library/Preferences/com.rpetrich.powercuff.plist"]) {
+        return @"powercuff";
+    }
+    return nil;
+}
+
+// 档位通道写+广播（selftest 排障动词用）：复用既有唯一写实现，不新增第二写路径。
+void CLThermalPushApplyChannel(NSString *mode) {
+    CLPostThermalApplyNotification(mode);
+}
+
 void setThermalSimulationMode(NSString* mode) {
     if (@available(iOS 11.0, *)) {
         NSUserDefaults* defs = [[NSUserDefaults alloc] initWithSuiteName:CLThermalPrefsSuite];

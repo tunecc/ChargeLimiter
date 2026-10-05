@@ -18,6 +18,10 @@ extern NSDictionary *clRepairDaemonForApp_C(void);
 id getlocalKV_C(NSString* key);
 void setlocalKV_C(NSString* key, id val);
 
+// utils.mm 内核态只读辅助（fix-thermal-limit-live-loop D1：导出快照读 apply 通道内核态）
+extern BOOL CLThermalReadApplyChannel(uint64_t *mode);
+extern NSString *CLThermalModeName(uint64_t mode);
+
 static char kCLDaemonRepairRunningKey;
 static BOOL CLDaemonRepairRunning(id self) {
     return [objc_getAssociatedObject(self, &kCLDaemonRepairRunningKey) boolValue];
@@ -1113,6 +1117,21 @@ static const NSInteger CLAdvAccChargeLPMTag = 405;
     [self addDiagnosticRowToCard:runtimeCard key:@"thermal_config_mode" icon:@"flame.fill" title:CLL(@"模拟配置档位") color:[UIColor systemOrangeColor]];
     [runtimeCard addSeparator];
     [self addDiagnosticRowToCard:runtimeCard key:@"thermal_apply_status" icon:@"stethoscope" title:CLL(@"模拟应用结果") color:[UIColor systemOrangeColor]];
+    [runtimeCard addSeparator];
+    [self addDiagnosticRowToCard:runtimeCard key:@"thermal_apply_source" icon:@"point.3.connected.trianglepath.dotted" title:CLL(@"应用结果来源") color:[UIColor systemTealColor]];
+    [runtimeCard addSeparator];
+    [self addDiagnosticRowToCard:runtimeCard key:@"thermal_apply_checked_at" icon:@"clock" title:CLL(@"最近判定时间") color:[UIColor systemTealColor]];
+    [runtimeCard addSeparator];
+    [self addDiagnosticRowToCard:runtimeCard key:@"external_simulation" icon:@"exclamationmark.triangle" title:CLL(@"外部模拟源") color:[UIColor systemYellowColor]];
+    [runtimeCard addSeparator];
+    [self addDiagnosticRowToCard:runtimeCard key:@"limit_only_reestablish" icon:@"arrow.triangle.2.circlepath" title:CLL(@"仅限流重建") color:[UIColor systemTealColor]];
+    [runtimeCard addSeparator];
+    // 导出诊断快照（fix-thermal-limit-live-loop D1：App 可观测面，不依赖 daemon）
+    UIButton *exportSnapshotButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    exportSnapshotButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [exportSnapshotButton setTitle:CLL(@"导出诊断快照") forState:UIControlStateNormal];
+    [exportSnapshotButton addTarget:self action:@selector(exportThermalDiagnosticsSnapshot) forControlEvents:UIControlEventTouchUpInside];
+    [runtimeCard.contentStack addArrangedSubview:exportSnapshotButton];
     [self addTipRowToCard:runtimeCard text:CLL(@"仅用于观察插电保持当前状态与检查节奏，不会改变正常使用逻辑。")];
     [self.mainStack addArrangedSubview:runtimeCard];
 
@@ -2192,6 +2211,10 @@ static const NSInteger CLAdvAccChargeLPMTag = 405;
 - (void)updateDiagnosticValues {
     CLBatteryManager *manager = [CLBatteryManager shared];
     NSString *smartChargeCode = [NSString stringWithFormat:@"%ld", (long)manager.smartChargeStatus];
+    // 仅限流模式：先刷活数据（内核态通道/探针/污染），诊断行才不是陈旧 KV
+    if (manager.operationMode == CLOperationModeLimitOnly) {
+        [manager refreshDirectSessionState];
+    }
 
     [self updateDiagnosticValue:CLDebugValueWithRaw(CLPolicyStateLabel(manager.policyState), manager.policyState) forKey:@"policy_state"];
     [self updateDiagnosticValue:CLDebugValueWithRaw(CLPolicyReasonLabel(manager.policyReason), manager.policyReason) forKey:@"policy_reason"];
@@ -2217,6 +2240,25 @@ static const NSInteger CLAdvAccChargeLPMTag = 405;
         thermalApplyLabel = CLL(@"未生效");
     }
     [self updateDiagnosticValue:thermalApplyLabel forKey:@"thermal_apply_status"];
+    // 来源与时间（D3 诚实诊断）：app-probe=App 活探针当前判定；daemon-probe=daemon KV
+    NSString *sourceLabel = CLL(@"未知");
+    if ([manager.thermalApplySource isEqualToString:@"app-probe"]) {
+        sourceLabel = CLL(@"App 探针");
+    } else if ([manager.thermalApplySource isEqualToString:@"daemon-probe"]) {
+        sourceLabel = CLL(@"daemon 探针");
+    }
+    [self updateDiagnosticValue:sourceLabel forKey:@"thermal_apply_source"];
+    [self updateDiagnosticValue:(manager.thermalApplyCheckedAt > 0 ? CLTimestampLabel(manager.thermalApplyCheckedAt) : CLL(@"未知")) forKey:@"thermal_apply_checked_at"];
+    [self updateDiagnosticValue:(manager.externalSimulationSource ?: CLL(@"无")) forKey:@"external_simulation"];
+    // D5 启动重建结果（失败可见性闭环）：未触发=—，ok=成功，spawn_failed_N=失败
+    NSString *reestablishStatus = manager.limitOnlyReestablishStatus;
+    NSString *reestablishLabel = @"—";
+    if ([reestablishStatus isEqualToString:@"ok"]) {
+        reestablishLabel = CLL(@"成功");
+    } else if ([reestablishStatus hasPrefix:@"spawn_failed"]) {
+        reestablishLabel = CLDebugValueWithRaw(CLL(@"失败"), reestablishStatus);
+    }
+    [self updateDiagnosticValue:reestablishLabel forKey:@"limit_only_reestablish"];
 
     [self updateDiagnosticValue:[self holdIntervalTextForManager:manager] forKey:@"hold_interval"];
     [self updateDiagnosticValue:[self holdTargetTextForManager:manager] forKey:@"hold_target"];
@@ -2235,6 +2277,85 @@ static const NSInteger CLAdvAccChargeLPMTag = 405;
     [self updateDiagnosticValue:[self powerSourceKindTextForManager:manager] forKey:@"power_source_kind"];
     [self updateDiagnosticValue:[self recentPolicyTransitionsTextForManager:manager] forKey:@"policy_transition_history"];
     [self updateDiagnosticValue:[self policyEventHistoryTextForManager:manager] forKey:@"policy_event_history"];
+}
+
+// 导出诊断快照（fix-thermal-limit-live-loop D1）：组装 App 可观测面写入可分享文件。
+// 内容=采集时间 + 来源标注（App 视角）+ 双通道内核态及解码 + thermalState + 会话档位
+// 与验证状态 + 污染检测 + 共享存储仅限流配置。不依赖 daemon 存活，不改任何状态。
+// （2026-10-05 崩溃修复：方法必须与导出按钮同在 CLPolicyDiagnosticsViewController——
+// 曾误落在文件末尾的 CLAdvancedSettingsViewController，点按触发 unrecognized selector。）
+- (void)exportThermalDiagnosticsSnapshot {
+    CLBatteryManager *manager = [CLBatteryManager shared];
+    [manager refreshDirectSessionState];
+    NSDate *now = [NSDate date];
+    NSString *verifyState = @"unknown";
+    switch (manager.limitOnlyVerifyState) {
+        case CLLimitOnlyVerifyVerifying: verifyState = @"verifying"; break;
+        case CLLimitOnlyVerifyApplied: verifyState = @"applied"; break;
+        case CLLimitOnlyVerifyFailed: verifyState = @"failed"; break;
+        default: verifyState = @"unknown"; break;
+    }
+    NSDictionary *snapshot = @{
+        @"face": @"App",
+        @"collected_at": @((NSInteger)[now timeIntervalSince1970]),
+        @"collected_at_text": [now description],
+        @"operation_mode": @(manager.operationMode),
+        @"apply_channel": ({
+            uint64_t applyRaw = 0;
+            BOOL applyRead = CLThermalReadApplyChannel(&applyRaw); // 内核态直读（D1 修复：非配置派生值）
+            @{
+                @"read": @(applyRead),
+                @"raw": @(applyRaw),
+                @"mode": CLThermalModeName(applyRaw),
+            };
+        }),
+        @"session_channel": @{
+            @"read": @(manager.sessionChannelMode != nil), // nil ⇔ 读取失败（成功时恒有解码值）
+            @"enabled": @(manager.sessionChannelEnabled),
+            @"mode": manager.sessionChannelMode ?: @"unreadable",
+        },
+        @"thermal_state": [self thermalModeText:manager.thermalSimulateMode],
+        @"thermal_config_mode": manager.thermalConfigMode ?: @"off",
+        @"thermal_apply": @{
+            @"status": manager.thermalApplyStatus ?: @"unknown",
+            @"source": manager.thermalApplySource ?: @"unknown",
+            @"checked_at": @(manager.thermalApplyCheckedAt),
+        },
+        @"limit_only": @{
+            @"enabled": @(manager.operationMode == CLOperationModeLimitOnly),
+            @"level": manager.limitOnlyLevel ?: @"off",
+            @"verify_state": verifyState,
+            @"applied": @(manager.limitOnlyApplied),
+            @"session_enabled_kv": @(manager.limitOnlySessionEnabled),
+            @"plugged": @(manager.directPlugConnected),
+            @"reestablish_status": manager.limitOnlyReestablishStatus ?: @"not_triggered",
+        },
+        @"external_simulation": manager.externalSimulationSource ?: [NSNull null],
+        @"daemon_alive": @(manager.daemonAlive),
+    };
+    NSError *jsonError = nil;
+    NSData *jsonData = [NSJSONSerialization dataWithJSONObject:snapshot options:NSJSONWritingPrettyPrinted error:&jsonError];
+    if (jsonData == nil) {
+        return;
+    }
+    NSString *fileName = [NSString stringWithFormat:@"cl-thermal-diag-%ld.json", (long)[now timeIntervalSince1970]];
+    NSString *filePath = [NSTemporaryDirectory() stringByAppendingPathComponent:fileName];
+    [jsonData writeToFile:filePath atomically:YES];
+    NSURL *fileURL = [NSURL fileURLWithPath:filePath];
+    UIActivityViewController *activity = [[UIActivityViewController alloc] initWithActivityItems:@[fileURL]
+                                                                              applicationActivities:nil];
+    UIViewController *presenter = self.navigationController ?: self;
+    [presenter presentViewController:activity animated:YES completion:nil];
+}
+
+- (NSString *)thermalModeText:(CLThermalMode)mode {
+    switch (mode) {
+        case CLThermalModeNominal: return @"nominal";
+        case CLThermalModeLight: return @"light";
+        case CLThermalModeModerate: return @"moderate";
+        case CLThermalModeHeavy: return @"heavy";
+        default: return @"off";
+    }
 }
 
 @end
@@ -3314,5 +3435,6 @@ static const NSInteger CLAdvMasterOffBannerTag = 901;
     
     [self presentViewController:alert animated:YES completion:nil];
 }
+
 
 @end

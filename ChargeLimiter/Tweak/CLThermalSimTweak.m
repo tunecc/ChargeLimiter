@@ -55,31 +55,34 @@ static void CLTSApplyThermals(void) {
     if (![CLTSCurrentProduct respondsToSelector:@selector(putDeviceInThermalSimulationMode:)]) return;
     uint64_t mode = 0;
     notify_get_state(CLTSApplyToken, &mode);
+    NSString *modeString = CLTSStringForThermalMode(mode);
+    NSLog(@"[CLThermalSim] apply mode=%@", modeString); // 生命周期日志：注入/应用的直接证据
     // off 也下发：清除已生效档位（还原语义）。
     ((void (*)(id, SEL, NSString *))objc_msgSend)(CLTSCurrentProduct,
                                                   @selector(putDeviceInThermalSimulationMode:),
-                                                  CLTSStringForThermalMode(mode));
+                                                  modeString);
 }
 
 #pragma mark - 会话边沿（内核态 + IOKit，零偏好）
 
-// 插电判定（与 daemon isAdaptorConnect 常规分支一致）：ExternalChargeCapable 优先，
-// 缺失回退 ExternalConnected。
+// 插电判定（Bug B2 2026-10-05 真机修正）：ExternalChargeCapable 与 ExternalConnected
+// 任一为真即插电——首插瞬间 capable 可能尚未发布，严格"capable 优先、缺失才看
+// connected"会误判未插电并清掉限流；误判"插电"（保留限流）是更安全的错误方向。
 static BOOL CLTSPowerConnected(void) {
     io_service_t serv = IOServiceGetMatchingService(0, // kIOMasterPortDefault：iOS SDK 标记不可用，值即 0
                                                     IOServiceMatching("AppleSmartBattery"));
     if (serv == IO_OBJECT_NULL) return NO;
     BOOL connected = NO;
-    CFTypeRef val = IORegistryEntryCreateCFProperty(serv, CFSTR("ExternalChargeCapable"), kCFAllocatorDefault, 0);
-    if (val == NULL) {
-        val = IORegistryEntryCreateCFProperty(serv, CFSTR("ExternalConnected"), kCFAllocatorDefault, 0);
+    CFTypeRef capable = IORegistryEntryCreateCFProperty(serv, CFSTR("ExternalChargeCapable"), kCFAllocatorDefault, 0);
+    CFTypeRef connectedRef = IORegistryEntryCreateCFProperty(serv, CFSTR("ExternalConnected"), kCFAllocatorDefault, 0);
+    if (capable != NULL && CFGetTypeID(capable) == CFBooleanGetTypeID() && CFBooleanGetValue((CFBooleanRef)capable)) {
+        connected = YES;
     }
-    if (val != NULL) {
-        if (CFGetTypeID(val) == CFBooleanGetTypeID()) {
-            connected = CFBooleanGetValue((CFBooleanRef)val);
-        }
-        CFRelease(val);
+    if (connectedRef != NULL && CFGetTypeID(connectedRef) == CFBooleanGetTypeID() && CFBooleanGetValue((CFBooleanRef)connectedRef)) {
+        connected = YES;
     }
+    if (capable) CFRelease(capable);
+    if (connectedRef) CFRelease(connectedRef);
     IOObjectRelease(serv);
     return connected;
 }
@@ -97,7 +100,10 @@ static BOOL CLTSSessionConfig(uint64_t *limitMode) {
 static void CLTSSessionEvaluate(void) {
     uint64_t limit = 0;
     if (!CLTSSessionConfig(&limit)) return;
-    uint64_t target = (CLTSPowerConnected() && limit != 0) ? limit : 0;
+    BOOL plugged = CLTSPowerConnected();
+    uint64_t target = (plugged && limit != 0) ? limit : 0;
+    NSLog(@"[CLThermalSim] session evaluate enabled=1 limit=%llu plugged=%d target=%llu",
+          (unsigned long long)limit, plugged, (unsigned long long)target); // 边沿取证（Bug A/B2 排障）
     notify_set_state(CLTSApplyToken, target);
     CLTSApplyThermals();
 }
@@ -146,6 +152,7 @@ static id CLTSInitProductOverride(id self, SEL _cmd, id data) {
     if (result == nil) return nil; // 原实现失败：不捕获不应用
     if ([result respondsToSelector:@selector(putDeviceInThermalSimulationMode:)]) {
         CLTSCurrentProduct = result; // 强引用捕获（Mikasa 同款）
+        NSLog(@"[CLThermalSim] product captured"); // 生命周期日志：hook 已生效的直接证据
     }
     CLTSApplyThermals(); // thermalmonitord 重启重放：内核态即真相
     return result;
@@ -166,21 +173,26 @@ static io_object_t CLTSBatteryNotifier = IO_OBJECT_NULL;
 __attribute__((constructor)) static void CLTSInit(void) {
     @autoreleasepool {
         Class productClass = objc_getClass("CommonProduct");
+        NSLog(@"[CLThermalSim] ctor loaded productClass=%@", productClass != nil ? @"yes" : @"no");
         if (productClass != nil) { // 类缺失（系统变更）：静默退回
             CLTSHookSelector(productClass, @selector(initProduct:), (IMP)CLTSInitProductOverride, &CLTSOrigInitProduct);
         }
         // 双通道（Mikasa 同款 notify_register_dispatch，主队列）：
         // 档位通知 → 即时下发；会话通知 → 会话边沿重算。
-        notify_register_dispatch([CLTSApplyNotification UTF8String], &CLTSApplyToken,
+        uint32_t applyReg = notify_register_dispatch([CLTSApplyNotification UTF8String], &CLTSApplyToken,
                                  dispatch_get_main_queue(), ^(int token) {
             CLTSApplyThermals();
         });
-        notify_register_dispatch([CLTSSessionNotification UTF8String], &CLTSSessionToken,
+        uint32_t sessionReg = notify_register_dispatch([CLTSSessionNotification UTF8String], &CLTSSessionToken,
                                  dispatch_get_main_queue(), ^(int token) {
             CLTSSessionEvaluate();
         });
+        // Bug A 修复（2026-10-05 真机）：注销（respring）不清内核态——apply 通道残留的
+        // 旧档位会被下方 initProduct 重放。无条件评估一次会话（读内核态会话配置 +
+        // IOKit 插电判定）：未插电 → 清残留为 off；插电 → 按配置应用。不依赖偏好可读。
+        CLTSSessionEvaluate();
         // 跨重启重挂：会话偏好仍启用则恢复会话通道并重算（产品实例就绪前只落内核态，
-        // 由 initProduct 重放补一次下发）。
+        // 由 initProduct 重放补一次下发）。重启后内核态归零，此处是偏好 best-effort 兜底。
         CLTSRestoreSessionFromPrefs();
         // 电池属性 interest（插拔边沿）：注册失败静默降级——会话通道通知兜底。
         CLTSNotifyPort = IONotificationPortCreate(0); // master port 0（iOS）
@@ -200,5 +212,13 @@ __attribute__((constructor)) static void CLTSInit(void) {
                 IOObjectRelease(battery);
             }
         }
+        // 生命周期日志（零行为改动）：注入/注册/重挂一次性快照，log show 按
+        // thermalmonitord 进程检索（[CLThermalSim] 前缀）。
+        uint64_t restoredLimit = 0;
+        BOOL restoredEnabled = CLTSSessionConfig(&restoredLimit);
+        NSLog(@"[CLThermalSim] ctor done apply_reg=%u session_reg=%u interest=%@ restore_enabled=%d restore_mode=%llu",
+              applyReg, sessionReg,
+              CLTSBatteryNotifier != IO_OBJECT_NULL ? @"ok" : @"failed",
+              restoredEnabled, (unsigned long long)restoredLimit);
     }
 }

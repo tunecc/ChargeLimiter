@@ -5592,6 +5592,9 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     levelRow.userInteractionEnabled = YES;
     [self.limitOnlyCard addRowWithIcon:@"bolt.horizontal.circle" title:CLL(@"会话状态") value:@"--" color:[UIColor systemBlueColor]];
     [self.limitOnlyCard addRowWithIcon:@"checkmark.seal" title:CLL(@"生效验证") value:CLL(@"未知") color:[UIColor systemGreenColor]];
+    // 验证失败态点按卡片重试（fix-thermal-limit-live-loop D4）
+    UITapGestureRecognizer *limitOnlyCardTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(limitOnlyCardTapped)];
+    [self.limitOnlyCard addGestureRecognizer:limitOnlyCardTap];
     // 巨魔形态口径（spec B6 / D4）：无注入执行端，沿用充电限流既有提示
     if (getJBType_C() == 8 /* JBTYPE_TROLLSTORE */) {
         UILabel *tip = [[UILabel alloc] init];
@@ -5707,13 +5710,47 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     CLBatteryManager *manager = [CLBatteryManager shared];
     NSString *session;
     if (manager.directPlugConnected) {
-        session = manager.limitOnlyApplied ? CLL(@"已插电 · 限流生效中") : CLL(@"已插电 · 生效验证中");
+        switch (manager.limitOnlyVerifyState) {
+            case CLLimitOnlyVerifyApplied:
+                session = CLL(@"已插电 · 限流生效中");
+                break;
+            case CLLimitOnlyVerifyFailed:
+                session = CLL(@"已插电 · 验证失败，点按重试");
+                break;
+            default: // Unknown / Verifying：已下发待生效或验证窗口内
+                session = CLL(@"已插电 · 生效验证中");
+                break;
+        }
     } else {
         session = CLL(@"未插电 · 限流已解除");
     }
     [self updateCardValue:self.limitOnlyCard title:CLL(@"会话状态") value:session];
-    [self updateCardValue:self.limitOnlyCard title:CLL(@"生效验证") value:(manager.limitOnlyApplied ? CLL(@"已生效") : CLL(@"未验证"))];
+    // 生效验证（D4 三态 + D3 污染标注——外部模拟在场时读数只作"可能"参考）。
+    // 未插电没有待生效对象：恒显"未验证"，不沿用 verifying/failed（Bug B1 2026-10-05）。
+    NSString *verifyText;
+    if (!manager.directPlugConnected) {
+        verifyText = CLL(@"未验证");
+    } else {
+        switch (manager.limitOnlyVerifyState) {
+            case CLLimitOnlyVerifyApplied: verifyText = CLL(@"已生效"); break;
+            case CLLimitOnlyVerifyFailed: verifyText = CLL(@"验证失败"); break;
+            case CLLimitOnlyVerifyVerifying: verifyText = CLL(@"验证中"); break;
+            default: verifyText = CLL(@"未验证"); break;
+        }
+    }
+    if (manager.externalSimulationSource != nil) {
+        verifyText = [verifyText stringByAppendingString:CLL(@"（可能受外部模拟污染）")];
+    }
+    [self updateCardValue:self.limitOnlyCard title:CLL(@"生效验证") value:verifyText];
     [self updateCardValue:self.limitOnlyCard title:CLL(@"限流档位") value:[self limitOnlyLevelText]];
+}
+
+// 验证失败态点按卡片 → 重新下发档位（重开验证窗口）。
+- (void)limitOnlyCardTapped {
+    CLBatteryManager *manager = [CLBatteryManager shared];
+    if (manager.operationMode != CLOperationModeLimitOnly) return;
+    if (manager.limitOnlyVerifyState != CLLimitOnlyVerifyFailed) return;
+    [manager applyLimitOnlyLevel:manager.limitOnlyLevel completion:nil];
 }
 
 // 系统优化充电残留提示条：优化充电被留在"临时停用"且无本工具协调会话时显示，
