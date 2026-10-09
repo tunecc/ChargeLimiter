@@ -82,14 +82,16 @@ void setThermalSimulationMode(NSString* mode);
 extern "C" {
 #endif
 BOOL getLimitOnlySessionEnabled(void);      // clLimitSessionEnabled
-NSString* getLimitOnlyLevel(void);          // clLimitMode（非法/缺省按 off）
-void setLimitOnlySession(BOOL enabled, NSString* mode, BOOL plugged); // 会话键 + thermal 镜像 + 通知
+NSString* getLimitOnlyLevel(void);          // clLimitMode（充电时档位；非法/缺省按 off）
+NSString* getLimitOnlyIdleLevel(void);      // clLimitIdleMode（平时档位；缺键/非法按 off）
+void setLimitOnlySession(BOOL enabled, NSString* chargeMode, NSString* idleMode, BOOL chargingActive); // 会话键 + thermal 镜像 + 通知
 void clearLimitOnlySessionKeys(void);       // 清会话键并把 thermal 镜像归零 + 通知
 BOOL isCLPowerConnected(void);              // AppleSmartBattery 插电判定（ExternalChargeCapable 优先）
 int spawnDaemonCLIVerb_C(NSArray<NSString*>* verbArgs); // App 侧阻塞式 spawn daemon CLI 动词
 // 内核态通道只读辅助（fix-thermal-limit-live-loop）：App（mobile）与 daemon 共用。
 BOOL CLThermalReadApplyChannel(uint64_t *mode);                  // 档位通道：0=off/1-4 档位
-BOOL CLThermalReadSessionChannel(BOOL *enabled, uint64_t *mode); // 会话通道：enabled(bit0)|档位(bit8-15)
+// 会话通道：enabled(bit0)|充电时档位(bit8-15)|平时档位(bit16-23)。两个档位出参均可为 NULL。
+BOOL CLThermalReadSessionChannel(BOOL *enabled, uint64_t *chargeMode, uint64_t *idleMode);
 NSString* CLThermalModeName(uint64_t mode);                      // 0-4 → off/nominal/light/moderate/heavy
 NSString* CLThermalExternalSimulationSource(void);               // 外部模拟源在场（powercuff），无则 nil
 void CLThermalPushApplyChannel(NSString *mode);                  // 档位通道写+广播（复用既有唯一写实现；selftest 用）

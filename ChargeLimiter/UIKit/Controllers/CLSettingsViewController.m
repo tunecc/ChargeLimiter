@@ -581,10 +581,73 @@ static NSString *CLFrequencyString(NSInteger frequency) {
     [self.contentStack addArrangedSubview:row];
 }
 
+// 带副标题的行（limit-only-idle-thermal-level）：与「完整控制」热模拟卡的两行档位同一信息
+// 结构——档位选择 + 一句话说明该时段何时生效、代价是什么。行高随副标题行数自适应。
+- (void)addRowWithIcon:(NSString *)iconName
+                 title:(NSString *)title
+              subtitle:(NSString *)subtitle
+                 value:(NSString *)value
+                 color:(UIColor *)color {
+    UIView *row = [[UIView alloc] init];
+    row.translatesAutoresizingMaskIntoConstraints = NO;
+
+    UIImageView *iconView = [[UIImageView alloc] init];
+    iconView.translatesAutoresizingMaskIntoConstraints = NO;
+    iconView.contentMode = UIViewContentModeScaleAspectFit;
+    UIColor *iconColor = color ?: [UIColor systemBlueColor];
+    iconView.tintColor = iconColor;
+    UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:16 weight:UIImageSymbolWeightMedium];
+    iconView.image = CLSymbolImage(iconName, config);
+    [row addSubview:iconView];
+
+    UILabel *titleLabel = [[UILabel alloc] init];
+    titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    titleLabel.text = title;
+    titleLabel.font = [UIFont systemFontOfSize:15];
+    titleLabel.textColor = [UIColor labelColor];
+    [row addSubview:titleLabel];
+
+    UILabel *subtitleLabel = [[UILabel alloc] init];
+    subtitleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    subtitleLabel.text = subtitle ?: @"";
+    subtitleLabel.font = [UIFont systemFontOfSize:12];
+    subtitleLabel.textColor = [UIColor secondaryLabelColor];
+    subtitleLabel.numberOfLines = 0;
+    [row addSubview:subtitleLabel];
+
+    UILabel *valueLabel = [[UILabel alloc] init];
+    valueLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    valueLabel.text = value;
+    valueLabel.font = [UIFont monospacedDigitSystemFontOfSize:15 weight:UIFontWeightMedium];
+    valueLabel.textColor = [UIColor secondaryLabelColor];
+    valueLabel.textAlignment = NSTextAlignmentRight;
+    valueLabel.tag = [title hash];
+    objc_setAssociatedObject(valueLabel, kCLCardValueTitleKey, title, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    [row addSubview:valueLabel];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [row.heightAnchor constraintGreaterThanOrEqualToConstant:56],
+        [iconView.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:16],
+        [iconView.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+        [iconView.widthAnchor constraintEqualToConstant:22],
+        [titleLabel.leadingAnchor constraintEqualToAnchor:iconView.trailingAnchor constant:12],
+        [titleLabel.topAnchor constraintEqualToAnchor:row.topAnchor constant:9],
+        [subtitleLabel.leadingAnchor constraintEqualToAnchor:titleLabel.leadingAnchor],
+        [subtitleLabel.topAnchor constraintEqualToAnchor:titleLabel.bottomAnchor constant:2],
+        [subtitleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:valueLabel.leadingAnchor constant:-8],
+        [subtitleLabel.bottomAnchor constraintEqualToAnchor:row.bottomAnchor constant:-9],
+        [valueLabel.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-16],
+        [valueLabel.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+        [valueLabel.leadingAnchor constraintGreaterThanOrEqualToAnchor:titleLabel.trailingAnchor constant:8]
+    ]];
+
+    [self.contentStack addArrangedSubview:row];
+}
+
 - (void)addSwitchRowWithIcon:(NSString *)iconName title:(NSString *)title isOn:(BOOL)isOn color:(UIColor *)color tag:(NSInteger)tag onChange:(void(^)(BOOL))onChange {
     UIView *row = [[UIView alloc] init];
     row.translatesAutoresizingMaskIntoConstraints = NO;
-    
+
     UIImageView *iconView = [[UIImageView alloc] init];
     iconView.translatesAutoresizingMaskIntoConstraints = NO;
     iconView.contentMode = UIViewContentModeScaleAspectFit;
@@ -5150,10 +5213,15 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
 - (void)applyLimitOnlyUIGating;
 - (void)updateLimitOnlyRows;
 - (void)presentOperationModePicker;
-- (void)presentLimitOnlyLevelPicker;
+- (void)presentLimitOnlyChargeLevelPicker;
+- (void)presentLimitOnlyIdleLevelPicker;
+- (void)presentLimitOnlyLevelPickerForScope:(CLLimitOnlyActiveScope)scope;
 - (void)switchToOperationMode:(CLOperationMode)mode;
 - (NSString *)operationModeText;
+- (NSString *)limitOnlyModeText:(NSString *)level fallback:(NSString *)fallback;
 - (NSString *)limitOnlyLevelText;
+- (NSString *)limitOnlyIdleLevelText;
+- (NSString *)limitOnlyActiveScopeText;
 @end
 
 @implementation CLSettingsViewController
@@ -5581,15 +5649,38 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     [self.mainStack addArrangedSubview:banner];
 }
 
-// 仅限流卡片（spec B5）：档位选择 + 会话状态 + 生效验证——全部零 daemon 依赖
+// 仅限流卡片（spec B5 + limit-only-idle-thermal-level）：两个分时段档位选择 + 当前生效 +
+// 会话状态 + 生效验证——全部零 daemon 依赖。档位通道与「完整控制」的「高温模拟 / 充电限流」
+// 是同一个 thermalSimulationMode，因此这里沿用同一套行名与同一套分时段语义。
 - (void)setupLimitOnlyCard {
     self.limitOnlyCard = [[CLGlassCard alloc] init];
     self.limitOnlyCard.viewController = self;
-    [self.limitOnlyCard addRowWithIcon:@"gauge.with.dots.needle.33percent" title:CLL(@"限流档位") value:[self limitOnlyLevelText] color:[UIColor systemOrangeColor]];
-    UIView *levelRow = self.limitOnlyCard.contentStack.arrangedSubviews.lastObject;
-    UITapGestureRecognizer *levelTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(presentLimitOnlyLevelPicker)];
-    [levelRow addGestureRecognizer:levelTap];
-    levelRow.userInteractionEnabled = YES;
+    [self.limitOnlyCard addRowWithIcon:@"thermometer.sun.fill"
+                                 title:CLL(@"充电时档位")
+                              subtitle:CLL(@"插电充电时生效；档位越高，充电电流越小")
+                                 value:[self limitOnlyLevelText]
+                                 color:[UIColor systemOrangeColor]];
+    UIView *chargeRow = self.limitOnlyCard.contentStack.arrangedSubviews.lastObject;
+    UITapGestureRecognizer *chargeTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(presentLimitOnlyChargeLevelPicker)];
+    [chargeRow addGestureRecognizer:chargeTap];
+    chargeRow.userInteractionEnabled = YES;
+
+    [self.limitOnlyCard addRowWithIcon:@"flame.fill"
+                                 title:CLL(@"平时档位")
+                              subtitle:CLL(@"未插电或未充电时生效；档位越高，性能越低，发热越少")
+                                 value:[self limitOnlyIdleLevelText]
+                                 color:[UIColor systemOrangeColor]];
+    UIView *idleRow = self.limitOnlyCard.contentStack.arrangedSubviews.lastObject;
+    UITapGestureRecognizer *idleTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(presentLimitOnlyIdleLevelPicker)];
+    [idleRow addGestureRecognizer:idleTap];
+    idleRow.userInteractionEnabled = YES;
+
+    // 「当前生效」只读状态行：与 tweak 会话同一处裁决，App 不推导第二套真相
+    [self.limitOnlyCard addRowWithIcon:@"dot.radiowaves.left.and.right"
+                                 title:CLL(@"当前生效")
+                              subtitle:CLL(@"两者共用同一个温度模拟通道，同一时刻只有一个生效")
+                                 value:[self limitOnlyActiveScopeText]
+                                 color:[UIColor systemTealColor]];
     [self.limitOnlyCard addRowWithIcon:@"bolt.horizontal.circle" title:CLL(@"会话状态") value:@"--" color:[UIColor systemBlueColor]];
     [self.limitOnlyCard addRowWithIcon:@"checkmark.seal" title:CLL(@"生效验证") value:CLL(@"未知") color:[UIColor systemGreenColor]];
     // 验证失败态点按"生效验证"行重试（fix-thermal-limit-live-loop D4；集成审查修复：
@@ -5598,6 +5689,18 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     UITapGestureRecognizer *verifyTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(limitOnlyCardTapped)];
     [verifyRow addGestureRecognizer:verifyTap];
     verifyRow.userInteractionEnabled = YES;
+    // 通道说明 tip：两行档位是同一个通道分时段使用，不是两个可叠加的功能
+    UILabel *channelTip = [[UILabel alloc] init];
+    channelTip.translatesAutoresizingMaskIntoConstraints = NO;
+    channelTip.font = [UIFont systemFontOfSize:12];
+    channelTip.textColor = [UIColor secondaryLabelColor];
+    channelTip.numberOfLines = 0;
+    channelTip.text = CLL(@"充电时档位与平时档位共用同一个温度模拟通道：插电充电时用前者，其余时间用后者，不会同时生效。");
+    [self.limitOnlyCard.contentStack addArrangedSubview:channelTip];
+    [NSLayoutConstraint activateConstraints:@[
+        [channelTip.leadingAnchor constraintEqualToAnchor:self.limitOnlyCard.contentStack.leadingAnchor constant:16],
+        [channelTip.trailingAnchor constraintLessThanOrEqualToAnchor:self.limitOnlyCard.contentStack.trailingAnchor constant:-16],
+    ]];
     // 巨魔形态口径（spec B6 / D4）：无注入执行端，沿用充电限流既有提示
     if (getJBType_C() == 8 /* JBTYPE_TROLLSTORE */) {
         UILabel *tip = [[UILabel alloc] init];
@@ -5624,14 +5727,37 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     }
 }
 
-- (NSString *)limitOnlyLevelText {
-    NSString *level = [CLBatteryManager shared].limitOnlyLevel ?: @"moderate";
+// 档位名查表（off 是合法值：该时段不施加热模拟，如实显示「关闭」而不是偷偷改成中度）
+- (NSString *)limitOnlyModeText:(NSString *)level fallback:(NSString *)fallback {
+    NSString *value = level.length > 0 ? level : fallback;
     NSDictionary *map = @{@"off": CLL(@"关闭"),
                           @"nominal": CLL(@"正常"),
                           @"light": CLL(@"轻度"),
                           @"moderate": CLL(@"中度"),
                           @"heavy": CLL(@"重度")};
-    return map[level] ?: level;
+    return map[value] ?: value;
+}
+
+- (NSString *)limitOnlyLevelText {
+    return [self limitOnlyModeText:[CLBatteryManager shared].limitOnlyLevel fallback:@"moderate"];
+}
+
+- (NSString *)limitOnlyIdleLevelText {
+    return [self limitOnlyModeText:[CLBatteryManager shared].limitOnlyIdleLevel fallback:@"off"];
+}
+
+// 「当前生效」行：只陈述 tweak 会话裁决的事实，不推导第二套真相。
+// 两侧档位皆关时显示未开启——这是合法状态（用户主动把两个时段都关了）。
+- (NSString *)limitOnlyActiveScopeText {
+    CLBatteryManager *manager = [CLBatteryManager shared];
+    switch (manager.limitOnlyActiveScope) {
+        case CLLimitOnlyScopeCharging:
+            return [NSString stringWithFormat:@"%@ · %@", CLL(@"充电时档位"), [self limitOnlyLevelText]];
+        case CLLimitOnlyScopeIdle:
+            return [NSString stringWithFormat:@"%@ · %@", CLL(@"平时档位"), [self limitOnlyIdleLevelText]];
+        case CLLimitOnlyScopeOff:
+            return CLL(@"未开启");
+    }
 }
 
 - (void)presentOperationModePicker {
@@ -5651,14 +5777,36 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     [self presentViewController:alert animated:YES completion:nil];
 }
 
-- (void)presentLimitOnlyLevelPicker {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"充电限流") message:CLL(@"插电时限流生效，拔线自动解除\n档位越高，充电电流越小") preferredStyle:UIAlertControllerStyleAlert];
+// 两个分时段档位选择器（limit-only-idle-thermal-level）：同一套五档，各写自己那一档，
+// 另一档的值不被本次操作改变。off 真的落到 off——不再被归一化成中度。
+- (void)presentLimitOnlyChargeLevelPicker {
+    [self presentLimitOnlyLevelPickerForScope:CLLimitOnlyScopeCharging];
+}
+
+- (void)presentLimitOnlyIdleLevelPicker {
+    [self presentLimitOnlyLevelPickerForScope:CLLimitOnlyScopeIdle];
+}
+
+- (void)presentLimitOnlyLevelPickerForScope:(CLLimitOnlyActiveScope)scope {
+    BOOL charging = (scope == CLLimitOnlyScopeCharging);
+    NSString *title = charging ? CLL(@"充电时档位") : CLL(@"平时档位");
+    NSString *message = charging ? CLL(@"插电充电时生效\n档位越高，充电电流越小")
+                                 : CLL(@"未插电或未充电时生效\n档位越高，性能越低，发热越少");
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
     NSArray *modes = @[CLL(@"关闭"), CLL(@"正常"), CLL(@"轻度"), CLL(@"中度"), CLL(@"重度")];
     NSArray *modeValues = @[@"off", @"nominal", @"light", @"moderate", @"heavy"];
+    CLBatteryManager *manager = [CLBatteryManager shared];
     __weak typeof(self) weakSelf = self;
     for (NSInteger i = 0; i < modes.count; i++) {
+        NSString *mode = modeValues[i];
         UIAlertAction *action = [UIAlertAction actionWithTitle:modes[i] style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull a) {
-            [[CLBatteryManager shared] applyLimitOnlyLevel:modeValues[i] completion:^(BOOL success) {
+            [manager applyLimitOnlyLevelsWithChargeMode:charging ? mode : manager.limitOnlyLevel
+                                                idleMode:charging ? manager.limitOnlyIdleLevel : mode
+                                              completion:^(BOOL success) {
+                if (!success) {
+                    [weakSelf showModeSwitchFailureAlert]; // 写入失败必须可见，不把旧值当新值
+                    return;
+                }
                 [weakSelf updateLimitOnlyRows];
             }];
         }];
@@ -5711,27 +5859,45 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
 
 - (void)updateLimitOnlyRows {
     CLBatteryManager *manager = [CLBatteryManager shared];
+    // 会话状态：按当前生效时段如实表述。limit-only-idle-thermal-level 起未插电也可能有
+    // 生效中的档位（平时档位），"未插电 · 限流已解除"不再恒真，只有两侧皆关时才这么说。
+    // 三个分支直接读 limitOnlyActiveScope——该枚举本身就编码了"插电 && 正在充电"，
+    // 不再另判 directPlugConnected，避免出现第二套生效方真相。
     NSString *session;
-    if (manager.directPlugConnected) {
+    if (manager.limitOnlyActiveScope == CLLimitOnlyScopeOff) {
+        session = CLL(@"两个档位均已关闭");
+    } else if (manager.limitOnlyActiveScope == CLLimitOnlyScopeCharging) {
         switch (manager.limitOnlyVerifyState) {
             case CLLimitOnlyVerifyApplied:
-                session = CLL(@"已插电 · 限流生效中");
+                session = CLL(@"已插电充电 · 充电时档位生效中");
                 break;
             case CLLimitOnlyVerifyFailed:
-                session = CLL(@"已插电 · 验证失败，点按重试");
+                session = CLL(@"已插电充电 · 验证失败，点按重试");
                 break;
             default: // Unknown / Verifying：已下发待生效或验证窗口内
-                session = CLL(@"已插电 · 生效验证中");
+                session = CLL(@"已插电充电 · 生效验证中");
                 break;
         }
     } else {
-        session = CLL(@"未插电 · 限流已解除");
+        // 未插电，或插线但系统暂停充电：生效方是平时档位
+        switch (manager.limitOnlyVerifyState) {
+            case CLLimitOnlyVerifyApplied:
+                session = CLL(@"未充电 · 平时档位生效中");
+                break;
+            case CLLimitOnlyVerifyFailed:
+                session = CLL(@"未充电 · 验证失败，点按重试");
+                break;
+            default:
+                session = CLL(@"未充电 · 生效验证中");
+                break;
+        }
     }
     [self updateCardValue:self.limitOnlyCard title:CLL(@"会话状态") value:session];
     // 生效验证（D4 三态 + D3 污染标注——外部模拟在场时读数只作"可能"参考）。
-    // 未插电没有待生效对象：恒显"未验证"，不沿用 verifying/failed（Bug B1 2026-10-05）。
+    // Bug B1 的"未插电没有待生效对象"经 limit-only-idle-thermal-level 修订：判据从
+    // "是否插电"改为"当前时段是否有档位"——平时档位非关闭时未插电同样要验证。
     NSString *verifyText;
-    if (!manager.directPlugConnected) {
+    if (manager.limitOnlyActiveScope == CLLimitOnlyScopeOff) {
         verifyText = CLL(@"未验证");
     } else {
         switch (manager.limitOnlyVerifyState) {
@@ -5745,15 +5911,19 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
         verifyText = [verifyText stringByAppendingString:CLL(@"（可能受外部模拟污染）")];
     }
     [self updateCardValue:self.limitOnlyCard title:CLL(@"生效验证") value:verifyText];
-    [self updateCardValue:self.limitOnlyCard title:CLL(@"限流档位") value:[self limitOnlyLevelText]];
+    [self updateCardValue:self.limitOnlyCard title:CLL(@"充电时档位") value:[self limitOnlyLevelText]];
+    [self updateCardValue:self.limitOnlyCard title:CLL(@"平时档位") value:[self limitOnlyIdleLevelText]];
+    [self updateCardValue:self.limitOnlyCard title:CLL(@"当前生效") value:[self limitOnlyActiveScopeText]];
 }
 
-// 验证失败态点按卡片 → 重新下发档位（重开验证窗口）。
+// 验证失败态点按卡片 → 重新下发两个档位（重开验证窗口）。
 - (void)limitOnlyCardTapped {
     CLBatteryManager *manager = [CLBatteryManager shared];
     if (manager.operationMode != CLOperationModeLimitOnly) return;
     if (manager.limitOnlyVerifyState != CLLimitOnlyVerifyFailed) return;
-    [manager applyLimitOnlyLevel:manager.limitOnlyLevel completion:nil];
+    [manager applyLimitOnlyLevelsWithChargeMode:manager.limitOnlyLevel
+                                       idleMode:manager.limitOnlyIdleLevel
+                                     completion:nil];
 }
 
 // 系统优化充电残留提示条：优化充电被留在"临时停用"且无本工具协调会话时显示，

@@ -7,11 +7,15 @@
 //
 // 双通道（写方 = daemon/CLI root 进程；会话启用期间本 tweak 亦写档位通道）：
 //   com.chargelimiter.thermalapply   档位通道，state = 0=off/1=nominal/2=light/3=moderate/4=heavy
-//   com.chargelimiter.thermalsession 会话通道，state = enabled(bit0) | 档位值(bit8-15)
+//   com.chargelimiter.thermalsession 会话通道，state = enabled(bit0) | 充电时档位(bit8-15) | 平时档位(bit16-23)
 // 完整控制模式（会话未启用）档位通道归 daemon 独写，本 tweak 不干预。
 //
-// 仅限流会话（limit-only daemon-free，spec B2）：插电 → 限流档、拔线/档位 off → off，
-// 由电池属性 interest 与会话通道通知驱动（IOKit 插电判定，不碰偏好）。
+// 分时段会话（limit-only-idle-thermal-level）：插电且系统正在充电 → 充电时档位；
+// 未插电或插线未充电 → 平时档位。两侧皆可为零（=该时段不施加热模拟）。
+// 旧安装只写 bits8-15，bits16-23 为 0 天然解读为"平时档位关闭"，升级不错档。
+//
+// 仅限流会话（limit-only daemon-free，spec B2）：由电池属性 interest、IOPS 电源源通知
+// 与会话通道通知驱动（IOKit 插电/充电判定，不碰偏好）。
 
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
@@ -92,28 +96,54 @@ static BOOL CLTSPowerConnected(void) {
     return connected;
 }
 
-// 会话通道解码：enabled(bit0) + 档位值(bit8-15)。
-static BOOL CLTSSessionConfig(uint64_t *limitMode) {
+// 充电判定（limit-only-idle-thermal-level）：IsCharging 为真即正在充电。
+// 属性缺失或类型不符时按"正在充电"处理——与插电判定同向的容错：误判"充电"会保留
+// 限流（更安全的错误方向），误判"未充电"会让插电时的限流静默失效。
+// 对应「完整控制」的"充电命令开启"：那一侧是 ChargeLimiter 自己的停充命令，仅限流模式下
+// daemon 不驻留、ChargeLimiter 无法停充，现实条件就是系统是否正在充电。
+static BOOL CLTSIsCharging(void) {
+    io_service_t serv = IOServiceGetMatchingService(0, IOServiceMatching("AppleSmartBattery"));
+    if (serv == IO_OBJECT_NULL) return YES;
+    BOOL charging = YES;
+    CFTypeRef ref = IORegistryEntryCreateCFProperty(serv, CFSTR("IsCharging"), kCFAllocatorDefault, 0);
+    if (ref != NULL) {
+        if (CFGetTypeID(ref) == CFBooleanGetTypeID()) {
+            charging = CFBooleanGetValue((CFBooleanRef)ref);
+        }
+        CFRelease(ref);
+    }
+    IOObjectRelease(serv);
+    return charging;
+}
+
+// 会话通道解码：enabled(bit0) + 充电时档位(bit8-15) + 平时档位(bit16-23)。
+// bits16-23 为 0 = 平时档位关闭；旧安装（只带单档位）读到这里也是 0，解读一致。
+static BOOL CLTSSessionConfig(uint64_t *chargeMode, uint64_t *idleMode) {
     uint64_t state = 0;
     notify_get_state(CLTSSessionToken, &state);
-    *limitMode = (state >> 8) & 0xFF;
+    *chargeMode = (state >> 8) & 0xFF;
+    *idleMode = (state >> 16) & 0xFF;
     return (state & 1ULL) != 0;
 }
 
-// 会话重算：插电且档位非 0 → 档位；否则 off（正确性底线：不允许限流档未插电残留）。
+// 会话重算：插电且系统正在充电 → 充电时档位；否则 → 平时档位。两侧皆可为零。
 // 会话未启用直接返回——完整控制模式档位通道归 daemon 独写。
 static void CLTSUpdateReassertTimer(void); // 前置声明（定义在会话重算之后）
 
 static void CLTSSessionEvaluate(void) {
-    uint64_t limit = 0;
+    uint64_t charge = 0;
+    uint64_t idle = 0;
     // 门控刷新先于早退（Verifier risks 修复）：会话禁用时也要停表——否则
     // enabled→disabled 切换后 30s 定时器永不停止（tick 空转早退，无行为影响但不卫生）
     CLTSUpdateReassertTimer();
-    if (!CLTSSessionConfig(&limit)) return;
+    if (!CLTSSessionConfig(&charge, &idle)) return;
     BOOL plugged = CLTSPowerConnected();
-    uint64_t target = (plugged && limit != 0) ? limit : 0;
-    NSLog(@"[CLThermalSim] session evaluate enabled=1 limit=%llu plugged=%d target=%llu",
-          (unsigned long long)limit, plugged, (unsigned long long)target); // 边沿取证（Bug A/B2 排障）
+    // 插电未充电（系统优化充电 / 80% 限制暂停）归"平时"一侧，与「完整控制」同口径
+    BOOL charging = plugged && CLTSIsCharging();
+    uint64_t target = charging ? charge : idle;
+    NSLog(@"[CLThermalSim] session evaluate enabled=1 charge=%llu idle=%llu plugged=%d charging=%d target=%llu",
+          (unsigned long long)charge, (unsigned long long)idle, plugged, charging,
+          (unsigned long long)target); // 边沿取证（Bug A/B2 排障）
     notify_set_state(CLTSApplyToken, target);
     CLTSApplyThermals();
 }
@@ -128,9 +158,10 @@ static void CLTSSessionEvaluate(void) {
 static dispatch_source_t CLTSReassertTimer = NULL;
 
 static void CLTSUpdateReassertTimer(void) {
-    uint64_t limit = 0;
-    BOOL enabled = CLTSSessionConfig(&limit);
-    BOOL shouldRun = enabled; // 会话启用即运行：未插电时 tick 评估→应用 off（幂等自愈）
+    uint64_t charge = 0;
+    uint64_t idle = 0;
+    BOOL enabled = CLTSSessionConfig(&charge, &idle);
+    BOOL shouldRun = enabled; // 会话启用即运行：未插电时 tick 评估→应用平时档位（幂等自愈）
     if (shouldRun && CLTSReassertTimer == NULL) {
         CLTSReassertTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
                                                    dispatch_get_main_queue());
@@ -163,8 +194,22 @@ static void CLTSPowerSourceChanged(void *context) {
 
 #pragma mark - 跨重启重挂（单次 best-effort 偏好读取）
 
+// 读一个 com.apple.cltm 字符串键；缺失或类型不符返回 nil（调用方按关闭处理）。
+static NSString *CLTSCopyLimitOnlyMode(CFStringRef key) {
+    CFTypeRef ref = CFPreferencesCopyAppValue(key, CFSTR("com.apple.cltm"));
+    if (ref == NULL) return nil;
+    NSString *value = nil;
+    if (CFGetTypeID(ref) == CFStringGetTypeID()) {
+        value = [(__bridge NSString *)ref copy];
+    }
+    CFRelease(ref);
+    return value;
+}
+
 // 重启后内核态归零。从持久化会话键尽力恢复会话通道并重算（本进程首次偏好访问，
 // 与运行期缓存不可见问题不同路径）；读不到/未启用则维持 off。此后运行期零偏好读取。
+// 两个档位键分别缺键按关闭（limit-only-idle-thermal-level）：旧安装只有 clLimitMode，
+// 恢复出来就是"充电时档位有值、平时档位关闭"，与升级前的实际效果一致。
 static void CLTSRestoreSessionFromPrefs(void) {
     CFTypeRef enabledRef = CFPreferencesCopyAppValue(CFSTR("clLimitSessionEnabled"),
                                                      CFSTR("com.apple.cltm"));
@@ -178,16 +223,9 @@ static void CLTSRestoreSessionFromPrefs(void) {
         CFRelease(enabledRef);
     }
     if (!enabled) return;
-    NSString *mode = nil;
-    CFTypeRef modeRef = CFPreferencesCopyAppValue(CFSTR("clLimitMode"), CFSTR("com.apple.cltm"));
-    if (modeRef != NULL) {
-        if (CFGetTypeID(modeRef) == CFStringGetTypeID()) {
-            mode = [(__bridge NSString *)modeRef copy];
-        }
-        CFRelease(modeRef);
-    }
-    uint64_t value = CLTSModeValueForString(mode);
-    notify_set_state(CLTSSessionToken, 1ULL | (value << 8));
+    uint64_t charge = CLTSModeValueForString(CLTSCopyLimitOnlyMode(CFSTR("clLimitMode")));
+    uint64_t idle = CLTSModeValueForString(CLTSCopyLimitOnlyMode(CFSTR("clLimitIdleMode")));
+    notify_set_state(CLTSSessionToken, 1ULL | (charge << 8) | (idle << 16));
     CLTSSessionEvaluate();
 }
 
@@ -283,12 +321,13 @@ __attribute__((constructor)) static void CLTSInit(void) {
         }
         // 生命周期日志（零行为改动）：注入/注册/重挂一次性快照，log show 按
         // thermalmonitord 进程检索（[CLThermalSim] 前缀）。
-        uint64_t restoredLimit = 0;
-        BOOL restoredEnabled = CLTSSessionConfig(&restoredLimit);
-        NSLog(@"[CLThermalSim] ctor done apply_reg=%u session_reg=%u interest=%@ iops=%@ restore_enabled=%d restore_mode=%llu",
+        uint64_t restoredCharge = 0;
+        uint64_t restoredIdle = 0;
+        BOOL restoredEnabled = CLTSSessionConfig(&restoredCharge, &restoredIdle);
+        NSLog(@"[CLThermalSim] ctor done apply_reg=%u session_reg=%u interest=%@ iops=%@ restore_enabled=%d restore_charge=%llu restore_idle=%llu",
               applyReg, sessionReg,
               CLTSBatteryNotifier != IO_OBJECT_NULL ? @"ok" : @"failed",
               CLTSPowerSourceRef != NULL ? @"ok" : @"failed",
-              restoredEnabled, (unsigned long long)restoredLimit);
+              restoredEnabled, (unsigned long long)restoredCharge, (unsigned long long)restoredIdle);
     }
 }

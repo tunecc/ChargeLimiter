@@ -5099,12 +5099,19 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             // 会话通道内核态为 daemon 视角读数（App 侧另有独立读法，互相印证写侧是否存活）
             kv[@"thermal_apply_source"] = @"daemon-probe";
             BOOL loChannelEnabled = NO;
-            uint64_t loChannelMode = 0;
-            CLThermalReadSessionChannel(&loChannelEnabled, &loChannelMode);
-            kv[@"limit_only_session_channel"] = loChannelEnabled ? CLThermalModeName(loChannelMode) : @"off";
-            // 仅限流会话诊断（spec B5）：root 域会话键状态与当前档位
+            uint64_t loChannelCharge = 0;
+            uint64_t loChannelIdle = 0;
+            CLThermalReadSessionChannel(&loChannelEnabled, &loChannelCharge, &loChannelIdle);
+            // 会话通道内核态为 daemon 视角读数（App 侧另有独立读法，互相印证写侧是否存活）。
+            // 会话未在场时两个档位都报 off：那一侧档位通道归完整控制的 daemon 独写。
+            kv[@"limit_only_session_channel"] = loChannelEnabled ? CLThermalModeName(loChannelCharge) : @"off";
+            kv[@"limit_only_idle_session_channel"] = loChannelEnabled ? CLThermalModeName(loChannelIdle) : @"off";
+            // 仅限流会话诊断（spec B5）：root 域会话键状态与两个分时段档位
             kv[@"limit_only_session_enabled"] = @(getLimitOnlySessionEnabled());
             kv[@"limit_only_level"] = getLimitOnlyLevel();
+            // 平时档位（limit-only-idle-thermal-level）：与 limit_only_level 同为兜底值，
+            // App 侧以本地 KV 为权威（完整控制态下未配置项上报 off，会覆盖用户选过的关闭）
+            kv[@"limit_only_idle_level"] = getLimitOnlyIdleLevel();
             kv[@"use_smart"] = @(g_use_smart);
             kv[@"smart_charge_status"] = @(g_smartChargeStatus);
             kv[@"smart_charge_managed_by_daemon"] = @(g_tempSmartChargeDisabledByCL);
@@ -5929,8 +5936,9 @@ static int dumpThermalDiagnostics(void) {
     uint64_t applyRaw = 0;
     BOOL applyRead = CLThermalReadApplyChannel(&applyRaw);
     BOOL sessionEnabled = NO;
-    uint64_t sessionMode = 0;
-    BOOL sessionRead = CLThermalReadSessionChannel(&sessionEnabled, &sessionMode);
+    uint64_t sessionCharge = 0;
+    uint64_t sessionIdle = 0;
+    BOOL sessionRead = CLThermalReadSessionChannel(&sessionEnabled, &sessionCharge, &sessionIdle);
     NSString* thermalState = getThermalSimulationMode(); // 本进程热状态探针
     NSString* external = CLThermalExternalSimulationSource();
     // 偏好面：root 域读方仅 root 进程有效；mobile 下值不代表 root 域真相。
@@ -5942,6 +5950,7 @@ static int dumpThermalDiagnostics(void) {
     }
     id prefEnabled = isRoot ? (cltm[@"clLimitSessionEnabled"] ?: @(getLimitOnlySessionEnabled() ? YES : NO)) : nil;
     id prefMode = isRoot ? (cltm[@"clLimitMode"] ?: getLimitOnlyLevel()) : nil;
+    id prefIdleMode = isRoot ? (cltm[@"clLimitIdleMode"] ?: getLimitOnlyIdleLevel()) : nil;
     id prefMirror = isRoot ? (cltm[@"thermalSimulationMode"] ?: getThermalConfigMode()) : nil;
     BOOL retiredLocked = isRoot && cltm[@"thermalSimulationLocked"] != nil;
     BOOL retiredPpm = isRoot && cltm[@"ppmSimulationMode"] != nil;
@@ -5953,12 +5962,13 @@ static int dumpThermalDiagnostics(void) {
         @"\"apply_channel\":{"
         @"\"read\":%@,\"raw\":%llu,\"mode\":\"%@\"},"
         @"\"session_channel\":{"
-        @"\"read\":%@,\"raw\":%llu,\"enabled\":%@,\"mode\":\"%@\"},"
+        @"\"read\":%@,\"raw\":%llu,\"enabled\":%@,\"charge_mode\":\"%@\",\"idle_mode\":\"%@\"},"
         @"\"thermal_state\":\"%@\","
         @"\"prefs\":{"
         @"\"source\":\"%@\","
         @"\"cl_limit_session_enabled\":%@,"
         @"\"cl_limit_mode\":%@,"
+        @"\"cl_limit_idle_mode\":%@,"
         @"\"thermal_simulation_mode\":%@,"
         @"\"retired_locked_present\":%@,"
         @"\"retired_ppm_present\":%@},"
@@ -5966,11 +5976,13 @@ static int dumpThermalDiagnostics(void) {
         (long)time(0), geteuid(),
         applyRead ? @"true" : @"false", (unsigned long long)applyRaw, CLThermalModeName(applyRaw),
         sessionRead ? @"true" : @"false", (unsigned long long)(sessionEnabled ? 1ULL : 0ULL),
-        sessionEnabled ? @"true" : @"false", CLThermalModeName(sessionMode),
+        sessionEnabled ? @"true" : @"false",
+        CLThermalModeName(sessionCharge), CLThermalModeName(sessionIdle),
         thermalState,
         isRoot ? @"root_domain" : @"unreadable_from_mobile",
         isRoot ? ([prefEnabled boolValue] ? @"true" : @"false") : @"\"unreadable\"",
         isRoot ? [NSString stringWithFormat:@"\"%@\"", prefMode] : @"\"unreadable\"",
+        isRoot ? [NSString stringWithFormat:@"\"%@\"", prefIdleMode] : @"\"unreadable\"",
         isRoot ? [NSString stringWithFormat:@"\"%@\"", prefMirror] : @"\"unreadable\"",
         retiredLocked ? @"true" : @"false", retiredPpm ? @"true" : @"false",
         external == nil ? @"null" : [NSString stringWithFormat:@"\"%@\"", external]];
@@ -6168,23 +6180,41 @@ int main(int argc, char** argv) { // daemon_main
                 // 仅限流会话一次性写入（limit-only daemon-free spec B3）：写会话键 +
                 // thermal 初始镜像 + 通知即退。不启动 HTTP/策略循环/IOKit 监控/统计，
                 // 本进程存在时间 = 一次偏好写。App 经 spawnDaemonCLIVerb_C 调用。
+                // 两个档位（limit-only-idle-thermal-level）：argv[2]=充电时档位，
+                // argv[3]=平时档位（可省略，缺省 off）。off 是合法值——该时段不施加热模拟，
+                // 任何路径不得把它归一化成其他档位。
                 BOOL enabled = (argv[argIndex + 1][0] != '0');
-                NSString* mode = @"moderate";
+                NSString* chargeMode = @"off";
+                NSString* idleMode = @"off";
                 if (enabled && (argIndex + 2) < argc) {
-                    mode = @(argv[argIndex + 2]);
-                    if (![mode isEqualToString:@"nominal"] && ![mode isEqualToString:@"light"] &&
-                        ![mode isEqualToString:@"moderate"] && ![mode isEqualToString:@"heavy"]) {
-                        mode = @"moderate";
+                    NSString* candidate = @(argv[argIndex + 2]);
+                    if ([candidate isEqualToString:@"off"] || [candidate isEqualToString:@"nominal"] ||
+                        [candidate isEqualToString:@"light"] || [candidate isEqualToString:@"moderate"] ||
+                        [candidate isEqualToString:@"heavy"]) {
+                        chargeMode = candidate;
+                    }
+                }
+                if (enabled && (argIndex + 3) < argc) {
+                    NSString* candidate = @(argv[argIndex + 3]);
+                    if ([candidate isEqualToString:@"off"] || [candidate isEqualToString:@"nominal"] ||
+                        [candidate isEqualToString:@"light"] || [candidate isEqualToString:@"moderate"] ||
+                        [candidate isEqualToString:@"heavy"]) {
+                        idleMode = candidate;
                     }
                 }
                 NSDictionary* bat = nil;
                 BOOL plugged = NO;
+                BOOL charging = NO;
                 if (0 == getBatInfo(&bat, YES) && bat != nil) {
                     plugged = isAdaptorConnect(bat, @NO);
+                    // IsCharging 缺失时按"正在充电"：与 tweak CLTSIsCharging 同向的容错——
+                    // 误判充电会保留限流（更安全的错误方向），误判未充电会让插电时限流静默失效
+                    id isChargingValue = bat[@"IsCharging"];
+                    charging = plugged && (isChargingValue == nil || [isChargingValue boolValue]);
                 }
-                setLimitOnlySession(enabled, mode, plugged);
-                NSLog2(@"%@ apply_limit_only enabled=%d mode=%@ plugged=%d",
-                               log_prefix, enabled, mode, plugged);
+                setLimitOnlySession(enabled, chargeMode, idleMode, charging);
+                NSLog2(@"%@ apply_limit_only enabled=%d charge=%@ idle=%@ plugged=%d charging=%d",
+                               log_prefix, enabled, chargeMode, idleMode, plugged, charging);
                 return 0;
             } else if (0 == strcmp(argv[argIndex], "dump_thermal")) {
                 // 限流通路只读排障 dump（fix-thermal-limit-live-loop D1）：SSH 调用。

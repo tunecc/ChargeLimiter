@@ -39,6 +39,13 @@ typedef NS_ENUM(NSInteger, CLLimitOnlyVerifyState) {
     CLLimitOnlyVerifyFailed         // 超窗未达标（可重试）
 };
 
+// 仅限流会话当前生效时段（limit-only-idle-thermal-level：分时段互斥裁决，与 tweak 同判据）
+typedef NS_ENUM(NSInteger, CLLimitOnlyActiveScope) {
+    CLLimitOnlyScopeOff = 0,        // 两侧档位皆关闭：不施加热模拟
+    CLLimitOnlyScopeCharging,       // 插电且系统正在充电：取充电时档位
+    CLLimitOnlyScopeIdle            // 未插电或插线未充电：取平时档位
+};
+
 typedef NS_ENUM(NSInteger, CLHoldModeBehavior) {
     CLHoldModeBehaviorBalanced = 0,
     CLHoldModeBehaviorPowerFirst,
@@ -148,7 +155,9 @@ extern NSNotificationName const CLDaemonStatusDidChangeNotification;
 
 #pragma mark - 仅限流模式（daemon-free）
 @property(nonatomic, assign, readonly) CLOperationMode operationMode; // 由 enable/limit_only_mode 派生
-@property(nonatomic, copy) NSString *limitOnlyLevel;             // 仅限流档位 off/nominal/light/moderate/heavy
+@property(nonatomic, copy) NSString *limitOnlyLevel;             // 仅限流·充电时档位 off/nominal/light/moderate/heavy
+@property(nonatomic, copy) NSString *limitOnlyIdleLevel;         // 仅限流·平时档位（缺键按 off）
+@property(nonatomic, assign, readonly) CLLimitOnlyActiveScope limitOnlyActiveScope; // 当前生效时段（分时段互斥裁决）
 @property(nonatomic, assign, readonly) BOOL limitOnlySessionEnabled; // daemon 报告的 root 域会话键
 @property(nonatomic, assign, readonly) BOOL directPlugConnected;     // 直读插电状态（零 daemon 依赖）
 @property(nonatomic, assign, readonly) BOOL directReadAvailable;     // 直读是否成功（失败回退 daemon API）
@@ -158,7 +167,8 @@ extern NSNotificationName const CLDaemonStatusDidChangeNotification;
 
 #pragma mark - 诚实诊断面（fix-thermal-limit-live-loop D3）
 @property(nonatomic, assign, readonly) BOOL sessionChannelEnabled;          // 会话通道内核态 enabled 位
-@property(nonatomic, copy, readonly, nullable) NSString *sessionChannelMode; // 会话通道档位（内核态解码；nil=读取失败）
+@property(nonatomic, copy, readonly, nullable) NSString *sessionChannelMode; // 会话通道·充电时档位（内核态解码；nil=读取失败）
+@property(nonatomic, copy, readonly, nullable) NSString *sessionChannelIdleMode; // 会话通道·平时档位（内核态解码；nil=读取失败）
 @property(nonatomic, copy, readonly, nullable) NSString *externalSimulationSource; // 外部模拟源在场（powercuff）
 @property(nonatomic, copy, readonly) NSString *thermalApplySource;          // 应用结果来源：app-probe / daemon-probe
 @property(nonatomic, assign, readonly) NSTimeInterval thermalApplyCheckedAt; // 应用结果最近判定时间（App 探针口径）
@@ -166,8 +176,13 @@ extern NSNotificationName const CLDaemonStatusDidChangeNotification;
 // 直读会话状态：AppleSmartBattery 插电判定 + thermalState 生效验证（零 daemon 依赖）
 - (void)refreshDirectSessionState;
 
-// 仅限流档位写入：一次性 root 进程（daemon CLI 动词 apply_limit_only）+ 本进程探针验证
-- (void)applyLimitOnlyLevel:(NSString *)mode completion:(nullable void (^)(BOOL success))completion;
+// 仅限流两个分时段档位写入：一次性 root 进程（daemon CLI 动词 apply_limit_only）+ 本进程探针验证。
+// chargeMode = 插电充电时档位；idleMode = 未插电/插线未充电时档位。off 是合法值（该时段不施加）。
+- (void)applyLimitOnlyLevelsWithChargeMode:(NSString *)chargeMode
+                                  idleMode:(NSString *)idleMode
+                                completion:(nullable void (^)(BOOL success))completion;
+// 当前生效时段对应的档位名（off/nominal/light/moderate/heavy）；两侧皆关时返回 off
+- (NSString *)limitOnlyActiveLevel;
 
 // 三态主开关编排（spec B1：先改 daemon 状态，后写 tweak 会话，保证还原不清会话）
 - (void)switchToMode:(CLOperationMode)mode completion:(nullable void (^)(BOOL success))completion;

@@ -10,7 +10,7 @@ extern NSDictionary* getAllKV_C(void);
 extern void setlocalKV_C(NSString* key, id val);
 extern int spawnDaemonCLIVerb_C(NSArray<NSString*>* verbArgs); // utils.mm：一次性 root CLI（仅限流会话写入）
 // utils.mm 内核态只读辅助（fix-thermal-limit-live-loop D3，C 链接，App/daemon 共用）
-extern BOOL CLThermalReadSessionChannel(BOOL *enabled, uint64_t *mode);
+extern BOOL CLThermalReadSessionChannel(BOOL *enabled, uint64_t *chargeMode, uint64_t *idleMode);
 extern NSString *CLThermalModeName(uint64_t mode);
 extern NSString *CLThermalExternalSimulationSource(void);
 
@@ -81,12 +81,14 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
 @property (nonatomic, assign) BOOL limitOnlyModeFlag;      // conf: limit_only_mode
 @property (nonatomic, assign) BOOL limitOnlySessionEnabled; // daemon 报告的 root 域会话键
 @property (nonatomic, assign) BOOL directPlugConnected;     // 直读插电（零 daemon 依赖）
+@property (nonatomic, assign) BOOL directIsCharging;        // 直读充电态（IsCharging 不可读时按 YES）
 @property (nonatomic, assign) BOOL directReadAvailable;     // 直读是否成功
 @property (nonatomic, assign) BOOL limitOnlyApplied;        // thermalState 探针判定
 
 // 诚实诊断面内部状态（fix-thermal-limit-live-loop D3/D4）
 @property (nonatomic, assign) BOOL sessionChannelEnabled;
 @property (nonatomic, copy) NSString *sessionChannelMode;
+@property (nonatomic, copy) NSString *sessionChannelIdleMode;
 @property (nonatomic, copy) NSString *externalSimulationSource;
 @property (nonatomic, copy) NSString *thermalApplySource;
 @property (nonatomic, assign) NSTimeInterval thermalApplyCheckedAt;
@@ -94,6 +96,7 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
 @property (nonatomic, assign) NSTimeInterval limitOnlyVerifyIssuedAt;
 @property (nonatomic, strong) NSTimer *limitOnlyVerifyTimer; // 窗口限定计时器（非常驻）
 @property (nonatomic, assign) BOOL previousDirectPlugConnected;
+@property (nonatomic, assign) CLLimitOnlyActiveScope previousLimitOnlyScope; // 上一次的生效时段（边沿判据）
 @property (nonatomic, assign) BOOL limitOnlyReestablishDone;  // D5 启动重建每启动至多一次
 @property (nonatomic, copy) NSString *limitOnlyReestablishStatus; // D5 重建结果（诊断可见）
 // thermal-sim-settings：生效范围由 daemon 裁决上报，外部只读、内部按刷新结果覆写
@@ -179,6 +182,12 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
         ![limitOnlyLevelValue isEqualToString:@"off"]) {
         _limitOnlyLevel = limitOnlyLevelValue;
     }
+    NSString *limitOnlyIdleLevelValue = data[@"limit_only_idle_level"];
+    // 平时档位同上：缺键/未配置时保持本地 KV 的既有值，不用 daemon 的 off 缺省覆盖用户选过的关闭
+    if ([limitOnlyIdleLevelValue isKindOfClass:[NSString class]] && limitOnlyIdleLevelValue.length > 0 &&
+        ![limitOnlyIdleLevelValue isEqualToString:@"off"]) {
+        _limitOnlyIdleLevel = limitOnlyIdleLevelValue;
+    }
     _fullChargeScheduleEnabled = [data[@"full_charge_sched_enabled"] boolValue];
     _fullChargeScheduleIntervalDays = [data[@"full_charge_sched_interval_days"] integerValue];
     _fullChargeScheduleStartMinute = [data[@"full_charge_sched_start_minute"] integerValue];
@@ -220,6 +229,8 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
     if (!m[@"full_charge_sched_duration_hours"]) m[@"full_charge_sched_duration_hours"] = @4;
     if (!m[@"limit_only_mode"]) m[@"limit_only_mode"] = @NO;
     if (!m[@"limit_only_level"]) m[@"limit_only_level"] = @"moderate";
+    // 平时档位缺省关闭；刻意不填 "off" 字面值——applyConfigData 的防污染门控会跳过 off，
+    // 缺键时由 init 缺省（_limitOnlyIdleLevel = @"off"）提供，用户选过的关闭也不会被覆盖
     return m;
 }
 
@@ -250,6 +261,7 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
         _fullChargeScheduleStartMinute = 120;
         _fullChargeScheduleDurationHours = 4;
         _limitOnlyLevel = @"moderate"; // 档位缺省中度（fix-limit-only-restart-state M4）
+        _limitOnlyIdleLevel = @"off";  // 平时档位缺省关闭：与升级前"拔线即解除"的实际效果一致
         _policyTransitionHistory = @[];
         _policyEventHistory = @[];
     }
@@ -466,11 +478,34 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
     return _limitOnlyModeFlag ? CLOperationModeLimitOnly : CLOperationModeOff;
 }
 
-// D5 同款探针：系统热状态达到限流档级别即判已生效（本进程读数，零 daemon 依赖）。
+// 分时段裁决（limit-only-idle-thermal-level）：与 tweak CLTSSessionEvaluate 同一判据——
+// 插电且系统正在充电 → 充电时档位；未插电或插线未充电 → 平时档位。
+// IsCharging 不可读时按"正在充电"处理（与 tweak 同向容错：误判充电会保留限流，更安全）。
+// App 不自行推导第二套真相以外的行为：这里只决定"此刻验证哪一档、状态行报哪一档"。
+- (CLLimitOnlyActiveScope)limitOnlyActiveScope {
+    NSString *charge = self.limitOnlyLevel ?: @"off";
+    NSString *idle = self.limitOnlyIdleLevel ?: @"off";
+    BOOL chargingApplies = _directPlugConnected && _directIsCharging;
+    if (chargingApplies) {
+        return [charge isEqualToString:@"off"] ? CLLimitOnlyScopeOff : CLLimitOnlyScopeCharging;
+    }
+    return [idle isEqualToString:@"off"] ? CLLimitOnlyScopeOff : CLLimitOnlyScopeIdle;
+}
+
+// 当前生效时段对应的档位名；两侧皆关时返回 off。
+- (NSString *)limitOnlyActiveLevel {
+    switch (self.limitOnlyActiveScope) {
+        case CLLimitOnlyScopeCharging: return self.limitOnlyLevel ?: @"off";
+        case CLLimitOnlyScopeIdle: return self.limitOnlyIdleLevel ?: @"off";
+        case CLLimitOnlyScopeOff: return @"off";
+    }
+}
+
+// D5 同款探针：系统热状态达到当前生效档位即判已生效（本进程读数，零 daemon 依赖）。
 // off/nominal 无可验证通路，对齐 daemon D5 off 跳过语义直接记已生效。
 - (BOOL)computeLimitOnlyApplied {
     if (self.operationMode != CLOperationModeLimitOnly) return NO;
-    CLThermalMode mode = [self thermalModeFromString:self.limitOnlyLevel];
+    CLThermalMode mode = [self thermalModeFromString:self.limitOnlyActiveLevel];
     NSInteger expected;
     switch (mode) {
         case CLThermalModeLight: expected = 1; break;
@@ -492,6 +527,7 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
 - (void)refreshDirectSessionState {
     BOOL readOK = NO;
     BOOL plugged = NO;
+    BOOL isChargingReadable = NO;
     io_service_t serv = IOServiceGetMatchingService(0, IOServiceMatching("AppleSmartBattery"));
     if (serv != IO_OBJECT_NULL) {
         CFTypeRef capable = IORegistryEntryCreateCFProperty(serv, CFSTR("ExternalChargeCapable"), kCFAllocatorDefault, 0);
@@ -516,6 +552,8 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
         }
         if (readOK && isCharging != NULL && CFGetTypeID(isCharging) == CFBooleanGetTypeID()) {
             self.isCharging = CFBooleanGetValue(isCharging);
+            _directIsCharging = CFBooleanGetValue(isCharging);
+            isChargingReadable = YES;
         }
         if (readOK && capacity != NULL && CFGetTypeID(capacity) == CFNumberGetTypeID()) {
             self.currentCapacity = [(__bridge NSNumber *)capacity integerValue];
@@ -527,41 +565,56 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
         if (capacity) CFRelease(capacity);
         IOObjectRelease(serv);
     }
+    // 充电判定（limit-only-idle-thermal-level）：IsCharging 缺失、类型不符或整次 IOKit
+    // 读取失败时都按"正在充电"处理——与 tweak CLTSIsCharging 同向的容错：误判充电会保留
+    // 限流（更安全的错误方向），误判未充电会让插电时的限流静默失效。
+    // 放在读取块之外：读失败时也必须落到确定值，不能沿用上一轮的陈旧值。
+    _directIsCharging = (readOK && isChargingReadable) ? _directIsCharging : YES;
     _directReadAvailable = readOK;
     _directPlugConnected = readOK ? plugged : _externalConnected;
     _limitOnlyApplied = [self computeLimitOnlyApplied];
     // 诚实诊断面（D3）：内核态会话通道 + 外部模拟污染检测（App mobile 可读，无特权；
     // 会话通道 enabled 缺失而写方已写过 = 写侧问题的独立证据）
     BOOL sessionEnabled = NO;
-    uint64_t sessionModeRaw = 0;
-    if (CLThermalReadSessionChannel(&sessionEnabled, &sessionModeRaw)) {
+    uint64_t sessionChargeRaw = 0;
+    uint64_t sessionIdleRaw = 0;
+    if (CLThermalReadSessionChannel(&sessionEnabled, &sessionChargeRaw, &sessionIdleRaw)) {
         _sessionChannelEnabled = sessionEnabled;
-        _sessionChannelMode = CLThermalModeName(sessionModeRaw);
+        _sessionChannelMode = CLThermalModeName(sessionChargeRaw);
+        _sessionChannelIdleMode = CLThermalModeName(sessionIdleRaw);
     } else {
         _sessionChannelEnabled = NO;    // 读取失败：不用过期值冒充（派生走本地键回退）
         _sessionChannelMode = nil;
+        _sessionChannelIdleMode = nil;
     }
     _externalSimulationSource = CLThermalExternalSimulationSource();
     [self refreshLimitOnlyDiagnostics];
-    // D4 插电边沿：插电（仅限流模式）重开验证窗口并自愈重下发会话（Bug B2 2026-10-05
-    // 真机：首次插电 tweak 边沿评估可能缺位——App 侧重下发一次，走通知面直应用）；
-    // 拔线停窗回 Unknown（未插电无验证对象）
-    if (_previousDirectPlugConnected != _directPlugConnected) {
-        _previousDirectPlugConnected = _directPlugConnected;
-        if (_directPlugConnected && self.operationMode == CLOperationModeLimitOnly) {
-            [self startLimitOnlyVerifyWindow];
-            NSString *edgeLevel = (_limitOnlyLevel.length > 0 && ![_limitOnlyLevel isEqualToString:@"off"]) ? _limitOnlyLevel : @"moderate";
-            [self applyLimitOnlyLevel:edgeLevel completion:nil]; // 自愈：不等用户点重试
-        } else if (!_directPlugConnected) {
+    // 生效时段边沿（limit-only-idle-thermal-level）：边沿从"插电/拔线"扩为"生效时段翻转"——
+    // 插线但系统暂停充电（优化充电 / 80% 限制）也会让生效方从充电时档位转到平时档位。
+    // 两种边沿都要重开/停掉验证窗口；只有插拔边沿才自愈重下发会话。
+    // 区分理由：IsCharging 在插着线时可能短暂翻转，每次翻转都 spawn 一次性 root 进程
+    // 会造成无谓churn；tweak 自己有 IOPS/interest 边沿 + 30s watchdog 兜底，
+    // 不需要 App 侧对每一次充电态抖动都补一次写。
+    CLLimitOnlyActiveScope scope = self.limitOnlyActiveScope;
+    BOOL scopeChanged = (_previousLimitOnlyScope != scope);
+    BOOL plugEdge = (_previousDirectPlugConnected != _directPlugConnected);
+    _previousDirectPlugConnected = _directPlugConnected;
+    _previousLimitOnlyScope = scope;
+    if (self.operationMode == CLOperationModeLimitOnly && (plugEdge || scopeChanged)) {
+        if (scope == CLLimitOnlyScopeOff) {
+            // 当前时段没有待生效对象：停窗回 Unknown，不刷假"验证失败"
             _limitOnlyVerifyState = CLLimitOnlyVerifyUnknown;
             [self stopLimitOnlyVerifyWindow];
-            [[NSNotificationCenter defaultCenter] postNotificationName:CLConfigDidUpdateNotification object:self];
-            // thermal-limit-edge-reliability：拔电边沿纵深——重下发一次会话（verb 内部按
-            // 当前插电态落 off），与 tweak 的 IOPS/interest 边沿互为冗余
-            if (self.operationMode == CLOperationModeLimitOnly) {
-                NSString *unplugLevel = (_limitOnlyLevel.length > 0 && ![_limitOnlyLevel isEqualToString:@"off"]) ? _limitOnlyLevel : @"moderate";
-                [self applyLimitOnlyLevel:unplugLevel completion:nil];
-            }
+        } else {
+            [self startLimitOnlyVerifyWindow];
+        }
+        [[NSNotificationCenter defaultCenter] postNotificationName:CLConfigDidUpdateNotification object:self];
+        if (plugEdge) {
+            // Bug B2 自愈（2026-10-05 真机：首次插电 tweak 边沿评估可能缺位）：
+            // App 侧重下发一次会话，tweak 内部按当前插电/充电态裁决，与它的边沿互为冗余
+            [self applyLimitOnlyLevelsWithChargeMode:self.limitOnlyLevel
+                                           idleMode:self.limitOnlyIdleLevel
+                                         completion:nil];
         }
     }
 }
@@ -578,11 +631,14 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
     }
     _thermalApplySource = @"app-probe";
     _thermalApplyCheckedAt = [[NSDate date] timeIntervalSince1970];
-    if (_sessionChannelEnabled && _sessionChannelMode.length > 0) {
-        _thermalConfigMode = _sessionChannelMode; // 如实显示（含 off）
+    // 档位如实显示当前生效时段的那一档（limit-only-idle-thermal-level）：会话在内核态时
+    // 取内核态解码（含合法 off），否则回退本地键。回退值按生效时段选，不固定报充电时档位。
+    NSString *fallback = self.limitOnlyActiveLevel;
+    if (_sessionChannelEnabled) {
+        NSString *channel = self.limitOnlyActiveScope == CLLimitOnlyScopeIdle ? _sessionChannelIdleMode : _sessionChannelMode;
+        _thermalConfigMode = channel.length > 0 ? channel : fallback;
     } else {
-        // 会话不在内核态：回退本地档位键（off 如实显示），仅键缺失才显示 moderate 缺省
-        _thermalConfigMode = _limitOnlyLevel.length > 0 ? _limitOnlyLevel : @"moderate";
+        _thermalConfigMode = fallback.length > 0 ? fallback : @"moderate";
     }
     _thermalApplyStatus = _limitOnlyApplied ? @"applied" : @"unverified";
 }
@@ -593,9 +649,10 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
 static NSTimeInterval const CLLimitOnlyVerifyWindowSeconds = 15.0;
 
 - (void)startLimitOnlyVerifyWindow {
-    // Bug B1 修复（2026-10-05 真机）：未插电没有"待生效对象"——不开验证窗口，
-    // 直接置 Unknown（否则 15s 后必然跳假"验证失败"）。
-    if (!_directPlugConnected) {
+    // Bug B1 修复（2026-10-05 真机）经 limit-only-idle-thermal-level 修订：没有"待生效
+    // 对象"才不开窗。未插电时验证对象是「平时档位」——平时档位非关闭就有对象，照常开窗；
+    // 两侧皆关（scope=off）时才停窗回 Unknown，否则 15s 后必然跳假"验证失败"。
+    if (self.limitOnlyActiveScope == CLLimitOnlyScopeOff) {
         _limitOnlyVerifyState = CLLimitOnlyVerifyUnknown;
         [self stopLimitOnlyVerifyWindow];
         return;
@@ -649,15 +706,20 @@ static NSTimeInterval const CLLimitOnlyVerifyWindowSeconds = 15.0;
     _limitOnlyReestablishDone = YES;
     if (self.operationMode != CLOperationModeLimitOnly) return;
     [self refreshDirectSessionState]; // 先读会话通道内核态（判据数据源）
-    NSString *level = (_limitOnlyLevel.length > 0 && ![_limitOnlyLevel isEqualToString:@"off"]) ? _limitOnlyLevel : @"moderate";
+    // 两个档位都参与一致性核对（limit-only-idle-thermal-level）：任一档与内核态解码
+    // 不一致都要补写。缺省值按各档既有规则：充电时档位缺省中度，平时档位缺省关闭。
+    NSString *charge = (_limitOnlyLevel.length > 0 && ![_limitOnlyLevel isEqualToString:@"off"]) ? _limitOnlyLevel : @"moderate";
+    NSString *idle = (_limitOnlyIdleLevel.length > 0) ? _limitOnlyIdleLevel : @"off";
     // spec 口径：缺失（enabled 位不在）或不一致（在场但档位 ≠ 本地配置）都补写
     BOOL missing = !_sessionChannelEnabled;
-    BOOL mismatch = _sessionChannelEnabled && ![_sessionChannelMode isEqualToString:level];
+    BOOL mismatch = _sessionChannelEnabled &&
+                    (![_sessionChannelMode isEqualToString:charge] ||
+                     ![_sessionChannelIdleMode isEqualToString:idle]);
     if (!missing && !mismatch) return; // 会话在内核态且一致：无需补写
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        int rc = spawnDaemonCLIVerb_C(@[@"apply_limit_only", @"1", level]);
+        int rc = spawnDaemonCLIVerb_C(@[@"apply_limit_only", @"1", charge, idle]);
         if (rc != 0) {
-            rc = spawnDaemonCLIVerb_C(@[@"apply_limit_only", @"1", level]);
+            rc = spawnDaemonCLIVerb_C(@[@"apply_limit_only", @"1", charge, idle]);
         }
         dispatch_async(dispatch_get_main_queue(), ^{
             NSString *status = rc == 0 ? @"ok" : [NSString stringWithFormat:@"spawn_failed_%d", rc];
@@ -674,18 +736,26 @@ static NSTimeInterval const CLLimitOnlyVerifyWindowSeconds = 15.0;
     });
 }
 
-- (void)applyLimitOnlyLevel:(NSString *)mode completion:(void (^)(BOOL))completion {
-    // 档位归一化：off/未设置按 moderate（档位选择器不提供 off，缺省即中度）
-    NSString *level = (mode.length > 0 && ![mode isEqualToString:@"off"]) ? mode : @"moderate";
-    self.limitOnlyLevel = level;
+// 两个分时段档位一次性写入（limit-only-idle-thermal-level）。
+// off 是合法值（该时段不施加热模拟），此处刻意不做归一化——归一化会把用户选的「关闭」
+// 偷偷改成「中度」，正是本次要修掉的假控件。缺省值只发生在键从未写过时：充电时档位
+// 缺省中度，平时档位缺省关闭（与升级前"插电时限流、拔线解除"的实际效果一致）。
+- (void)applyLimitOnlyLevelsWithChargeMode:(NSString *)chargeMode
+                                  idleMode:(NSString *)idleMode
+                                completion:(void (^)(BOOL success))completion {
+    NSString *charge = (chargeMode.length > 0) ? chargeMode : @"moderate";
+    NSString *idle = (idleMode.length > 0) ? idleMode : @"off";
+    self.limitOnlyLevel = charge;
+    self.limitOnlyIdleLevel = idle;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         // 一次性 root 进程写会话键 + thermal 镜像（spec B3/B5）：daemon 始终不驻留；
         // 档位偏好走本地配置（setlocalKV_C），同样不拉起 daemon。失败重试一次。
-        int rc = spawnDaemonCLIVerb_C(@[@"apply_limit_only", @"1", level]);
+        int rc = spawnDaemonCLIVerb_C(@[@"apply_limit_only", @"1", charge, idle]);
         if (rc != 0) {
-            rc = spawnDaemonCLIVerb_C(@[@"apply_limit_only", @"1", level]);
+            rc = spawnDaemonCLIVerb_C(@[@"apply_limit_only", @"1", charge, idle]);
         }
-        setlocalKV_C(@"limit_only_level", level);
+        setlocalKV_C(@"limit_only_level", charge);
+        setlocalKV_C(@"limit_only_idle_level", idle);
         // 给 thermalState 一点收敛窗口（对齐 daemon D5 3s 探针）后刷新验证
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)1.5 * NSEC_PER_SEC),
                        dispatch_get_main_queue(), ^{
@@ -709,24 +779,33 @@ static NSTimeInterval const CLLimitOnlyVerifyWindowSeconds = 15.0;
         BOOL ok = YES;
         switch (mode) {
             case CLOperationModeLimitOnly: {
-                // 档位归一化（fix-limit-only-restart-state）：off/未设置一律按 moderate
-                // 建立会话——完整控制阶段 get_conf 上报的 "off" 缺省值不得污染真实档位。
-                NSString *level = self.limitOnlyLevel;
-                if (level.length == 0 || [level isEqualToString:@"off"]) {
-                    level = @"moderate";
+                // 两个档位照本地 KV 的既有值建立会话，不做 off→moderate 归一化
+                // （limit-only-idle-thermal-level：off 是合法用户值，归一化即假控件）。
+                // 键从未写过时用缺省：充电时档位中度、平时档位关闭。
+                // 完整控制阶段 get_conf 上报的 "off" 缺省值不会污染真实档位——applyConfigData
+                // 对 off 一律跳过不覆写，本地 KV 才是权威值。
+                NSString *charge = self.limitOnlyLevel;
+                if (charge.length == 0) {
+                    charge = @"moderate";
                 }
-                self.limitOnlyLevel = level;
+                NSString *idle = self.limitOnlyIdleLevel;
+                if (idle.length == 0) {
+                    idle = @"off";
+                }
+                self.limitOnlyLevel = charge;
+                self.limitOnlyIdleLevel = idle;
                 // 先落盘模式标志与档位，再停常驻（spec B1 修订次序）：daemon 关停期的
                 // 配置写经共享锁与本写串行，limit_only_mode 不再被覆盖丢失；
                 // daemon 配置（模式/档位/enable）仍全部先于 CLI 会话建立。
-                setlocalKV_C(@"limit_only_level", level);
+                setlocalKV_C(@"limit_only_level", charge);
+                setlocalKV_C(@"limit_only_idle_level", idle);
                 setlocalKV_C(@"limit_only_mode", @YES);
                 if (current == CLOperationModeFullControl) {
                     [self saveConfigKey:@"enable" value:@NO completion:nil];
                 }
-                int rc = spawnDaemonCLIVerb_C(@[@"apply_limit_only", @"1", level]);
+                int rc = spawnDaemonCLIVerb_C(@[@"apply_limit_only", @"1", charge, idle]);
                 if (rc != 0) {
-                    rc = spawnDaemonCLIVerb_C(@[@"apply_limit_only", @"1", level]); // 一次性重试
+                    rc = spawnDaemonCLIVerb_C(@[@"apply_limit_only", @"1", charge, idle]); // 一次性重试
                 }
                 ok = (rc == 0);
                 break;

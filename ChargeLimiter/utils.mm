@@ -3661,15 +3661,21 @@ static void CLPostThermalApplyNotification(NSString* mode) {
                                          NULL, NULL, YES);
 }
 
-// 会话通道内核态推送（tweak 插拔边沿数据源）：state = enabled(bit0) | 档位值(bit8-15)。
-static void CLPostThermalSessionNotification(BOOL enabled, NSString* mode) {
+// 会话通道内核态推送（tweak 插拔边沿数据源）：
+// state = enabled(bit0) | 充电时档位(bit8-15) | 平时档位(bit16-23)。
+// 两个档位各自可为零（=关闭）。bits16-23 为 0 时旧安装与"平时档位确实是关闭"解读一致，
+// 因此升级瞬间不会错档，也不需要一次性改写既有键值。
+static void CLPostThermalSessionNotification(BOOL enabled, NSString* chargeMode, NSString* idleMode) {
     static int token = -1;
     if (token == -1) {
         if (notify_register_check([CLThermalSessionNotification UTF8String], &token) != NOTIFY_STATUS_OK) {
             return;
         }
     }
-    notify_set_state(token, (enabled ? 1ULL : 0ULL) | (CLThermalModeValue(mode) << 8));
+    uint64_t state = (enabled ? 1ULL : 0ULL) |
+                     (CLThermalModeValue(chargeMode) << 8) |
+                     (CLThermalModeValue(idleMode) << 16);
+    notify_set_state(token, state);
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
                                          (__bridge CFStringRef)CLThermalSessionNotification,
                                          NULL, NULL, YES);
@@ -3708,7 +3714,7 @@ BOOL CLThermalReadApplyChannel(uint64_t *mode) {
     return YES;
 }
 
-BOOL CLThermalReadSessionChannel(BOOL *enabled, uint64_t *mode) {
+BOOL CLThermalReadSessionChannel(BOOL *enabled, uint64_t *chargeMode, uint64_t *idleMode) {
     static int token = -1;
     if (!CLThermalEnsureToken([CLThermalSessionNotification UTF8String], &token)) {
         return NO;
@@ -3718,7 +3724,9 @@ BOOL CLThermalReadSessionChannel(BOOL *enabled, uint64_t *mode) {
         return NO; // 读取失败不回填：调用方按未知处理，不用过期/默认值冒充
     }
     if (enabled != nil) *enabled = (state & 1ULL) != 0;
-    if (mode != nil) *mode = (state >> 8) & 0xFF;
+    if (chargeMode != nil) *chargeMode = (state >> 8) & 0xFF;
+    // bits16-23 为 0 = 平时档位关闭（旧安装缺该字段时同一解读，见写入侧注释）
+    if (idleMode != nil) *idleMode = (state >> 16) & 0xFF;
     return YES;
 }
 
@@ -3765,12 +3773,20 @@ void setThermalSimulationMode(NSString* mode) {
 }
 
 // === 仅限流会话（limit-only daemon-free，spec B2/B3）===
-// com.apple.cltm 域会话键：CLThermalSim tweak（thermalmonitord 内）据此维护
-// 插电时限流档、拔线回 off 的会话语义。写方仅限 root 进程（daemon CLI 动词 /
+// com.apple.cltm 域会话键：CLThermalSim tweak（thermalmonitord 内）据此维护分时段档位——
+// 插电充电时用充电时档位，其余时间用平时档位。写方仅限 root 进程（daemon CLI 动词 /
 // daemon 防御清理）；App（mobile）经 spawnDaemonCLIVerb_C 间接写入。
 static NSString* const CLLimitOnlySessionSuite = @"com.apple.cltm";
 static NSString* const CLLimitOnlySessionEnabledKey = @"clLimitSessionEnabled";
-static NSString* const CLLimitOnlyLevelKey = @"clLimitMode";
+static NSString* const CLLimitOnlyLevelKey = @"clLimitMode";       // 充电时档位
+static NSString* const CLLimitOnlyIdleLevelKey = @"clLimitIdleMode"; // 平时档位
+
+// 档位合法性：off 是合法用户值（该时段不施加热模拟），不得被归一化成其他档位。
+static BOOL CLIsValidLimitOnlyMode(NSString* mode) {
+    return [mode isEqualToString:@"off"] || [mode isEqualToString:@"nominal"] ||
+           [mode isEqualToString:@"light"] || [mode isEqualToString:@"moderate"] ||
+           [mode isEqualToString:@"heavy"];
+}
 
 BOOL getLimitOnlySessionEnabled() {
     NSUserDefaults* defs = [[NSUserDefaults alloc] initWithSuiteName:CLLimitOnlySessionSuite];
@@ -3780,47 +3796,50 @@ BOOL getLimitOnlySessionEnabled() {
 NSString* getLimitOnlyLevel() {
     NSUserDefaults* defs = [[NSUserDefaults alloc] initWithSuiteName:CLLimitOnlySessionSuite];
     NSString* mode = [defs stringForKey:CLLimitOnlyLevelKey];
-    if (![mode isEqualToString:@"off"] && ![mode isEqualToString:@"nominal"] &&
-        ![mode isEqualToString:@"light"] && ![mode isEqualToString:@"moderate"] &&
-        ![mode isEqualToString:@"heavy"]) {
-        return @"off";
-    }
-    return mode;
+    return CLIsValidLimitOnlyMode(mode) ? mode : @"off";
 }
 
-void setLimitOnlySession(BOOL enabled, NSString* mode, BOOL plugged) {
+// 平时档位：缺键（旧安装/从未配置）按关闭解读——这本身就是迁移结果，不需要一次性改写。
+NSString* getLimitOnlyIdleLevel() {
+    NSUserDefaults* defs = [[NSUserDefaults alloc] initWithSuiteName:CLLimitOnlySessionSuite];
+    NSString* mode = [defs stringForKey:CLLimitOnlyIdleLevelKey];
+    return CLIsValidLimitOnlyMode(mode) ? mode : @"off";
+}
+
+// 初始镜像按同一套判据落：chargingActive（插电且系统正在充电）→ 充电时档位，
+// 否则 → 平时档位。会话建立后的维护归 tweak，这里只负责写入瞬间不要留下错档。
+void setLimitOnlySession(BOOL enabled, NSString* chargeMode, NSString* idleMode, BOOL chargingActive) {
     NSUserDefaults* defs = [[NSUserDefaults alloc] initWithSuiteName:CLLimitOnlySessionSuite];
     if (enabled) {
         [defs setObject:@YES forKey:CLLimitOnlySessionEnabledKey];
-        if (![mode isEqualToString:@"off"] && ![mode isEqualToString:@"nominal"] &&
-            ![mode isEqualToString:@"light"] && ![mode isEqualToString:@"moderate"] &&
-            ![mode isEqualToString:@"heavy"]) {
-            mode = @"moderate"; // CLI 已校验，此处防御兜底
-        }
-        [defs setObject:mode forKey:CLLimitOnlyLevelKey];
-        // 初始镜像：插电 → 限流档；未插电 → off（会话后续维护归 tweak）。
-        NSString* thermal = (plugged && ![mode isEqualToString:@"off"]) ? mode : @"off";
-        [defs setObject:thermal forKey:@"thermalSimulationMode"];
+        // CLI 已校验，此处防御兜底：非法值按关闭，不偷偷升档
+        [defs setObject:(CLIsValidLimitOnlyMode(chargeMode) ? chargeMode : @"off") forKey:CLLimitOnlyLevelKey];
+        [defs setObject:(CLIsValidLimitOnlyMode(idleMode) ? idleMode : @"off") forKey:CLLimitOnlyIdleLevelKey];
     } else {
         [defs setObject:@NO forKey:CLLimitOnlySessionEnabledKey];
-        [defs setObject:@"off" forKey:@"thermalSimulationMode"];
     }
+    NSString* initial = chargingActive ? chargeMode : idleMode;
+    if (!CLIsValidLimitOnlyMode(initial)) {
+        initial = @"off";
+    }
+    [defs setObject:initial forKey:@"thermalSimulationMode"];
     CLScrubRetiredThermalKeys(defs);
     [defs synchronize];
     // 双通道：会话配置（tweak 插拔边沿数据源）+ 档位（即时生效）。
-    CLPostThermalSessionNotification(enabled, mode);
-    CLPostThermalApplyNotification((enabled && plugged && ![mode isEqualToString:@"off"]) ? mode : @"off");
+    CLPostThermalSessionNotification(enabled, chargeMode, idleMode);
+    CLPostThermalApplyNotification(initial);
 }
 
 void clearLimitOnlySessionKeys() {
     NSUserDefaults* defs = [[NSUserDefaults alloc] initWithSuiteName:CLLimitOnlySessionSuite];
     [defs removeObjectForKey:CLLimitOnlySessionEnabledKey];
     [defs removeObjectForKey:CLLimitOnlyLevelKey];
+    [defs removeObjectForKey:CLLimitOnlyIdleLevelKey];
     // 镜像归零：清掉会话后无人维护 thermal 键，防残留（daemon 完整控制随后自行重应用默认档）
     [defs setObject:@"off" forKey:@"thermalSimulationMode"];
     CLScrubRetiredThermalKeys(defs);
     [defs synchronize];
-    CLPostThermalSessionNotification(NO, @"off");
+    CLPostThermalSessionNotification(NO, @"off", @"off");
     CLPostThermalApplyNotification(@"off");
 }
 
