@@ -5917,13 +5917,16 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
                 session = CLL(@"未充电 · 生效验证中");
                 break;
         }
-    } else if (manager.directPlugConnected) {
+    } else if ([manager limitOnlyChargingPeriodApplies]) {
         // 插电充电中，但充电时档位为关：当前时段不施加热模拟。不说"两个档位均已关闭"——
         // 平时档位可能仍配着值，只是此刻用不上。
         session = CLL(@"已插电充电 · 充电时档位已关闭");
     } else {
-        // 未插电（或插线未充电），但平时档位为关：当前时段不施加热模拟。不说
-        // "两个档位均已关闭"——充电时档位可能仍配着值，插上电就会生效。
+        // 未插电，或插线但系统暂停充电（优化充电 / 80% 限制 / 已充满）：生效方是平时档位，
+        // 而它为关。不说"两个档位均已关闭"——充电时档位可能仍配着值，插上电就会生效。
+        // 判据必须与 limitOnlyActiveScope 同源（limitOnlyChargingPeriodApplies）：
+        // 只用 directPlugConnected 会把"插线未充电"错判成充电时段，于是这句话变成假话
+        // （第 4 轮验收 A8 的根因，出厂缺省态正好落入该组合）。
         session = CLL(@"未充电 · 平时档位已关闭");
     }
     [self updateCardValue:self.limitOnlyCard title:CLL(@"会话状态") value:session];

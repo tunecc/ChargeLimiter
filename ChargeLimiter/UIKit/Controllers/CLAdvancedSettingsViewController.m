@@ -2688,8 +2688,8 @@ static NSString *const CLThermalMergeNoticeShownKey = @"CLThermalMergeNoticeShow
             continue;   // banner 等非卡片
         }
         CLAdvSettingsCard *card = (CLAdvSettingsCard *)view;
-        // thermal-sim-settings D5：仅限流模式下档位通道归主页「限流档位」卡片，本卡整卡置灰。
-        // 与主开关关闭是两件独立的事，此处分别判定后合并生效。
+        // thermal-sim-settings D5：仅限流模式下档位通道归主页「高温模拟 / 充电限流」卡片，
+        // 本卡整卡置灰。与主开关关闭是两件独立的事，此处分别判定后合并生效。
         BOOL thermalLockedHere = [self isThermalCard:card] && [self thermalCardNotEditableHere];
         for (UIView *row in card.contentStack.arrangedSubviews) {
             NSInteger tag = row.tag;

@@ -141,10 +141,19 @@ class TestDaemonVerb(unittest.TestCase):
         self.assertIn("setLimitOnlySession(enabled, chargeMode, idleMode, charging)", seg)
 
     def test_verb_accepts_off(self):
+        """两个参数位各自都要接受 off
+
+        第 4 轮 Verifier 变异测试发现：只断言"动词段内某处出现过 off"时，把充电时档位
+        参数位（argIndex+2）的 off 接受删掉，测试仍然全绿——而第 1 轮 A3/A13 的缺陷
+        正在这一带。因此必须按参数位分别断言。
+        """
         seg = function_body(DAEMON, 'strcmp(argv[argIndex], "apply_limit_only")')
-        self.assertIn('isEqualToString:@"off"', seg, "off 必须是合法档位值")
         # 非法值兜底关闭，不偷偷升档
         self.assertNotIn('mode = @"moderate"', seg)
+        charge_branch = seg.split("(argIndex + 2) < argc")[1].split("(argIndex + 3) < argc")[0]
+        idle_branch = seg.split("(argIndex + 3) < argc")[1]
+        self.assertIn('isEqualToString:@"off"', charge_branch, "充电时档位参数位必须接受 off")
+        self.assertIn('isEqualToString:@"off"', idle_branch, "平时档位参数位必须接受 off")
 
     def test_get_conf_reports_idle_level(self):
         # daemon 的 get_conf 全量分支：按 api 字符串定位（HTTP 处理器里不是 strcmp 形式）
@@ -157,8 +166,12 @@ class TestAppSideScopeDecision(unittest.TestCase):
     """App 侧分时段裁决与验证门控"""
 
     def test_scope_uses_same_predicate_as_tweak(self):
+        # 判据经 limitOnlyChargingPeriodApplies 单点实现（第 4 轮 A8 修复）：
+        # scope 与 UI 的关闭分支共用它，不再各写一份。
         seg = function_body(MANAGER, "- (CLLimitOnlyActiveScope)limitOnlyActiveScope {")
-        self.assertIn("_directPlugConnected && _directIsCharging", seg)
+        self.assertIn("[self limitOnlyChargingPeriodApplies]", seg)
+        self.assertIn("_directPlugConnected && _directIsCharging",
+                      function_body(MANAGER, "- (BOOL)limitOnlyChargingPeriodApplies {"))
         self.assertIn("CLLimitOnlyScopeCharging", seg)
         self.assertIn("CLLimitOnlyScopeIdle", seg)
         self.assertIn("CLLimitOnlyScopeOff", seg)
@@ -426,16 +439,40 @@ class TestSessionStatusTruthTable(unittest.TestCase):
         seg = function_body(SETTINGS, "- (void)updateLimitOnlyRows {")
         self.assertIn("已插电充电 · 充电时档位已关闭", seg)
         self.assertIn("未充电 · 平时档位已关闭", seg)
-        # 两个关闭分支按插电态区分，不能合成一句
-        self.assertIn("} else if (manager.directPlugConnected) {", seg)
+        # 两个关闭分支按"插电且正在充电"区分，不能合成一句
+        self.assertIn("} else if ([manager limitOnlyChargingPeriodApplies]) {", seg)
         self.assertNotIn('CLL(@"两个档位均已关闭")', seg)
 
-    def test_off_branch_uses_plug_state_not_both_levels(self):
-        # 判据必须是"当前插电态"（决定该由哪一档负责），不是"两个档位是否都关"
+    def test_off_branch_uses_charging_period_predicate(self):
+        """判据必须与 scope 同源：插电 **且正在充电**，不是"插着线"
+
+        第 4 轮验收 A8 的根因。scope 判据是 `_directPlugConnected && _directIsCharging`，
+        而 UI 的 Off 分支只用 directPlugConnected——"插线但系统暂停充电"（优化充电 /
+        80% 限制 / 已充满）被错判成充电时段，于是平时档位为关时显示
+        「已插电充电 · 充电时档位已关闭」：设备并没在充电，该点名的是平时档位。
+        出厂缺省态（充电时=中度、平时=关闭）在插线未充电时正好落入该组合。
+        修复把判据抽成 manager 的 limitOnlyChargingPeriodApplies，两侧共用一份实现。
+        """
         seg = function_body(SETTINGS, "- (void)updateLimitOnlyRows {")
-        off_branches = seg[seg.index("已插电充电 · 充电时档位已关闭") - 400:]
-        self.assertIn("manager.directPlugConnected", off_branches)
-        self.assertNotIn("limitOnlyIdleLevel", off_branches.split("未充电 · 平时档位已关闭")[0])
+        off_branches = seg[seg.index("已插电充电 · 充电时档位已关闭") - 500:]
+        self.assertIn("[manager limitOnlyChargingPeriodApplies]", off_branches)
+        self.assertNotIn("manager.directPlugConnected", off_branches)
+
+    def test_scope_and_ui_share_one_predicate(self):
+        """scope 计算与 UI 不得各写一份判据
+
+        判据分叉正是前三轮反复失传的原因：scope 说"未充电"，UI 说"已插电充电"。
+        锁定 manager 侧存在唯一实现，且 limitOnlyActiveScope 复用它。
+        """
+        seg = function_body(MANAGER, "- (BOOL)limitOnlyChargingPeriodApplies {")
+        self.assertIn("_directPlugConnected && _directIsCharging", seg)
+        scope = function_body(MANAGER, "- (CLLimitOnlyActiveScope)limitOnlyActiveScope {")
+        self.assertIn("[self limitOnlyChargingPeriodApplies]", scope)
+        self.assertNotIn(
+            "_directPlugConnected && _directIsCharging",
+            scope,
+            "scope 不得再内联一份判据",
+        )
 
 
 class TestLocalization(unittest.TestCase):

@@ -183,6 +183,9 @@ extern NSNotificationName const CLDaemonStatusDidChangeNotification;
                                 completion:(nullable void (^)(BOOL success))completion;
 // 当前生效时段对应的档位名（off/nominal/light/moderate/heavy）；两侧皆关时返回 off
 - (NSString *)limitOnlyActiveLevel;
+// 当前是否处于「插电且正在充电」时段——分时段裁决的唯一判据实现。
+// scope 计算与 UI 的关闭分支共用它，避免两侧判据分叉（第 4 轮验收 A8 的根因）。
+- (BOOL)limitOnlyChargingPeriodApplies;
 
 // 三态主开关编排（spec B1：先改 daemon 状态，后写 tweak 会话，保证还原不清会话）
 - (void)switchToMode:(CLOperationMode)mode completion:(nullable void (^)(BOOL success))completion;
