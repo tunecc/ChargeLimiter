@@ -581,6 +581,26 @@ static NSString *CLFrequencyString(NSInteger frequency) {
     [self.contentStack addArrangedSubview:row];
 }
 
+- (void)addSectionHeader:(NSString *)title {
+    UIView *header = [[UIView alloc] init];
+    header.translatesAutoresizingMaskIntoConstraints = NO;
+
+    UILabel *label = [[UILabel alloc] init];
+    label.text = title;
+    label.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
+    label.textColor = [UIColor secondaryLabelColor];
+    label.translatesAutoresizingMaskIntoConstraints = NO;
+    [header addSubview:label];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [header.heightAnchor constraintEqualToConstant:36],
+        [label.leadingAnchor constraintEqualToAnchor:header.leadingAnchor constant:16],
+        [label.bottomAnchor constraintEqualToAnchor:header.bottomAnchor constant:-6]
+    ]];
+
+    [self.contentStack addArrangedSubview:header];
+}
+
 // 带副标题的行（limit-only-idle-thermal-level）：与「完整控制」热模拟卡的两行档位同一信息
 // 结构——档位选择 + 一句话说明该时段何时生效、代价是什么。行高随副标题行数自适应。
 - (void)addRowWithIcon:(NSString *)iconName
@@ -5655,6 +5675,10 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
 - (void)setupLimitOnlyCard {
     self.limitOnlyCard = [[CLGlassCard alloc] init];
     self.limitOnlyCard.viewController = self;
+    // section header 与「完整控制」的热模拟卡同名：两者本来就是同一个 thermalSimulationMode
+    // 通道，卡名一致用户才知道跨模式看到的是同一件事。「充电高级」页的置灰提示也指着这个
+    // 卡名，看不到就等于那句提示失去意义。
+    [self.limitOnlyCard addSectionHeader:CLL(@"高温模拟 / 充电限流")];
     [self.limitOnlyCard addRowWithIcon:@"thermometer.sun.fill"
                                  title:CLL(@"充电时档位")
                               subtitle:CLL(@"插电充电时生效；档位越高，充电电流越小")

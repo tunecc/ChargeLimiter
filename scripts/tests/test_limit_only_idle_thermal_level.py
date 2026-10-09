@@ -322,6 +322,23 @@ class TestLimitOnlyCardUI(unittest.TestCase):
         # 原「限流档位」行名不再出现
         self.assertNotIn('title:CLL(@"限流档位")', SETTINGS)
 
+    def test_card_has_section_header(self):
+        """卡片必须有 section header「高温模拟 / 充电限流」
+
+        A1/A11 明文要求"section header 为「高温模拟 / 充电限流」的卡片"。第 2 轮验收漏掉
+        这一条被判 failed——只把行名对齐了，卡名没对齐。CLGlassCard 原先没有 header API，
+        本节同时锁定"API 存在"与"卡片调用它"两件事，避免再次只改行名。
+        """
+        self.assertIn("- (void)addSectionHeader:(NSString *)title {", SETTINGS)
+        seg = function_body(SETTINGS, "- (void)setupLimitOnlyCard {")
+        self.assertIn("addSectionHeader:CLL(@\"高温模拟 / 充电限流\")", seg)
+        # header 必须是卡片的第一个子视图，不能插在档位行后面
+        self.assertLess(
+            seg.find("addSectionHeader"),
+            seg.find("addRowWithIcon"),
+            "section header 必须排在第一个档位行之前",
+        )
+
     def test_both_rows_have_pickers(self):
         self.assertIn("@selector(presentLimitOnlyChargeLevelPicker)", SETTINGS)
         self.assertIn("@selector(presentLimitOnlyIdleLevelPicker)", SETTINGS)
