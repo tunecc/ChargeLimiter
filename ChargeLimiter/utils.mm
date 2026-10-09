@@ -3799,11 +3799,24 @@ NSString* getLimitOnlyLevel() {
     return CLIsValidLimitOnlyMode(mode) ? mode : @"off";
 }
 
+// 档位键是否真实存在。「关闭」合法化（limit-only-idle-thermal-level）后，光看值无法区分
+// "用户选过关闭"与"从未配置"——两者都是 off。daemon get_conf 靠这两个函数决定是否上报：
+// 从未配置时不上报，App 才不会把用户选过的关闭当成缺省值冲掉。
+BOOL getLimitOnlyLevelConfigured() {
+    NSUserDefaults* defs = [[NSUserDefaults alloc] initWithSuiteName:CLLimitOnlySessionSuite];
+    return [defs objectForKey:CLLimitOnlyLevelKey] != nil;
+}
+
 // 平时档位：缺键（旧安装/从未配置）按关闭解读——这本身就是迁移结果，不需要一次性改写。
 NSString* getLimitOnlyIdleLevel() {
     NSUserDefaults* defs = [[NSUserDefaults alloc] initWithSuiteName:CLLimitOnlySessionSuite];
     NSString* mode = [defs stringForKey:CLLimitOnlyIdleLevelKey];
     return CLIsValidLimitOnlyMode(mode) ? mode : @"off";
+}
+
+BOOL getLimitOnlyIdleLevelConfigured() {
+    NSUserDefaults* defs = [[NSUserDefaults alloc] initWithSuiteName:CLLimitOnlySessionSuite];
+    return [defs objectForKey:CLLimitOnlyIdleLevelKey] != nil;
 }
 
 // 初始镜像按同一套判据落：chargingActive（插电且系统正在充电）→ 充电时档位，

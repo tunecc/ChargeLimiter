@@ -209,6 +209,108 @@ class TestAppSideScopeDecision(unittest.TestCase):
         self.assertIn("_sessionChannelIdleMode", seg)
         self.assertIn("apply_limit_only", seg)
 
+    def test_reestablish_does_not_normalize_off(self):
+        """重启重建不得把用户选过的「关闭」改回中度
+
+        Verifier 首轮判定 A3/A13 failed 的根因。off 合法化后这条归一化变成了真 bug：
+        仅限流模式 daemon 不在场，本地 KV 里持久化的 off 经 applyConfigData 的旧门控被跳过，
+        _limitOnlyLevel 退回 init 缺省中度；reestablish 再把 off 归一成中度并与内核态的 off
+        判 mismatch，最终重写 apply_limit_only 1 moderate off。用户重启后插电充电实际被施加
+        热模拟，而「当前生效」显示「充电时档位 · 中度」而非「未开启」。
+        """
+        seg = function_body(MANAGER, "- (void)reestablishLimitOnlySessionIfNeeded {")
+        self.assertNotIn(
+            'isEqualToString:@"off"',
+            seg,
+            "reestablish 不得把 off 归一成中度；缺省值只应发生在键从未写过时",
+        )
+        self.assertIn('@"moderate"', seg, "键从未写过时仍应缺省中度")
+
+
+class TestOffSurvivesRestart(unittest.TestCase):
+    """A3/A13 回归：用户选过的「关闭」必须跨重启保留
+
+    这一组是 Verifier 首轮 fail 后补的。缺陷链：
+    applyConfigData 对 limit_only_level 的防污染门控跳过 off → 仅限流模式（daemon 不在场，
+    走本地 KV 回退）读到 off 也不覆写 → _limitOnlyLevel 退回 init 缺省中度 →
+    reestablish 归一化并重写内核态。三处必须同时修正，缺一处缺陷就复发。
+    """
+
+    def test_apply_config_adopts_off(self):
+        """键在场就采纳，含「关闭」"""
+        seg = function_body(MANAGER, "- (void)applyConfigData:(NSDictionary *)data {")
+        # 两个档位都不允许再用 off 做跳过条件
+        self.assertNotIn('isEqualToString:@"off"', seg)
+        # 但仍然要求是非空字符串（nil / 非字符串不得覆写）
+        self.assertIn("isKindOfClass:[NSString class]", seg)
+        self.assertIn("limitOnlyLevelValue", seg)
+        self.assertIn("limitOnlyIdleLevelValue", seg)
+
+    def test_local_fallback_does_not_mask_absence(self):
+        """本地回退不得替用户填档位字面值
+
+        填了 "moderate" 就让"缺键"和"用户选过中度"无法区分；缺键时的缺省由 init 提供，
+        applyConfigData 只负责"在场即采纳"。
+        """
+        seg = function_body(MANAGER, "- (NSDictionary *)localConfigFallback {")
+        self.assertNotIn(
+            'm[@"limit_only_level"] = @"moderate"',
+            seg,
+            "不得在本地回退里填档位缺省值，否则用户选过的关闭被它冒充",
+        )
+        self.assertNotIn('m[@"limit_only_idle_level"] = @"off"', seg)
+
+    def test_daemon_reports_levels_only_when_configured(self):
+        """daemon 侧只在键真实存在时才上报
+
+        "用户选过关闭"与"从未配置"值都是 off，必须由上报侧区分，否则完整控制态的缺省 off
+        会把用户选过的关闭冲掉。
+        """
+        seg = function_body(DAEMON, '[api isEqualToString:@"get_conf"]')
+        self.assertIn("getLimitOnlyLevelConfigured()", seg)
+        self.assertIn("getLimitOnlyIdleLevelConfigured()", seg)
+        self.assertIn('kv[@"limit_only_level"]', seg)
+        self.assertIn('kv[@"limit_only_idle_level"]', seg)
+
+    def test_utils_exposes_configured_probes(self):
+        seg = function_body(UTILS, "BOOL getLimitOnlyLevelConfigured() {")
+        self.assertIn("objectForKey:CLLimitOnlyLevelKey", seg)
+        seg = function_body(UTILS, "BOOL getLimitOnlyIdleLevelConfigured() {")
+        self.assertIn("objectForKey:CLLimitOnlyIdleLevelKey", seg)
+
+
+class TestWriteFailureRollsBack(unittest.TestCase):
+    """A9/A19：写入失败后 UI 必须显示写入前的档位，不是用户刚选的那个"""
+
+    def test_apply_rolls_back_on_failure(self):
+        seg = function_body(
+            MANAGER, "- (void)applyLimitOnlyLevelsWithChargeMode:(NSString *)chargeMode"
+        )
+        # 必须记住写入前的值
+        self.assertIn("previousCharge", seg)
+        self.assertIn("previousIdle", seg)
+        # 失败分支必须回滚内存与本地 KV，不能只弹个提示
+        self.assertIn("self.limitOnlyLevel = previousCharge;", seg)
+        self.assertIn("self.limitOnlyIdleLevel = previousIdle;", seg)
+        # 本地 KV 也要回滚：否则下次刷新把新值读回来，UI 又翻成新选的值
+        self.assertIn('setlocalKV_C(@"limit_only_level", previousCharge', seg)
+        self.assertIn('setlocalKV_C(@"limit_only_idle_level", previousIdle', seg)
+
+    def test_failure_does_not_open_verify_window(self):
+        seg = function_body(
+            MANAGER, "- (void)applyLimitOnlyLevelsWithChargeMode:(NSString *)chargeMode"
+        )
+        # 函数里有两个 if (ok)：第一个落本地 KV，第二个在 1.5s 后决定开窗还是回滚刷新。
+        # 只看第二个——开窗属于"已生效"路径，失败路径开窗只会刷假"验证失败"。
+        blocks = seg.split("if (ok) {")
+        self.assertGreaterEqual(len(blocks), 3, "应存在 KV 写入与延迟刷新两个 ok 分支")
+        refresh_block = blocks[2]
+        self.assertIn("startLimitOnlyVerifyWindow", refresh_block)
+        self.assertIn("refreshDirectSessionState", refresh_block)
+        fail_block = refresh_block.split("} else {")[1]
+        self.assertNotIn("startLimitOnlyVerifyWindow", fail_block)
+        self.assertIn("previousCharge", fail_block)
+
 
 class TestLimitOnlyCardUI(unittest.TestCase):
     """主页仅限流卡片：两行档位 + 当前生效 + 诚实状态面"""

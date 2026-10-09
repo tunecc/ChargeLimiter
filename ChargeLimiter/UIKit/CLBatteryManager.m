@@ -177,15 +177,18 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
     _limitOnlyModeFlag = [data[@"limit_only_mode"] boolValue];
     _limitOnlySessionEnabled = [data[@"limit_only_session_enabled"] boolValue];
     NSString *limitOnlyLevelValue = data[@"limit_only_level"];
-    // "off" 是 daemon 侧会话缺省的诊断值（完整控制下恒为 off），不得污染真实档位
-    if ([limitOnlyLevelValue isKindOfClass:[NSString class]] && limitOnlyLevelValue.length > 0 &&
-        ![limitOnlyLevelValue isEqualToString:@"off"]) {
+    // 键在场就采纳，含「关闭」（limit-only-idle-thermal-level：off 是合法用户值）。
+    // 旧实现在这里跳过 off，理由是"daemon 侧会话缺省的诊断值不得污染真实档位"——那个理由
+    // 在 off 非法时代成立，合法化后反把用户选过的关闭冲掉：仅限流模式 daemon 不在场，
+    // 走本地 KV 回退读到 off 也不覆写，重启后档位退回 init 缺省中度，再被 reestablish
+    // 归一化并重写内核态。"缺省"与"选过关闭"的区分改由 daemon 侧不上报未配置键来保证
+    // （getLimitOnlyLevelConfigured），这里只负责"在场即采纳"。
+    if ([limitOnlyLevelValue isKindOfClass:[NSString class]] && limitOnlyLevelValue.length > 0) {
         _limitOnlyLevel = limitOnlyLevelValue;
     }
     NSString *limitOnlyIdleLevelValue = data[@"limit_only_idle_level"];
-    // 平时档位同上：缺键/未配置时保持本地 KV 的既有值，不用 daemon 的 off 缺省覆盖用户选过的关闭
-    if ([limitOnlyIdleLevelValue isKindOfClass:[NSString class]] && limitOnlyIdleLevelValue.length > 0 &&
-        ![limitOnlyIdleLevelValue isEqualToString:@"off"]) {
+    // 平时档位同上：在场即采纳，含关闭
+    if ([limitOnlyIdleLevelValue isKindOfClass:[NSString class]] && limitOnlyIdleLevelValue.length > 0) {
         _limitOnlyIdleLevel = limitOnlyIdleLevelValue;
     }
     _fullChargeScheduleEnabled = [data[@"full_charge_sched_enabled"] boolValue];
@@ -228,9 +231,8 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
     if (!m[@"full_charge_sched_start_minute"]) m[@"full_charge_sched_start_minute"] = @120;
     if (!m[@"full_charge_sched_duration_hours"]) m[@"full_charge_sched_duration_hours"] = @4;
     if (!m[@"limit_only_mode"]) m[@"limit_only_mode"] = @NO;
-    if (!m[@"limit_only_level"]) m[@"limit_only_level"] = @"moderate";
-    // 平时档位缺省关闭；刻意不填 "off" 字面值——applyConfigData 的防污染门控会跳过 off，
-    // 缺键时由 init 缺省（_limitOnlyIdleLevel = @"off"）提供，用户选过的关闭也不会被覆盖
+    // 两个档位键都不在这里填缺省值：缺键时由 init 的缺省（充电时中度 / 平时关闭）提供，
+    // 而"用户选过关闭"必须能穿透到 applyConfigData——填了字面值反而分不出是谁的值。
     return m;
 }
 
@@ -707,8 +709,10 @@ static NSTimeInterval const CLLimitOnlyVerifyWindowSeconds = 15.0;
     if (self.operationMode != CLOperationModeLimitOnly) return;
     [self refreshDirectSessionState]; // 先读会话通道内核态（判据数据源）
     // 两个档位都参与一致性核对（limit-only-idle-thermal-level）：任一档与内核态解码
-    // 不一致都要补写。缺省值按各档既有规则：充电时档位缺省中度，平时档位缺省关闭。
-    NSString *charge = (_limitOnlyLevel.length > 0 && ![_limitOnlyLevel isEqualToString:@"off"]) ? _limitOnlyLevel : @"moderate";
+    // 不一致都要补写。缺省值只发生在键从未写过时：充电时档位缺省中度，平时档位缺省关闭。
+    // 这里刻意不再把 off 归一成中度——归一化会把用户选过的「关闭」在重启后改回中度，
+    // 并与内核态的 off 判成 mismatch 后重写，是 off 合法化后暴露的漏网缺陷。
+    NSString *charge = (_limitOnlyLevel.length > 0) ? _limitOnlyLevel : @"moderate";
     NSString *idle = (_limitOnlyIdleLevel.length > 0) ? _limitOnlyIdleLevel : @"off";
     // spec 口径：缺失（enabled 位不在）或不一致（在场但档位 ≠ 本地配置）都补写
     BOOL missing = !_sessionChannelEnabled;
@@ -745,6 +749,10 @@ static NSTimeInterval const CLLimitOnlyVerifyWindowSeconds = 15.0;
                                 completion:(void (^)(BOOL success))completion {
     NSString *charge = (chargeMode.length > 0) ? chargeMode : @"moderate";
     NSString *idle = (idleMode.length > 0) ? idleMode : @"off";
+    // 失败要能把 UI 还原成写入前的真实档位（A9/A19：不得把失败后的旧值显示成新选的值）。
+    // 只回滚内存不够——本地 KV 也写了新值，下次刷新会把它读回来，UI 又会翻成新值。
+    NSString *previousCharge = self.limitOnlyLevel;
+    NSString *previousIdle = self.limitOnlyIdleLevel;
     self.limitOnlyLevel = charge;
     self.limitOnlyIdleLevel = idle;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
@@ -754,17 +762,29 @@ static NSTimeInterval const CLLimitOnlyVerifyWindowSeconds = 15.0;
         if (rc != 0) {
             rc = spawnDaemonCLIVerb_C(@[@"apply_limit_only", @"1", charge, idle]);
         }
-        setlocalKV_C(@"limit_only_level", charge);
-        setlocalKV_C(@"limit_only_idle_level", idle);
+        BOOL ok = (rc == 0);
+        if (ok) {
+            setlocalKV_C(@"limit_only_level", charge);
+            setlocalKV_C(@"limit_only_idle_level", idle);
+        } else {
+            // 写入未生效：档位偏好与内存一起回滚，保持「UI、本地 KV、内核态」三者一致
+            setlocalKV_C(@"limit_only_level", previousCharge.length > 0 ? previousCharge : @"moderate");
+            setlocalKV_C(@"limit_only_idle_level", previousIdle.length > 0 ? previousIdle : @"off");
+        }
         // 给 thermalState 一点收敛窗口（对齐 daemon D5 3s 探针）后刷新验证
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)1.5 * NSEC_PER_SEC),
                        dispatch_get_main_queue(), ^{
-            [self refreshDirectSessionState];
-            if (rc == 0) {
+            if (ok) {
+                [self refreshDirectSessionState];
                 [self startLimitOnlyVerifyWindow]; // D4：仅下发成功才开窗（失败≠探针超窗）
+            } else {
+                // 先回滚再刷新：UI 显示的是写入前的档位，不是用户刚选的那个
+                self.limitOnlyLevel = previousCharge;
+                self.limitOnlyIdleLevel = previousIdle;
+                [self refreshDirectSessionState];
             }
             [[NSNotificationCenter defaultCenter] postNotificationName:CLConfigDidUpdateNotification object:self];
-            if (completion) completion(rc == 0);
+            if (completion) completion(ok);
         });
     });
 }

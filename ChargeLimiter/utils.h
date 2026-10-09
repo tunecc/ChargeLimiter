@@ -84,6 +84,8 @@ extern "C" {
 BOOL getLimitOnlySessionEnabled(void);      // clLimitSessionEnabled
 NSString* getLimitOnlyLevel(void);          // clLimitMode（充电时档位；非法/缺省按 off）
 NSString* getLimitOnlyIdleLevel(void);      // clLimitIdleMode（平时档位；缺键/非法按 off）
+BOOL getLimitOnlyLevelConfigured(void);     // clLimitMode 键是否存在（区分"选过关闭"与"从未配置"）
+BOOL getLimitOnlyIdleLevelConfigured(void); // clLimitIdleMode 键是否存在
 void setLimitOnlySession(BOOL enabled, NSString* chargeMode, NSString* idleMode, BOOL chargingActive); // 会话键 + thermal 镜像 + 通知
 void clearLimitOnlySessionKeys(void);       // 清会话键并把 thermal 镜像归零 + 通知
 BOOL isCLPowerConnected(void);              // AppleSmartBattery 插电判定（ExternalChargeCapable 优先）

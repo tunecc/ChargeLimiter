@@ -5108,10 +5108,17 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             kv[@"limit_only_idle_session_channel"] = loChannelEnabled ? CLThermalModeName(loChannelIdle) : @"off";
             // 仅限流会话诊断（spec B5）：root 域会话键状态与两个分时段档位
             kv[@"limit_only_session_enabled"] = @(getLimitOnlySessionEnabled());
-            kv[@"limit_only_level"] = getLimitOnlyLevel();
-            // 平时档位（limit-only-idle-thermal-level）：与 limit_only_level 同为兜底值，
-            // App 侧以本地 KV 为权威（完整控制态下未配置项上报 off，会覆盖用户选过的关闭）
-            kv[@"limit_only_idle_level"] = getLimitOnlyIdleLevel();
+            // 两个档位只在键真实存在时才上报（limit-only-idle-thermal-level）：off 合法化后
+            // "用户选过关闭"与"从未配置"值相同，缺键时不上报，App 才能把选过的关闭当作用户值
+            // 跨重启保留，而不是被"缺省中度"冲掉。
+            if (getLimitOnlyLevelConfigured()) {
+                kv[@"limit_only_level"] = getLimitOnlyLevel();
+            }
+            if (getLimitOnlyIdleLevelConfigured()) {
+                // 平时档位：与 limit_only_level 同为兜底值，
+                // App 侧以本地 KV 为权威（完整控制态下未配置项上报 off，会覆盖用户选过的关闭）
+                kv[@"limit_only_idle_level"] = getLimitOnlyIdleLevel();
+            }
             kv[@"use_smart"] = @(g_use_smart);
             kv[@"smart_charge_status"] = @(g_smartChargeStatus);
             kv[@"smart_charge_managed_by_daemon"] = @(g_tempSmartChargeDisabledByCL);
