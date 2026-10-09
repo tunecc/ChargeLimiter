@@ -7,13 +7,25 @@ DAEMON = (Path(__file__).resolve().parents[2] / "ChargeLimiter" / "daemon.mm").r
 )
 
 
-def decision_function_source():
+def function_source(name):
     m = re.search(
-        r"static\s+NSString\*\s+\w*[Tt]hermal\w*[Mm]ode\w*\s*\(.*?\)\s*\{.*?\n\}",
+        r"static\s+[A-Za-z_]+\*?\s+" + re.escape(name) + r"\s*\(.*?\)\s*\{.*?\n\}",
         DAEMON,
         re.S,
     )
     return m.group(0) if m else ""
+
+
+def decision_function_source():
+    """集中决策相关的两个函数：充电时档位是否生效 + 目标档位选择
+
+    thermal-sim-settings 把「插电 && 充电命令开 && 限流开启」这个共判据抽成了
+    chargingThermalLevelAppliesNow()，目标档位选择与生效范围都复用它。
+    这两个函数合起来才是完整的集中决策，单独看任何一个都会漏判据。
+    """
+    return function_source("chargingThermalLevelAppliesNow") + function_source(
+        "targetThermalModeForCurrentState"
+    )
 
 
 class TestLimitInflowCommandDriven(unittest.TestCase):
@@ -33,16 +45,25 @@ class TestLimitInflowCommandDriven(unittest.TestCase):
         if seg:
             self.assertIn("g_chargeCommandEnabled", seg)
 
-    def test_reads_four_config_keys(self):
+    def test_reads_config_keys(self):
+        # thermal-sim-settings：退役 adv_thermal_mode_lock 后只剩三个配置键
         seg = decision_function_source()
         if seg:
             for key in [
                 "adv_limit_inflow",
                 "adv_limit_inflow_mode",
                 "adv_def_thermal_mode",
-                "adv_thermal_mode_lock",
             ]:
                 self.assertIn(key, seg)
+            self.assertNotIn(
+                "adv_thermal_mode_lock",
+                seg,
+                "已退役的锁定键不得再出现在集中决策中",
+            )
+
+    def test_scope_shares_the_same_predicate(self):
+        # 生效范围必须复用同一个判据函数，不能在 UI 侧形成第二套裁决真相
+        self.assertIn("chargingThermalLevelAppliesNow", function_source("thermalScopeForCurrentState"))
 
     def test_requires_adaptor_connected_gate(self):
         # 限流档只在插电充电会话生效：决策函数必须经 isAdaptorConnect 做连接门控，

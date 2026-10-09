@@ -284,7 +284,6 @@ static int CLStartDaemonBestEffort(void) {
             @"adv_limit_inflow": @NO,
             @"adv_def_thermal_mode": @"off",
             @"adv_limit_inflow_mode": @"off",
-            @"adv_thermal_mode_lock": @NO,
             @"full_charge_sched_enabled": @NO,
             @"full_charge_sched_interval_days": @7,
             @"full_charge_sched_start_minute": @120,

@@ -133,10 +133,11 @@ extern NSNotificationName const CLDaemonStatusDidChangeNotification;
 @property(nonatomic, assign) NSInteger holdModeBand;       // 插电保持带宽
 @property(nonatomic, assign) NSInteger holdCheckIntervalMinutes; // 插电保持检查间隔（分钟）
 @property(nonatomic, assign) BOOL holdTempDisableSmartCharge; // 插电保持时临时停用系统优化充电
-@property(nonatomic, assign) BOOL limitInflow;             // 限流
-@property(nonatomic, assign) CLThermalMode thermalMode;    // 高温模拟
-@property(nonatomic, assign) CLThermalMode limitInflowThermalMode;
-@property(nonatomic, assign) BOOL thermalModeLock;
+@property(nonatomic, assign) BOOL limitInflow;             // 充电时档位是否非关闭
+@property(nonatomic, assign) CLThermalMode thermalMode;    // 平时档位
+@property(nonatomic, assign) CLThermalMode limitInflowThermalMode; // 充电时档位
+@property(nonatomic, copy, readonly, nullable) NSString *thermalActiveScope; // daemon 裁决的当前生效范围 charging/idle/off
+@property(nonatomic, assign, readonly) BOOL thermalMergeNoticePending; // 检测到合并前的旧配置，App 应弹一次合并说明
 @property(nonatomic, assign) CLThermalMode thermalSimulateMode; // 实际系统温度等级
 @property(nonatomic, copy) NSString *thermalConfigMode;   // 已配置的模拟档位（com.apple.cltm）
 @property(nonatomic, copy) NSString *thermalApplyStatus;  // 最近一次应用结果 applied/unverified/unknown

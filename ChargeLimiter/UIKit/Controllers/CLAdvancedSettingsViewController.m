@@ -681,6 +681,75 @@ static char kCLAdvSwitchViewKey;
     }
 }
 
+// 只读状态行（thermal-sim-settings「当前生效」）：无 chevron、无手势，只陈述事实。
+- (void)addStatusRowWithIcon:(NSString *)iconName
+                       title:(NSString *)title
+                    subtitle:(NSString *)subtitle
+                      value:(NSString *)value
+                      color:(UIColor *)color
+                        tag:(NSInteger)tag {
+    UIView *row = [[UIView alloc] init];
+    row.translatesAutoresizingMaskIntoConstraints = NO;
+    row.tag = tag;
+    UIColor *rowColor = color ?: [UIColor systemBlueColor];
+
+    UIImageView *iconView = [[UIImageView alloc] init];
+    iconView.translatesAutoresizingMaskIntoConstraints = NO;
+    iconView.contentMode = UIViewContentModeScaleAspectFit;
+    iconView.tintColor = rowColor;
+    UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:16 weight:UIImageSymbolWeightMedium];
+    iconView.image = CLSymbolImage(iconName, config);
+    [row addSubview:iconView];
+
+    UILabel *titleLabel = [[UILabel alloc] init];
+    titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    titleLabel.text = title;
+    titleLabel.font = [UIFont systemFontOfSize:16];
+    titleLabel.textColor = [UIColor labelColor];
+    titleLabel.numberOfLines = 0;
+    [row addSubview:titleLabel];
+
+    UILabel *valueLabel = [[UILabel alloc] init];
+    valueLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    valueLabel.text = value;
+    valueLabel.font = [UIFont systemFontOfSize:16];
+    valueLabel.textColor = [UIColor secondaryLabelColor];
+    valueLabel.numberOfLines = 0;
+    valueLabel.textAlignment = NSTextAlignmentRight;
+    [valueLabel setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    [valueLabel setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    valueLabel.tag = tag + 10000;
+    [row addSubview:valueLabel];
+
+    UILabel *subtitleLabel = [[UILabel alloc] init];
+    subtitleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    subtitleLabel.text = subtitle ?: @"";
+    subtitleLabel.font = [UIFont systemFontOfSize:12];
+    subtitleLabel.textColor = [UIColor secondaryLabelColor];
+    subtitleLabel.numberOfLines = 0;
+    [row addSubview:subtitleLabel];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [row.heightAnchor constraintGreaterThanOrEqualToConstant:70],
+        [iconView.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:16],
+        [iconView.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+        [iconView.widthAnchor constraintEqualToConstant:26],
+        [titleLabel.leadingAnchor constraintEqualToAnchor:iconView.trailingAnchor constant:14],
+        [titleLabel.topAnchor constraintEqualToAnchor:row.topAnchor constant:12],
+        [titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:valueLabel.leadingAnchor constant:-12],
+        [subtitleLabel.leadingAnchor constraintEqualToAnchor:titleLabel.leadingAnchor],
+        [subtitleLabel.topAnchor constraintEqualToAnchor:titleLabel.bottomAnchor constant:2],
+        [subtitleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:valueLabel.leadingAnchor constant:-12],
+        [subtitleLabel.bottomAnchor constraintEqualToAnchor:row.bottomAnchor constant:-12],
+        [valueLabel.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-16],
+        [valueLabel.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+        [valueLabel.topAnchor constraintGreaterThanOrEqualToAnchor:row.topAnchor constant:10],
+        [valueLabel.bottomAnchor constraintLessThanOrEqualToAnchor:row.bottomAnchor constant:-10]
+    ]];
+
+    [self.contentStack addArrangedSubview:row];
+}
+
 - (void)addSeparator {
     CGFloat hairline = 1.0 / UIScreen.mainScreen.scale;
     UIView *separator = [[UIView alloc] init];
@@ -2373,6 +2442,7 @@ static const NSInteger CLAdvAccChargeLPMTag = 405;
 @interface CLAdvancedSettingsViewController : UIViewController
 @property (nonatomic, strong) UIScrollView *scrollView;
 @property (nonatomic, strong) UIStackView *mainStack;
+@property (nonatomic, strong) NSTimer *thermalScopeTimer; // 「当前生效」行轮询（仅本页可见期间）
 @property (nonatomic, assign) BOOL accChargeExpanded;
 - (BOOL)isHoldSuppressedBySystemCapacityControlForManager:(CLBatteryManager *)manager;
 - (BOOL)isHoldControlAvailableForManager:(CLBatteryManager *)manager;
@@ -2407,6 +2477,11 @@ static const NSInteger CLAdvAccChargeLPMTag = 405;
                                              selector:@selector(applyMasterSwitchLockState)
                                                  name:CLDaemonStatusDidChangeNotification
                                                object:nil];
+    // thermal-sim-settings：「当前生效」行随电池轮询活刷新（daemon 的 ThermalActiveScope）
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(batteryInfoDidUpdateForThermalScope)
+                                                 name:CLBatteryInfoDidUpdateNotification
+                                               object:nil];
     if ([self normalizeAdvancedOptionInterlocksIfNeeded]) {
         [self reloadContentRows];
     }
@@ -2417,6 +2492,66 @@ static const NSInteger CLAdvAccChargeLPMTag = 405;
     [super viewWillAppear:animated];
     // 从主页切完总开关回来时同步锁态（开关翻转不经本页配置通知）
     [self applyMasterSwitchLockState];
+    [self presentThermalMergeNoticeIfNeeded];
+    // 「当前生效」行要跟插拔边沿走：主页在 viewWillDisappear 停了自动刷新，进本页后
+    // 电池轮询是断的。这里只补一条轻量轮询（只取 get_bat_info，不拉 get_conf——后者会
+    // 经 configDidUpdate 每秒整页重建，把加速充电展开态和滚动位置打没）。
+    [self startThermalScopePolling];
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    [self.thermalScopeTimer invalidate];
+    self.thermalScopeTimer = nil;
+}
+
+// thermal-sim-settings：「当前生效」行随电池轮询活刷新（daemon 的 ThermalActiveScope）。
+// 只在完整控制态轮询——仅限流/主开关关闭态该行恒为占位，轮询没有意义。
+- (void)startThermalScopePolling {
+    [self.thermalScopeTimer invalidate];
+    self.thermalScopeTimer = nil;
+    if ([self thermalCardNotEditableHere]) {
+        return;
+    }
+    [self refreshThermalActiveScopeRow];
+    self.thermalScopeTimer = [NSTimer scheduledTimerWithTimeInterval:1.0
+                                                              target:self
+                                                            selector:@selector(thermalScopeTimerFired:)
+                                                            userInfo:nil
+                                                             repeats:YES];
+    [[NSRunLoop currentRunLoop] addTimer:self.thermalScopeTimer forMode:NSRunLoopCommonModes];
+    [self.thermalScopeTimer fire];
+}
+
+- (void)thermalScopeTimerFired:(NSTimer *)timer {
+    [[CLBatteryManager shared] refreshBatteryInfo];
+    [self refreshThermalActiveScopeRow];
+}
+
+// 「充电限流」+「高温模拟」合并说明（thermal-sim-settings A14）：只弹一次。
+// 触发只认 daemon 的一次性判定（thermal_merge_notice）——它在合并后首次启动时检查配置，
+// 那时两个档位键同时非关闭只可能是旧界面配的。不拿"当前两行都非关闭"当触发条件，
+// 否则新版本用户自己配双档位也会被误告一次。已提示过的标记存 App 本地。
+- (void)presentThermalMergeNoticeIfNeeded {
+    if ([NSUserDefaults.standardUserDefaults boolForKey:CLThermalMergeNoticeShownKey]) {
+        return;
+    }
+    if (![CLBatteryManager shared].thermalMergeNoticePending) {
+        return;
+    }
+    // 不可见时 presentViewController 会被系统静默丢弃。若此时就落"已提示"标记，
+    // 用户将永远看不到这条说明（configDidUpdate 会在页面不可见时调到此处）。
+    // 所以先确认可见，落标记放在真正弹出来之后。
+    if (self.view.window == nil) {
+        return;
+    }
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"高温模拟 / 充电限流")
+                                                                  message:CLL(@"「充电限流」与「高温模拟」已合并为「高温模拟 / 充电限流」：充电时与平时现在分成两行档位，各自的设置都保留，行为不变。原来的「锁定等级」已移除。")
+                                                           preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:CLL(@"确定") style:UIAlertActionStyleDefault handler:nil]];
+    [NSUserDefaults.standardUserDefaults setBool:YES forKey:CLThermalMergeNoticeShownKey];
+    [NSUserDefaults.standardUserDefaults synchronize];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)setupScrollView {
@@ -2492,6 +2627,9 @@ static const NSInteger CLAdvAccChargeLPMTag = 405;
         [self reloadContentRows];
     }
     [self applyMasterSwitchLockState];
+    [self refreshThermalActiveScopeRow];
+    // 配置是异步拉的：首次进页面时 thermal_merge_notice 可能还没到，这里补一次判定
+    [self presentThermalMergeNoticeIfNeeded];
 }
 
 /* ---------------- 主开关灰锁（master-off-full-disable B7，用户决定 D1） ----------------
@@ -2500,6 +2638,8 @@ static const NSInteger CLAdvAccChargeLPMTag = 405;
  * 「重置所有设置」一并禁用（其 daemon API 同样被白名单拒绝）。 */
 
 static const NSInteger CLAdvMasterOffBannerTag = 901;
+// thermal-sim-settings：合并说明只弹一次（App 本地标记，重装/清数据后允许再提示）
+static NSString *const CLThermalMergeNoticeShownKey = @"CLThermalMergeNoticeShown";
 
 - (BOOL)masterSwitchCurrentlyOff {
     return ![[CLBatteryManager shared] enabled];
@@ -2548,12 +2688,15 @@ static const NSInteger CLAdvMasterOffBannerTag = 901;
             continue;   // banner 等非卡片
         }
         CLAdvSettingsCard *card = (CLAdvSettingsCard *)view;
+        // thermal-sim-settings D5：仅限流模式下档位通道归主页「限流档位」卡片，本卡整卡置灰。
+        // 与主开关关闭是两件独立的事，此处分别判定后合并生效。
+        BOOL thermalLockedHere = [self isThermalCard:card] && [self thermalCardNotEditableHere];
         for (UIView *row in card.contentStack.arrangedSubviews) {
             NSInteger tag = row.tag;
             BOOL keepInteractive = (tag == CLAdvRestoreSmartChargeTag ||
                                     tag == CLAdvMCLCopyReportRowTag ||
                                     tag == CLAdvMCLRepairRowTag);
-            BOOL shouldLock = locked && !keepInteractive;
+            BOOL shouldLock = (locked && !keepInteractive) || thermalLockedHere;
             row.userInteractionEnabled = shouldLock ? NO : YES;
             row.alpha = shouldLock ? 0.45 : 1.0;
         }
@@ -2763,17 +2906,50 @@ static const NSInteger CLAdvMasterOffBannerTag = 901;
     [self updateHoldOptionInterlockStateInCard:stopChargeCard manager:manager];
     [self.mainStack addArrangedSubview:stopChargeCard];
 
-    // 充电限流
-    CLAdvSettingsCard *limitCard = [[CLAdvSettingsCard alloc] init];
-    [limitCard addPickerRowWithIcon:@"thermometer.sun.fill" title:CLL(@"充电限流") subtitle:CLL(@"仅在充电时通过热模拟降低电流；选择“关闭”可禁用。") value:[self limitInflowValueText] color:[UIColor systemOrangeColor] tag:306 target:self action:@selector(limitInflowModeTapped:)];
-    [self.mainStack addArrangedSubview:limitCard];
-    
-    // 高温模拟
+    // 高温模拟 / 充电限流（thermal-sim-settings）：一个档位通道、两个分时段档位。
+    // 原「充电限流」卡、「高温模拟 (Powercuff)」卡与「锁定等级」开关合并为一张卡——
+    // 三者本来就都写 com.apple.cltm 的同一个 thermalSimulationMode，分成两个开关只会让
+    // 用户以为可以叠加。「锁定等级」的实际作用（让平时档位永久胜出、静默否决充电时档位）
+    // 与合并后的显式两行档位重复，已退役。
     CLAdvSettingsCard *thermalCard = [[CLAdvSettingsCard alloc] init];
-    [thermalCard addSectionHeader:CLL(@"高温模拟 (Powercuff)")];
-    [thermalCard addPickerRowWithIcon:@"flame.fill" title:CLL(@"默认等级") value:[self thermalModeString:manager.thermalMode] color:[UIColor systemOrangeColor] tag:303 target:self action:@selector(thermalModeTapped:)];
+    [thermalCard addSectionHeader:CLL(@"高温模拟 / 充电限流")];
+    [thermalCard addPickerRowWithIcon:@"thermometer.sun.fill"
+                               title:CLL(@"充电时档位")
+                            subtitle:CLL(@"插电充电时生效；档位越高，充电电流越小")
+                               value:[self chargingThermalLevelText]
+                               color:[UIColor systemOrangeColor]
+                                 tag:306
+                              target:self
+                              action:@selector(chargingThermalModeTapped:)];
     [thermalCard addSeparator];
-    [thermalCard addSwitchRowWithIcon:@"thermometer" title:CLL(@"锁定等级") subtitle:CLL(@"防止系统自动调节温度模拟") isOn:manager.thermalModeLock color:[UIColor systemOrangeColor] tag:304 target:self action:@selector(thermalLockChanged:)];
+    [thermalCard addPickerRowWithIcon:@"flame.fill"
+                               title:CLL(@"平时档位")
+                            subtitle:CLL(@"未插电或未充电时生效；档位越高，性能越低，发热越少")
+                               value:[self thermalModeString:manager.thermalMode]
+                               color:[UIColor systemOrangeColor]
+                                 tag:303
+                              target:self
+                              action:@selector(idleThermalModeTapped:)];
+    [thermalCard addSeparator];
+    [thermalCard addStatusRowWithIcon:@"dot.radiowaves.left.and.right"
+                                title:CLL(@"当前生效")
+                             subtitle:CLL(@"两者共用同一个温度模拟通道，同一时刻只有一个生效")
+                               value:[self thermalActiveScopeText]
+                               color:[UIColor systemTealColor]
+                                 tag:304];
+    // 不写"系统实际温度偏高时也会显示为对应档位"——「当前生效」行显示的是 daemon 裁决的
+    // 目标范围加该范围的配置档位，不是实时系统热状态，那样写会误导。
+    // maxLines=0：英文 320pt 屏需 5 行、375pt 以上需 4 行，中文 320pt 需 3 行、375pt 以上需 2 行；
+    // 默认的 2 行会把结尾截掉。行数为 iOS 16.1 模拟器 TextKit 与 UILabel 实框双路实测。
+    [self addTipRowToCard:thermalCard
+                     text:CLL(@"充电时档位与平时档位共用同一个温度模拟通道：插电充电时用前者，其余时间用后者，不会同时生效。")
+                  maxLines:0];
+    // 只有「仅限流」才需要解释档位归谁管；主开关关闭时顶部 banner 已经说明，不再重复
+    if ([[CLBatteryManager shared] operationMode] == CLOperationModeLimitOnly) {
+        [self addTipRowToCard:thermalCard
+                         text:CLL(@"仅限流模式：档位由主页「限流档位」接管，此处不可修改。")
+                      maxLines:0];
+    }
     [self.mainStack addArrangedSubview:thermalCard];
 
     CLAdvSettingsCard *smartChargeCard = [[CLAdvSettingsCard alloc] init];
@@ -2819,17 +2995,25 @@ static const NSInteger CLAdvMasterOffBannerTag = 901;
 }
 
 - (void)addTipRowToCard:(CLAdvSettingsCard *)card text:(NSString *)text {
+    [self addTipRowToCard:card text:text maxLines:2];
+}
+
+// maxLines=0 表示不限制行数。既有调用方全部走上面的 2 行默认值，行为不变；
+// 需要完整显示的长文案显式传 0——硬编码 2 行会截掉英文长 tip 的结尾
+// （thermal-sim-settings 的通道说明英文实测 320pt 屏需 5 行、375pt 以上需 4 行，
+// 中文 320pt 需 3 行、375pt 以上需 2 行）。
+- (void)addTipRowToCard:(CLAdvSettingsCard *)card text:(NSString *)text maxLines:(NSInteger)maxLines {
     UIView *row = [[UIView alloc] init];
     row.translatesAutoresizingMaskIntoConstraints = NO;
-    
+
     UILabel *label = [[UILabel alloc] init];
     label.translatesAutoresizingMaskIntoConstraints = NO;
     label.text = text ?: @"";
     label.font = [UIFont systemFontOfSize:12];
     label.textColor = [UIColor secondaryLabelColor];
-    label.numberOfLines = 2;
+    label.numberOfLines = maxLines;
     [row addSubview:label];
-    
+
     [NSLayoutConstraint activateConstraints:@[
         [row.heightAnchor constraintGreaterThanOrEqualToConstant:36],
         [label.topAnchor constraintEqualToAnchor:row.topAnchor constant:8],
@@ -2837,7 +3021,7 @@ static const NSInteger CLAdvMasterOffBannerTag = 901;
         [label.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:16],
         [label.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-16]
     ]];
-    
+
     [card.contentStack addArrangedSubview:row];
 }
 
@@ -2852,13 +3036,6 @@ static const NSInteger CLAdvMasterOffBannerTag = 901;
     }
 }
 
-- (NSString *)limitInflowValueText {
-    CLBatteryManager *manager = [CLBatteryManager shared];
-    if (!manager.limitInflow) {
-        return CLL(@"关闭");
-    }
-    return [self thermalModeString:manager.limitInflowThermalMode];
-}
 
 - (NSString *)holdModeBandText {
     NSInteger band = MAX([CLBatteryManager shared].holdModeBand, 1);
@@ -3384,8 +3561,10 @@ static const NSInteger CLAdvMasterOffBannerTag = 901;
     }];
 }
 
-- (void)limitInflowModeTapped:(UITapGestureRecognizer *)tap {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"充电限流") message:CLL(@"仅在充电时通过热模拟降低电流\n档位越高，充电电流越小") preferredStyle:UIAlertControllerStyleAlert];
+// 充电时档位：只写 adv_limit_inflow + adv_limit_inflow_mode（经 set_limit_inflow_config 原子提交），
+// 不动平时档位。选「关闭」= adv_limit_inflow=NO，插电充电时回落到平时档位。
+- (void)chargingThermalModeTapped:(UITapGestureRecognizer *)tap {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"充电时档位") message:CLL(@"插电充电时生效\n档位越高，充电电流越小") preferredStyle:UIAlertControllerStyleAlert];
     
     NSArray *modes = @[CLL(@"关闭"), CLL(@"正常"), CLL(@"轻度"), CLL(@"中度"), CLL(@"重度")];
     NSArray *modeValues = @[@"off", @"nominal", @"light", @"moderate", @"heavy"];
@@ -3405,8 +3584,9 @@ static const NSInteger CLAdvMasterOffBannerTag = 901;
     [self presentViewController:alert animated:YES completion:nil];
 }
 
-- (void)thermalModeTapped:(UITapGestureRecognizer *)tap {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"默认高温模拟等级") message:CLL(@"非充电时的高温模拟等级\n等级越高，性能越低，发热越少") preferredStyle:UIAlertControllerStyleAlert];
+// 平时档位：只写 adv_def_thermal_mode，不动充电时档位。
+- (void)idleThermalModeTapped:(UITapGestureRecognizer *)tap {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:CLL(@"平时档位") message:CLL(@"未插电或未充电时生效\n档位越高，性能越低，发热越少") preferredStyle:UIAlertControllerStyleAlert];
     
     NSArray *modes = @[CLL(@"关闭"), CLL(@"正常"), CLL(@"轻度"), CLL(@"中度"), CLL(@"重度")];
     NSArray *modeValues = @[@"off", @"nominal", @"light", @"moderate", @"heavy"];
@@ -3424,9 +3604,79 @@ static const NSInteger CLAdvMasterOffBannerTag = 901;
     [self presentViewController:alert animated:YES completion:nil];
 }
 
-- (void)thermalLockChanged:(UISwitch *)sender {
-    [CLBatteryManager shared].thermalModeLock = sender.on;
-    [[CLAPIClient shared] setConfigWithKey:@"adv_thermal_mode_lock" value:@(sender.on) completion:nil];
+// 「充电时档位」行的显示值：档位是否生效由 adv_limit_inflow 决定，不是由
+// adv_limit_inflow_mode 的值决定。两者可以不一致——daemon 默认 limit_inflow=NO 而
+// mode=moderate；退役「锁定等级」的迁移也只会清 limit_inflow、留下用户原选档位。
+// 所以必须门控显示，否则全新安装会看到「中度」、迁移后的老用户看到旧档位，
+// 而实际上这一行是关闭的（假控件）。
+- (NSString *)chargingThermalLevelText {
+    CLBatteryManager *manager = [CLBatteryManager shared];
+    if (!manager.limitInflow) {
+        return CLL(@"关闭");
+    }
+    return [self thermalModeString:manager.limitInflowThermalMode];
+}
+
+// 「当前生效」行文案：只陈述 daemon 裁决的事实（thermal-sim-settings D7），App 不推导。
+// 无 daemon 数据（仅限流 / 主开关关闭 / 旧 daemon）时显示占位，不编造档位。
+- (NSString *)thermalActiveScopeText {
+    CLBatteryManager *manager = [CLBatteryManager shared];
+    if ([self thermalCardNotEditableHere] || manager.thermalActiveScope == nil) {
+        return @"--";
+    }
+    if ([manager.thermalActiveScope isEqualToString:@"charging"]) {
+        return [NSString stringWithFormat:@"%@ · %@", CLL(@"充电时档位"), [self chargingThermalLevelText]];
+    }
+    if ([manager.thermalActiveScope isEqualToString:@"idle"]) {
+        return [NSString stringWithFormat:@"%@ · %@", CLL(@"平时档位"), [self thermalModeString:manager.thermalMode]];
+    }
+    // 键必须与策略诊断的「模拟应用结果」区分：那条早已占用 "未生效"/"Not applied"，
+    // 复用会让本行 off 态在英文下渲染成诊断用语，且新条目不可达。
+    return CLL(@"未开启");
+}
+
+// 仅限流 / 主开关关闭态：档位通道不归本页管，整卡置灰（D5）。
+// 两种原因的处置相同（都不可改、都显示占位），但提示文案不同，由调用方分别处理。
+- (BOOL)thermalCardNotEditableHere {
+    CLBatteryManager *manager = [CLBatteryManager shared];
+    return !manager.enabled || manager.operationMode == CLOperationModeLimitOnly;
+}
+
+// 用「充电时档位」行（tag 306）识别热模拟卡，避免为它单持一个引用与重建失同步
+- (BOOL)isThermalCard:(CLAdvSettingsCard *)card {
+    for (UIView *row in card.contentStack.arrangedSubviews) {
+        if (row.tag == 306) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+// 「当前生效」行随电池轮询就地刷新：插拔边沿改变生效方，不值得整页重建
+// （整页重建会打断连点并收起加速充电展开态）。
+- (void)batteryInfoDidUpdateForThermalScope {
+    [self refreshThermalActiveScopeRow];
+}
+
+- (void)refreshThermalActiveScopeRow {
+    for (UIView *view in self.mainStack.arrangedSubviews) {
+        if (![view isKindOfClass:[CLAdvSettingsCard class]]) {
+            continue;
+        }
+        CLAdvSettingsCard *card = (CLAdvSettingsCard *)view;
+        if (![self isThermalCard:card]) {
+            continue;
+        }
+        for (UIView *row in card.contentStack.arrangedSubviews) {
+            if (row.tag != 304) {
+                continue;
+            }
+            UILabel *valueLabel = [row viewWithTag:304 + 10000];
+            if ([valueLabel isKindOfClass:[UILabel class]]) {
+                valueLabel.text = [self thermalActiveScopeText];
+            }
+        }
+    }
 }
 
 - (void)resetTapped {

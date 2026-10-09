@@ -43,7 +43,7 @@ ChargeLimiter 本质上是一个充电策略调度器，不是硬件电源路径
 - 温度控制（高温停充 / 降温恢复）
 - 系统优化充电协调与`永久停用系统优化充电`
 - `满充计划`：每隔数天在指定时间暂时解除电量上限
-- `充电限流`（原子配置）与`高温模拟 (Powercuff)`
+- `高温模拟 / 充电限流`：`充电时档位`与`平时档位`共用一个热状态模拟通道，同一时刻只有一个生效
 - `加速充电`
 - `策略诊断`、`停充控制探针`与守护进程修复
 - `历史统计`与`策略事件时间线`
@@ -162,7 +162,7 @@ CL 可以和充电宝配合使用：停充模式下充电宝优先为手机供�
 
 **夏天怎样降低电池温度？**
 
-* 使用 CL 的`高温模拟 (Powercuff)`减少硬件耗电，充电状态下会同时降低充电功率；使用`充电限流`在充电时通过热模拟降低充电电流。
+* 使用 CL 的`高温模拟 / 充电限流`减少硬件耗电：`平时档位`让设备维持较低热状态，`充电时档位`在插电充电时进一步压低充电电流。
 * 使用低功率充电头；或使用手机散热器。
 
 **怎样使用电池最好？**
@@ -246,17 +246,16 @@ CL 可以和充电宝配合使用：停充模式下充电宝优先为手机供�
 * 满充窗口内临时放开电量上限，温度控制仍生效
 * 默认关闭；默认值为每隔 7 天、02:00 开始、持续 4 小时
 
-#### 充电限流
+#### 高温模拟 / 充电限流
 
-* 仅在充电时生效：通过热状态模拟让 iOS 主动压低充电电流，不直接对 PMIC 下发固定安培数
-* 可选：关闭 / 正常 / 轻度 / 中度 / 重度；档位越高充电电流越小，前台性能也可能越受影响
-* 开关与档位一次提交（原子配置），不会出现两次写入之间的中间档
+「充电限流」与「高温模拟 (Powercuff)」共用同一个热状态模拟通道，因此合并为同一张卡片，用两个分时段档位表达：
 
-#### 高温模拟 (Powercuff)
-
-* `默认高温模拟等级`：非充电时维持的热状态（关闭 / 正常 / 轻度 / 中度 / 重度），等级越高性能越低、发热越少
-* `锁定等级`：防止系统自动调节温度模拟；越狱环境下若存在功能冲突的 tweak，CL 的热模拟可能不生效
-* 与`充电限流`配合：充电时进入限流档，停充后恢复默认等级
+* `充电时档位`：插电充电时生效的热状态，档位越高充电电流越小，前台性能也可能越受影响
+* `平时档位`：未插电或未充电时生效的热状态，档位越高性能越低、发热越少
+* `当前生效`：只读状态行，显示此刻实际生效的是哪一个档位（由守护进程裁决，App 不自行推导）
+* 两者不会同时生效：插电充电时用`充电时档位`，其余时间用`平时档位`
+* 档位都是关闭 / 正常 / 轻度 / 中度 / 重度；修改`充电时档位`时开关与档位一次提交（原子配置），不会出现两次写入之间的中间档
+* 实现方式：通过热状态模拟让 iOS 主动压低充电电流，不直接对 PMIC 下发固定安培数
 * 生效条件：越狱包（rootful / rootless / roothide）内置执行端 `CLThermalSim`，随包安装后把模拟档位实际应用到 `thermalmonitord`；策略诊断可查看"配置档位"与"最近应用结果"
 * TrollStore 包不含执行端（无注入环境）：档位仅写入系统偏好，是否生效由系统决定
 * 与第三方 Powercuff 类 tweak 并存时后应用者生效，建议二选一
@@ -370,10 +369,10 @@ curl http://127.0.0.1:1230 -d '{"api":"get_conf","key":"enable"}' -H "content-ty
 | `adv_hold_check_interval_minutes` | int | `3` | 保持补电检查间隔（1–10 分钟） |
 | `adv_hold_temp_disable_smart_charge` | bool | `true` | 插电保持时临时停用系统优化充电 |
 | `disable_smart_charge` | bool | `false` | 永久停用系统优化充电（系统级开关） |
-| `adv_limit_inflow` | bool | `false` | 限流开关 |
-| `adv_limit_inflow_mode` | string | `moderate` | 充电限流：`off` / `nominal` / `light` / `moderate` / `heavy` |
-| `adv_def_thermal_mode` | string | `off` | 默认高温模拟等级（Powercuff） |
-| `adv_thermal_mode_lock` | bool | `false` | 锁定热模拟等级 |
+| `adv_limit_inflow` | bool | `false` | 充电时档位开关 |
+| `adv_limit_inflow_mode` | string | `moderate` | 充电时档位：`off` / `nominal` / `light` / `moderate` / `heavy` |
+| `adv_def_thermal_mode` | string | `off` | 平时档位（Powercuff） |
+| `adv_thermal_mode_lock` | bool | `false` | 已废弃：合并设置面前用于锁定默认等级，现在不再参与任何决策 |
 | `full_charge_sched_enabled` | bool | `false` | 满充计划开关 |
 | `full_charge_sched_interval_days` | int | `7` | 满充间隔天数（1–90） |
 | `full_charge_sched_start_minute` | int | `120` | 开始时间（当日分钟数，120 = 02:00） |
@@ -525,7 +524,7 @@ ChargeLimiter is essentially a charging-policy scheduler, not a hardware power-p
 - Temperature control (over-temp stop / cool-down resume)
 - Optimized Battery Charging coordination and permanent disable
 - `Full-charge schedule`: temporarily lift the cap every N days at a given time
-- `Charging limit` (atomic config) and `Thermal simulation (Powercuff)`
+- `Thermal simulation / charging limit`: `While charging` and `When not charging` share one thermal simulation channel, so only one is ever in effect
 - `Fast charge`
 - `Policy diagnostics`, `charge-control probe` and daemon repair
 - `History charts` and the persisted `policy event timeline`
@@ -644,7 +643,7 @@ CL works with power banks: in charge-inhibit mode the bank powers the phone firs
 
 **How to cool the battery in summer?**
 
-* Use `Thermal simulation (Powercuff)` to cut hardware power (also lowers charging wattage); use `Charging limit` to cut charging current while charging.
+* Use CL's `Thermal simulation / charging limit` to cut hardware power: `When not charging` keeps the device in a lower thermal state, and `While charging` lowers the charging current further while plugged in and charging.
 * Use a lower-wattage charger, or a phone cooler.
 
 **Best practices for battery health?**
@@ -728,17 +727,16 @@ For people who avoid full charges daily but occasionally want one:
 * Inside the window the capacity cap is lifted; temperature control still applies
 * Off by default; defaults are every 7 days at 02:00 for 4 hours
 
-#### Charging limit
+#### Thermal simulation / charging limit
 
-* Applies only while charging: uses thermal simulation so iOS lowers the charging current on its own; no fixed amperage is written to the PMIC
-* Levels: Off / Nominal / Light / Moderate / Heavy; higher = lower charging current, possibly lower foreground performance
-* The switch and level are committed atomically in one request — no intermediate state between two writes
+`Charging limit` and `Thermal simulation (Powercuff)` share one thermal simulation channel, so they are merged into a single card with two time-scoped levels:
 
-#### Thermal simulation (Powercuff)
-
-* `Default level`: the thermal state maintained while not charging (Off / Nominal / Light / Moderate / Heavy); higher = less performance, less heat
-* `Lock level`: prevents the system from adjusting thermal simulation on its own; under jailbreak, conflicting tweaks may defeat CL's thermal simulation
-* Combined with `Charging limit`: the limit applies while charging, the default level after stopping
+* `While charging`: the thermal state applied while plugged in and charging; higher = lower charging current, possibly lower foreground performance
+* `When not charging`: the thermal state applied otherwise; higher = less performance, less heat
+* `Active now`: a read-only row showing which level is actually in effect (decided by the daemon; the app does not derive it)
+* The two never apply at the same time: the charging level while plugged in and charging, the idle level the rest of the time
+* Levels are Off / Nominal / Light / Moderate / Heavy; editing the charging level commits the switch and the level atomically in one request — no intermediate state between two writes
+* How it works: thermal simulation makes iOS lower the charging current on its own; no fixed amperage is written to the PMIC
 * How it takes effect: jailbreak packages (rootful / rootless / roothide) bundle the companion `CLThermalSim` tweak installed with the package; it applies the configured level to `thermalmonitord`. Policy diagnostics show the configured level and the latest apply result
 * The TrollStore package has no injection environment and ships without the tweak: the level is written to system preferences only, and whether iOS honors it is up to the system
 * When third-party Powercuff-style tweaks are installed alongside, the last applier wins; pick one
@@ -852,10 +850,10 @@ curl http://127.0.0.1:1230 -d '{"api":"get_conf","key":"enable"}' -H "content-ty
 | `adv_hold_check_interval_minutes` | int | `3` | Hold recharge recheck interval (1–10 min) |
 | `adv_hold_temp_disable_smart_charge` | bool | `true` | Temporarily disable OBC while holding |
 | `disable_smart_charge` | bool | `false` | Permanently disable OBC (system-level switch) |
-| `adv_limit_inflow` | bool | `false` | Limit inflow switch |
-| `adv_limit_inflow_mode` | string | `moderate` | Limit level: `off` / `nominal` / `light` / `moderate` / `heavy` |
-| `adv_def_thermal_mode` | string | `off` | Default thermal simulation level (Powercuff) |
-| `adv_thermal_mode_lock` | bool | `false` | Lock thermal level |
+| `adv_limit_inflow` | bool | `false` | While-charging level switch |
+| `adv_limit_inflow_mode` | string | `moderate` | While-charging level: `off` / `nominal` / `light` / `moderate` / `heavy` |
+| `adv_def_thermal_mode` | string | `off` | Idle thermal level (Powercuff) |
+| `adv_thermal_mode_lock` | bool | `false` | Retired: used to pin the default level before the settings were merged; no longer affects any decision |
 | `full_charge_sched_enabled` | bool | `false` | Full-charge schedule |
 | `full_charge_sched_interval_days` | int | `7` | Interval days (1–90) |
 | `full_charge_sched_start_minute` | int | `120` | Start time (minutes in day; 120 = 02:00) |

@@ -96,6 +96,8 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
 @property (nonatomic, assign) BOOL previousDirectPlugConnected;
 @property (nonatomic, assign) BOOL limitOnlyReestablishDone;  // D5 启动重建每启动至多一次
 @property (nonatomic, copy) NSString *limitOnlyReestablishStatus; // D5 重建结果（诊断可见）
+// thermal-sim-settings：生效范围由 daemon 裁决上报，外部只读、内部按刷新结果覆写
+@property (nonatomic, copy, nullable) NSString *thermalActiveScope;
 @end
 
 @implementation CLBatteryManager
@@ -142,11 +144,20 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
     _holdCheckIntervalMinutes = MAX([data[@"adv_hold_check_interval_minutes"] integerValue], 1);
     _holdTempDisableSmartCharge = [data[@"adv_hold_temp_disable_smart_charge"] boolValue];
     _limitInflow = [data[@"adv_limit_inflow"] boolValue];
-    _thermalModeLock = [data[@"adv_thermal_mode_lock"] boolValue];
 
     _thermalMode = [self thermalModeFromString:data[@"adv_def_thermal_mode"]];
     _limitInflowThermalMode = [self thermalModeFromString:data[@"adv_limit_inflow_mode"]];
     _thermalSimulateMode = [self thermalModeFromString:data[@"thermal_simulate_mode"]];
+    // 生效范围由 daemon 裁决并上报（thermal-sim-settings D7）：App 只显示，不自行推导。
+    // 缺失（旧 daemon / 本地回退配置）时保持 nil，UI 显示占位而不编造。
+    NSString *thermalActiveScopeValue = data[@"thermal_active_scope"];
+    if ([thermalActiveScopeValue isKindOfClass:[NSString class]] && thermalActiveScopeValue.length > 0) {
+        _thermalActiveScope = thermalActiveScopeValue;
+    } else {
+        _thermalActiveScope = nil;
+    }
+    // 合并前的旧配置标记（thermal-sim-settings）：只用于 App 弹一次合并说明
+    _thermalMergeNoticePending = [data[@"thermal_merge_notice"] boolValue];
     // 生效验证诊断（design D5）：区分"已配置"与"已生效"。
     NSString *thermalConfigValue = data[@"thermal_config_mode"];
     _thermalConfigMode = ([thermalConfigValue isKindOfClass:[NSString class]] && thermalConfigValue.length > 0) ? thermalConfigValue : @"off";
@@ -251,6 +262,8 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
     [[CLAPIClient shared] getBatteryInfoWithCompletion:^(NSDictionary * _Nullable response, NSError * _Nullable error) {
         if (error || !response) {
             [self updateDaemonStatus:NO];
+            // daemon 不在场就没有裁决来源：清掉生效范围，UI 显示占位而不是上一次的残留
+            self.thermalActiveScope = nil;
             // 仅限流模式：daemon 死亡路径无电池事件通知——复用既有 1s 刷新链观察
             // 插拔边沿与探针（会话状态行不滞留旧值；不新增常驻轮询，timer 本就存在）
             if (self.operationMode == CLOperationModeLimitOnly) {
@@ -294,6 +307,10 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
         self.lastChargeCommandTime = [data[@"LastChargeCommandTime"] doubleValue];
         self.lastInflowCommandTime = [data[@"LastInflowCommandTime"] doubleValue];
         self.thermalSimulateMode = [self thermalModeFromString:data[@"ThermalSimulateMode"]];
+        // 生效范围随电池轮询活更新（thermal-sim-settings）：插拔边沿不必等整页重建。
+        // 旧 daemon 不带该字段时保持 nil，由 UI 显示占位。
+        NSString *batteryScope = data[@"ThermalActiveScope"];
+        self.thermalActiveScope = ([batteryScope isKindOfClass:[NSString class]] && batteryScope.length > 0) ? batteryScope : nil;
         self.smartChargeStatus = [data[@"SmartChargeStatus"] integerValue];
         self.smartChargeManagedByDaemon = [data[@"SmartChargeManagedByDaemon"] boolValue];
         self.smartChargeOriginalStatus = [data[@"SmartChargeOriginalStatus"] integerValue];

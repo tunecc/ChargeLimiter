@@ -1714,10 +1714,10 @@ static BOOL shouldFallbackFromPredictiveInhibitStop(BOOL isAdaptorConnected,
 static uint64_t g_chargeEnableVerifyGeneration = 0;
 
 // 限流模式下电流被压制，验证阈值联动 thermal mode 降档。
+// 「充电时档位」非关闭即视为限流生效（thermal-sim-settings：锁定等级退役后不再有第二道否决）。
 static int chargeEnableThresholdForCurrentThermalMode(void) {
     NSString* mode = getLocalString(@"adv_limit_inflow_mode", @"moderate");
-    BOOL limitActive = getLocalBool(@"adv_limit_inflow", NO) &&
-                       !getLocalBool(@"adv_thermal_mode_lock", NO);
+    BOOL limitActive = getLocalBool(@"adv_limit_inflow", NO);
     if (limitActive && ([mode isEqualToString:@"moderate"] || [mode isEqualToString:@"heavy"])) {
         return 30;
     }
@@ -1854,23 +1854,36 @@ static int setChargeStatus(BOOL flag) {
 
 
 // 集中决策：thermal mode 只由命令、配置与连接信号决定，不读实时充电读数。
-// lock=YES → 默认档；插电+充电命令开+limit=YES → 限流档；其他 → 默认档。
-static NSString* targetThermalModeForCurrentState(void) {
-    BOOL lock = getLocalBool(@"adv_thermal_mode_lock", NO);
-    NSString* defaultMode = getLocalString(@"adv_def_thermal_mode", @"off");
-    if (lock) {
-        return defaultMode;
+// 插电+充电命令开+「充电时档位」非关闭 → 充电时档位；其他 → 平时档位。
+// thermal-sim-settings：原 adv_thermal_mode_lock 分支已退役——它只是让平时档位永久胜出、
+// 静默否决充电时档位，与 UI 上"防止系统自动调节"的说明不符，合并设置面后由用户直接选择。
+static BOOL chargingThermalLevelAppliesNow(void) {
+    if (!getLocalBool(@"adv_limit_inflow", NO)) {
+        return NO;
     }
-    BOOL limitInflow = getLocalBool(@"adv_limit_inflow", NO);
-    // 限流档只在插电充电会话生效：命令标志静态默认/拔线重置都是 YES，未插电时
-    // 不能凭它进入限流档，否则限流档残留会覆盖温控模拟默认档（b8c0764 已知代价，
+    // 充电时档位只在插电充电会话生效：命令标志静态默认/拔线重置都是 YES，未插电时
+    // 不能凭它进入充电时档位，否则该档位残留会覆盖平时档位（b8c0764 已知代价，
     // CLThermalSim 补齐执行通路后变成实际的持续限流）。连接判定只经 isAdaptorConnect
     // 取连接信号，不引入实时充电读数依赖。
     BOOL adaptorConnected = isAdaptorConnect(bat_info, @(getLocalBool(@"adv_disable_inflow", NO)));
-    if (adaptorConnected && g_chargeCommandEnabled && limitInflow) {
+    return adaptorConnected && g_chargeCommandEnabled;
+}
+
+static NSString* targetThermalModeForCurrentState(void) {
+    if (chargingThermalLevelAppliesNow()) {
         return getLocalString(@"adv_limit_inflow_mode", @"moderate");
     }
-    return defaultMode;
+    return getLocalString(@"adv_def_thermal_mode", @"off");
+}
+
+// 生效范围（「充电高级」页「当前生效」行）：复用 chargingThermalLevelAppliesNow，
+// 与 targetThermalModeForCurrentState 不可能各说各话。
+// charging=插电充电会话取充电时档位；idle=取平时档位；off=两侧皆关闭。
+static NSString* thermalScopeForCurrentState(void) {
+    if ([targetThermalModeForCurrentState() isEqualToString:@"off"]) {
+        return @"off";
+    }
+    return chargingThermalLevelAppliesNow() ? @"charging" : @"idle";
 }
 
 // 读回验证（design D5）：应用档位后短窗口内比对系统热状态与预期档，未达重发通知有限次。
@@ -1881,7 +1894,7 @@ static NSTimer* g_thermalVerifyTimer = nil;
 static NSString* g_thermalVerifyExpected = nil;
 static int g_thermalVerifyChecksLeft = 0;
 static int g_thermalVerifyRepostsLeft = 0;
-// 幂等键 = 目标档 + 锁定镜像（与 setThermalSimulationMode 的写入内容一致）。
+// 幂等键 = 目标档（与 setThermalSimulationMode 的写入内容一致）。
 // 策略评估兜底同步按它拦截重复写，未变化不重写偏好、不重发通知。
 static NSString* g_lastAppliedThermalKey = nil;
 
@@ -1994,11 +2007,10 @@ static void cancelThermalApplyVerification(void) {
 static void applyThermalModeForCurrentState(void) {
     @synchronized (Service.inst) {
         NSString* target = targetThermalModeForCurrentState();
-        NSString* key = [NSString stringWithFormat:@"%@|%d", target, getLocalBool(@"adv_thermal_mode_lock", NO)];
-        if ([key isEqualToString:g_lastAppliedThermalKey]) {
-            return; // 目标与锁定镜像均未变：不重写偏好、不重发通知
+        if ([target isEqualToString:g_lastAppliedThermalKey]) {
+            return; // 目标未变：不重写偏好、不重发通知
         }
-        g_lastAppliedThermalKey = key;
+        g_lastAppliedThermalKey = target;
         setThermalSimulationMode(target);
         scheduleThermalApplyVerification(target);
     }
@@ -3977,6 +3989,8 @@ static void initConfKeySets() {
             @"adv_hold_enabled",
             @"adv_hold_temp_disable_smart_charge",
             @"adv_limit_inflow",
+            // adv_thermal_mode_lock 已退役（thermal-sim-settings）：不再参与任何裁决，
+            // 仅保留在布尔键集合里，让旧版 App 的写入仍按 bool 落盘、迁移逻辑能正确读到。
             @"adv_thermal_mode_lock",
             @"full_charge_sched_enabled",
             @"history_stats_enabled"
@@ -4371,6 +4385,33 @@ static void selfHealSmartChargeOnBootstrap(void) {
     }
 }
 
+// thermal-sim-settings 一次性迁移：退役 adv_thermal_mode_lock。
+// 旧语义下 lock=YES 让「默认等级」永久胜出、完全忽略限流档——用户当时的实际效果就是
+// "只用平时档位"。新决策函数不再读该键，若不动 adv_limit_inflow，老用户一插电就会
+// 突然多出一个生效档位。这里一次性把关流关掉以保持原有效果，并把键归零。
+// thermal_merge_notice 记录"这台设备上出现过合并前的配置"，供 App 弹一次合并说明。
+// 只在首次运行时判定：那一刻两个档位键同时非关闭，只可能是旧界面配出来的（新界面还没被用过），
+// 因此不会把新版本用户自己配的双档位误判成需要迁移。
+static void migrateRetiredThermalLockOnBootstrap(void) {
+    if (getLocalBool(@"thermal_lock_migrated", NO)) {
+        return; // 已迁移过
+    }
+    BOOL hadLock = getLocalBool(@"adv_thermal_mode_lock", NO);
+    BOOL bothLevelsConfigured = getLocalBool(@"adv_limit_inflow", NO) &&
+                                ![getLocalString(@"adv_def_thermal_mode", @"off") isEqualToString:@"off"];
+    if (hadLock && getLocalBool(@"adv_limit_inflow", NO)) {
+        setLocalBool(@"adv_limit_inflow", NO);
+        NSFileInfoLog(@"thermal lock migration: adv_limit_inflow cleared (was locked to default level)");
+    }
+    setLocalBool(@"adv_thermal_mode_lock", NO);
+    setLocalBool(@"thermal_lock_migrated", YES);
+    if (hadLock || bothLevelsConfigured) {
+        setLocalBool(@"thermal_merge_notice", YES);
+        NSFileInfoLog(@"thermal merge notice: pre-merge config detected (lock=%d both_levels=%d)",
+                      hadLock, bothLevelsConfigured);
+    }
+}
+
 static void syncSmartChargeCoordination(NSDictionary* info, BOOL isAdaptorConnected) {
     g_smartChargeStatus = getSmartChargeStatus();
     if (g_smartChargeStatus < 0) {
@@ -4759,6 +4800,7 @@ static void initConf(BOOL reset) {
         @"adv_limit_inflow": @NO,
         @"adv_limit_inflow_mode": @"moderate",
         @"adv_def_thermal_mode": @"off", // powercuff
+        // 已退役（thermal-sim-settings）：仅作兼容键位存在，任何路径都不再写 YES
         @"adv_thermal_mode_lock": @NO,
         @"full_charge_sched_enabled": @NO,
         @"full_charge_sched_interval_days": @7,
@@ -5047,6 +5089,10 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             kv[@"thermal_simulate_mode"] = getThermalSimulationMode();
             // 生效验证诊断（design D5）：配置档位 + 最近一次应用结果，区分"已配置"与"已生效"。
             kv[@"thermal_config_mode"] = getThermalConfigMode();
+            // 生效范围（thermal-sim-settings「当前生效」行）：与集中决策函数同一处裁决
+            kv[@"thermal_active_scope"] = thermalScopeForCurrentState();
+            // 检测到合并前旧配置的标记：App 据此弹一次合并说明，不参与裁决
+            kv[@"thermal_merge_notice"] = @(getLocalBool(@"thermal_merge_notice", NO));
             kv[@"thermal_apply_status"] = getLocalString(@"thermal_apply_status", @"unknown");
             kv[@"thermal_apply_checked_at"] = getLocalString(@"thermal_apply_checked_at", @"");
             // 诚实诊断（fix-thermal-limit-live-loop D3）：完整控制模式来源恒 daemon-probe；
@@ -5178,12 +5224,12 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             }
         }
         if ([key isEqualToString:@"adv_def_thermal_mode"]) {
-            // 默认档变更后经决策函数决定当前应写入的 thermal mode
+            // 平时档位变更后经决策函数决定当前应写入的 thermal mode
             applyThermalModeForCurrentState();
         }
+        // adv_thermal_mode_lock 已退役：旧版 App 仍可能写它，此处不再触发重算（写了也不生效）
         if ([key isEqualToString:@"adv_limit_inflow"] ||
-            [key isEqualToString:@"adv_limit_inflow_mode"] ||
-            [key isEqualToString:@"adv_thermal_mode_lock"]) {
+            [key isEqualToString:@"adv_limit_inflow_mode"]) {
             applyThermalModeForCurrentState();
         }
         if (shouldRefreshBatteryPolicyForConfigKey(key)) {
@@ -5275,6 +5321,8 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
         // 拉取，若只在 get_conf 里带 thermal_simulate_mode，切换等级后卡片最长滞后到
         // 下次进入页面（原版 Web UI 每秒轮询 get_conf，UIKit 版丢了这条链路）。
         data[@"ThermalSimulateMode"] = getThermalSimulationMode();
+        // 同一条理由带生效范围：「充电高级」页「当前生效」行随电池轮询刷新，插拔边沿不靠整页重建
+        data[@"ThermalActiveScope"] = thermalScopeForCurrentState();
         data[@"PolicyTransitionHistory"] = recentPolicyTransitionHistory();
         NSArray* dbPolicyEvents = getPolicyEventDBData((int)kPolicyEventHistoryLimit, 0);
         data[@"PolicyEventHistory"] = dbPolicyEvents.count > 0 ? dbPolicyEvents : recentPolicyEventHistory();
@@ -5855,6 +5903,7 @@ void detectUPSBattery() {
         g_smartChargeStatus = getSmartChargeStatus();
         recoverSmartChargeCoordinationOnBootstrap();
         selfHealSmartChargeOnBootstrap();
+        migrateRetiredThermalLockOnBootstrap();
         refreshFullChargeScheduleTimer(0);
         evaluateFullChargeSchedule(YES);
         // 开机越狱后已插电时，电池通知尚未到达、命令翻转分支走不到，加速项等
