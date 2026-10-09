@@ -68,8 +68,10 @@ class KernelChannelHelperTests(unittest.TestCase):
         self.assertNotIn("notify_set_state", body)
 
     def test_session_channel_decode(self):
-        # 会话通道解码：enabled(bit0) | 档位值(bit8-15)，与写方编码互逆
-        body = function_body(self.utils, "BOOL CLThermalReadSessionChannel(BOOL *enabled, uint64_t *mode) {")
+        # 会话通道解码：enabled(bit0) | 充电时档位(bit8-15) | 平时档位(bit16-23)，与写方互逆
+        body = function_body(self.utils,
+                             "BOOL CLThermalReadSessionChannel(BOOL *enabled, uint64_t *chargeMode, uint64_t *idleMode) {")
+        self.assertIn("(state >> 16) & 0xFF", body)
         self.assertIn("CLThermalEnsureToken", body)
         self.assertIn("notify_get_state", body)
         self.assertIn("& 1ULL", body)
@@ -238,7 +240,8 @@ class HonestDiagnosticsDataTests(unittest.TestCase):
         body = function_body(self.manager, "- (void)refreshLimitOnlyDiagnostics {")
         self.assertIn("CLOperationModeLimitOnly", body)
         self.assertIn("_sessionChannelMode", body)
-        self.assertIn("_sessionChannelEnabled && _sessionChannelMode.length > 0", body)
+        self.assertIn("limitOnlyActiveScope", body)
+        self.assertIn("_sessionChannelIdleMode", body)
         # off 是合法档位值：回退链不得把 off 归一成 moderate（审查修复 1）
         self.assertNotIn('[_limitOnlyLevel isEqualToString:@"off"] ? @"moderate"', body)
         self.assertIn('"app-probe"', body)
@@ -296,7 +299,8 @@ class VerifyWindowStateTests(unittest.TestCase):
         self.assertIn("stopLimitOnlyVerifyWindow", body)
 
     def test_dispatch_success_opens_window(self):
-        body = function_body(self.manager, "- (void)applyLimitOnlyLevel:(NSString *)mode completion:(void (^)(BOOL))completion {")
+        body = function_body(self.manager,
+                             "- (void)applyLimitOnlyLevelsWithChargeMode:(NSString *)chargeMode")
         self.assertIn("startLimitOnlyVerifyWindow", body)
         switch = function_body(self.manager, "- (void)switchToMode:(CLOperationMode)mode completion:(void (^)(BOOL))completion {")
         self.assertIn("startLimitOnlyVerifyWindow", switch)
@@ -329,11 +333,11 @@ class SessionStatusUITests(unittest.TestCase):
         self.assertIn("可能受外部模拟污染", body)
 
     def test_failed_state_tap_retry(self):
-        # 验证失败态点按卡片 → 重新下发档位（applyLimitOnlyLevel）
+        # 验证失败态点按卡片 → 重新下发两个档位（applyLimitOnlyLevelsWithChargeMode）
         self.assertIn("UITapGestureRecognizer", self.settings)
         retry = function_body(self.settings, "- (void)limitOnlyCardTapped {")
         self.assertIn("CLLimitOnlyVerifyFailed", retry)
-        self.assertIn("applyLimitOnlyLevel", retry)
+        self.assertIn("applyLimitOnlyLevelsWithChargeMode", retry)
 
     def test_window_transitions_post_config_notification(self):
         # 窗口状态变化通知 UI 刷新（CLBatteryManager 自发）
@@ -342,8 +346,9 @@ class SessionStatusUITests(unittest.TestCase):
             self.assertIn("CLConfigDidUpdateNotification", body)
 
     def test_new_strings_bilingual(self):
-        for key in ("已插电 · 验证失败，点按重试", "验证失败", "验证中",
-                    "（可能受外部模拟污染）"):
+        for key in ("已插电充电 · 验证失败，点按重试", "未充电 · 验证失败，点按重试",
+                    "已插电充电 · 充电时档位已关闭", "未充电 · 平时档位已关闭",
+                    "验证失败", "验证中", "（可能受外部模拟污染）"):
             self.assertIn(key, self.zh)
             self.assertIn(key, self.en)
 
@@ -516,26 +521,34 @@ class VerifyWindowPlugGateTests(unittest.TestCase):
         cls.manager = BATTERY_M.read_text()
         cls.settings = SETTINGS_M.read_text()
 
-    def test_window_gated_on_plugged(self):
+    def test_window_gated_on_active_scope(self):
+        # Bug B1（2026-10-05 真机）经 limit-only-idle-thermal-level 修订：门控判据从
+        # "是否插电"改为"当前时段是否有档位"。未插电时验证对象是「平时档位」——
+        # 平时档位非关闭就有对象，照常开窗；两侧皆关（scope=Off）才停窗回 Unknown。
         body = function_body(self.manager, "- (void)startLimitOnlyVerifyWindow {")
-        self.assertIn("directPlugConnected", body)
-        # 未插电直接置 Unknown 不开窗（验证对象不存在）
+        self.assertIn("self.limitOnlyActiveScope == CLLimitOnlyScopeOff", body)
         self.assertIn("CLLimitOnlyVerifyUnknown", body)
+        self.assertNotIn("if (!_directPlugConnected)", body)
 
-    def test_unplugged_verify_card_shows_unverified(self):
+    def test_no_target_scope_shows_unverified(self):
+        # 没有待生效对象时生效验证恒显「未验证」。limit-only-idle-thermal-level 后判据是
+        # "当前时段是否有档位"（scope=Off），不再是"是否插电"——平时档位生效时未插电也要验证。
+        # 只锚 verifyText 那一段：会话状态 switch 里也有 Failed 分支，按出现次数数不可靠。
         body = function_body(self.settings, "- (void)updateLimitOnlyRows {")
-        # 未插电守卫必须先于生效验证卡片的三态分支（第二处 Failed——第一处在会话状态 switch）
-        guard = body.index("if (!manager.directPlugConnected)")
-        first_failed = body.index("CLLimitOnlyVerifyFailed")
-        verify_failed = body.index("CLLimitOnlyVerifyFailed", first_failed + 1)
-        self.assertLess(guard, verify_failed)
-        self.assertIn('verifyText = CLL(@"未验证");', body[guard:verify_failed])
+        verify_section = body[body.index("NSString *verifyText;"):]
+        guard = verify_section.index("if (manager.limitOnlyActiveScope == CLLimitOnlyScopeOff)")
+        self.assertLess(guard, verify_section.index("CLLimitOnlyVerifyFailed"))
+        self.assertIn('verifyText = CLL(@"未验证");', verify_section[guard:])
 
     def test_plug_edge_reissues_session_apply(self):
         # Bug B2 自愈：App 观察到插电边沿（仅限流模式）时重下发会话一次，不依赖 tweak 边沿
         body = function_body(self.manager, "- (void)refreshDirectSessionState {")
         edge = body[body.index("_previousDirectPlugConnected != _directPlugConnected"):]
-        self.assertIn("applyLimitOnlyLevel", edge)
+        self.assertIn("applyLimitOnlyLevelsWithChargeMode", edge)
+        # limit-only-idle-thermal-level：边沿从"插电/拔线"扩为"生效时段翻转"，
+        # 但只有插拔边沿才自愈重下发（IsCharging 抖动不 spawn 一次性 root 进程）
+        self.assertIn("scopeChanged", body)
+        self.assertIn("if (plugEdge)", body)
 
 
 class IntegrationReviewFixesTests(unittest.TestCase):
@@ -567,8 +580,11 @@ class IntegrationReviewFixesTests(unittest.TestCase):
 
     def test_apply_failure_does_not_open_window(self):
         # MINOR：下发失败（rc!=0）不开验证窗——"下发失败"不混入"探针超窗"终态
-        body = function_body(self.manager, "- (void)applyLimitOnlyLevel:(NSString *)mode completion:(void (^)(BOOL))completion {")
-        self.assertLess(body.index("if (rc == 0)"), body.index("startLimitOnlyVerifyWindow"))
+        body = function_body(self.manager,
+                             "- (void)applyLimitOnlyLevelsWithChargeMode:(NSString *)chargeMode")
+        self.assertLess(body.index("if (ok) {"), body.index("startLimitOnlyVerifyWindow"))
+        # limit-only-idle-thermal-level A9/A19：失败时内存与本地 KV 一起回滚
+        self.assertIn("previousCharge", body)
 
     def test_refresh_failure_observes_direct_state(self):
         # MINOR：daemon 死亡路径复用既有 1s 刷新链观察插拔边沿（仅限流模式，无新增常驻轮询）
@@ -628,14 +644,16 @@ class EdgeReliabilityTests(unittest.TestCase):
         # 切换后 30s 定时器空转不停（tick 早退无写入但不卫生）
         body = function_body(self.tweak, "static void CLTSSessionEvaluate(void) {")
         self.assertLess(body.index("CLTSUpdateReassertTimer();"),
-                        body.index("if (!CLTSSessionConfig(&limit)) return;"))
+                        body.index("if (!CLTSSessionConfig(&charge, &idle)) return;"))
 
     def test_app_unplug_edge_reissues(self):
-        # App 侧纵深：拔电边沿同样经 CLI 重下发（verb 按当前插电态落 off）
+        # App 侧纵深：插拔边沿都经 CLI 重下发（verb 按当前插电/充电态裁决目标档位）
         body = function_body(self.manager, "- (void)refreshDirectSessionState {")
         edge = body[body.index("_previousDirectPlugConnected != _directPlugConnected"):]
-        unplugged = edge[edge.index("!_directPlugConnected"):]
-        self.assertIn("applyLimitOnlyLevel", unplugged)
+        # limit-only-idle-thermal-level：不再区分插电/拔线两个分支各自重下发，
+        # 统一走 plugEdge 一次；tweak 侧按会话配置自行裁决两个档位
+        self.assertIn("if (plugEdge)", edge)
+        self.assertIn("applyLimitOnlyLevelsWithChargeMode", edge)
 
 
 if __name__ == "__main__":

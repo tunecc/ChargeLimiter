@@ -518,13 +518,14 @@
 电量上限由系统负责（优化充电 / 80% 限制）" = "Limit Only · daemon not running
 Capacity limit is handled by the system (Optimized Charging / 80% limit)";
 "会话状态" = "Session Status";
-"两个档位均已关闭" = "Both levels off";
 "已插电充电 · 充电时档位生效中" = "Plugged in and charging · charging level active";
 "已插电充电 · 生效验证中" = "Plugged in and charging · verifying";
 "已插电充电 · 验证失败，点按重试" = "Plugged in and charging · verification failed, tap to retry";
+"已插电充电 · 充电时档位已关闭" = "Plugged in and charging · charging level is off";
 "未充电 · 平时档位生效中" = "Not charging · idle level active";
 "未充电 · 生效验证中" = "Not charging · verifying";
 "未充电 · 验证失败，点按重试" = "Not charging · verification failed, tap to retry";
+"未充电 · 平时档位已关闭" = "Not charging · idle level is off";
 "生效验证" = "Verification";
 "未验证" = "Unverified";
 "验证中" = "Verifying";

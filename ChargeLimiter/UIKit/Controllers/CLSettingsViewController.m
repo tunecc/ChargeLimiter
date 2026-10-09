@@ -5884,13 +5884,15 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
 - (void)updateLimitOnlyRows {
     CLBatteryManager *manager = [CLBatteryManager shared];
     // 会话状态：按当前生效时段如实表述。limit-only-idle-thermal-level 起未插电也可能有
-    // 生效中的档位（平时档位），"未插电 · 限流已解除"不再恒真，只有两侧皆关时才这么说。
+    // 生效中的档位（平时档位），"未插电 · 限流已解除"不再恒真。
     // 三个分支直接读 limitOnlyActiveScope——该枚举本身就编码了"插电 && 正在充电"，
     // 不再另判 directPlugConnected，避免出现第二套生效方真相。
+    // 注意 scope=Off 只说"当前时段不施加热模拟"，不等于两个档位都关了：插电充电时
+    // 充电时档位为关即 Off（平时档位是什么都不影响当前时刻），未插电时平时档位为关
+    // 即 Off（充电时档位是什么都不影响）。写成"两个档位均已关闭"在出厂缺省态
+    // （充电时=中度、平时=关闭、未插电）就会和档位行自相矛盾，因此必须按时段点名。
     NSString *session;
-    if (manager.limitOnlyActiveScope == CLLimitOnlyScopeOff) {
-        session = CLL(@"两个档位均已关闭");
-    } else if (manager.limitOnlyActiveScope == CLLimitOnlyScopeCharging) {
+    if (manager.limitOnlyActiveScope == CLLimitOnlyScopeCharging) {
         switch (manager.limitOnlyVerifyState) {
             case CLLimitOnlyVerifyApplied:
                 session = CLL(@"已插电充电 · 充电时档位生效中");
@@ -5902,7 +5904,7 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
                 session = CLL(@"已插电充电 · 生效验证中");
                 break;
         }
-    } else {
+    } else if (manager.limitOnlyActiveScope == CLLimitOnlyScopeIdle) {
         // 未插电，或插线但系统暂停充电：生效方是平时档位
         switch (manager.limitOnlyVerifyState) {
             case CLLimitOnlyVerifyApplied:
@@ -5915,6 +5917,14 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
                 session = CLL(@"未充电 · 生效验证中");
                 break;
         }
+    } else if (manager.directPlugConnected) {
+        // 插电充电中，但充电时档位为关：当前时段不施加热模拟。不说"两个档位均已关闭"——
+        // 平时档位可能仍配着值，只是此刻用不上。
+        session = CLL(@"已插电充电 · 充电时档位已关闭");
+    } else {
+        // 未插电（或插线未充电），但平时档位为关：当前时段不施加热模拟。不说
+        // "两个档位均已关闭"——充电时档位可能仍配着值，插上电就会生效。
+        session = CLL(@"未充电 · 平时档位已关闭");
     }
     [self updateCardValue:self.limitOnlyCard title:CLL(@"会话状态") value:session];
     // 生效验证（D4 三态 + D3 污染标注——外部模拟在场时读数只作"可能"参考）。

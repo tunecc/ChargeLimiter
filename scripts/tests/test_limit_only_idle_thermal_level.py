@@ -316,11 +316,26 @@ class TestLimitOnlyCardUI(unittest.TestCase):
     """主页仅限流卡片：两行档位 + 当前生效 + 诚实状态面"""
 
     def test_card_has_both_level_rows(self):
-        self.assertIn('title:CLL(@"充电时档位")', SETTINGS)
-        self.assertIn('title:CLL(@"平时档位")', SETTINGS)
-        self.assertIn('title:CLL(@"当前生效")', SETTINGS)
+        # 断言锚在 setupLimitOnlyCard 函数体上，不是整文件 substring——后者在删掉卡片
+        # 某一行时仍然全绿（同样的文案在别处也出现），变异测试 7/31 漏网由此而来。
+        seg = function_body(SETTINGS, "- (void)setupLimitOnlyCard {")
+        for title in ("充电时档位", "平时档位", "当前生效", "会话状态", "生效验证"):
+            self.assertIn(f'title:CLL(@"{title}")', seg, f"卡片缺少「{title}」行")
         # 原「限流档位」行名不再出现
-        self.assertNotIn('title:CLL(@"限流档位")', SETTINGS)
+        self.assertNotIn('title:CLL(@"限流档位")', seg)
+
+    def test_card_keeps_channel_tip_and_trollstore_hint(self):
+        seg = function_body(SETTINGS, "- (void)setupLimitOnlyCard {")
+        self.assertIn("充电时档位与平时档位共用同一个温度模拟通道", seg)
+        self.assertIn("getJBType_C() == 8", seg)
+        self.assertIn("巨魔环境无执行端", seg)
+
+    def test_verify_row_has_retry_gesture(self):
+        # 重试手势必须挂在"生效验证"行上（挂整卡会与档位行选择器嵌套）
+        seg = function_body(SETTINGS, "- (void)setupLimitOnlyCard {")
+        self.assertIn("verifyRow", seg)
+        self.assertIn("@selector(limitOnlyCardTapped)", seg)
+        self.assertNotIn("[self.limitOnlyCard addGestureRecognizer", seg)
 
     def test_card_has_section_header(self):
         """卡片必须有 section header「高温模拟 / 充电限流」
@@ -340,8 +355,12 @@ class TestLimitOnlyCardUI(unittest.TestCase):
         )
 
     def test_both_rows_have_pickers(self):
-        self.assertIn("@selector(presentLimitOnlyChargeLevelPicker)", SETTINGS)
-        self.assertIn("@selector(presentLimitOnlyIdleLevelPicker)", SETTINGS)
+        seg = function_body(SETTINGS, "- (void)setupLimitOnlyCard {")
+        self.assertIn("@selector(presentLimitOnlyChargeLevelPicker)", seg)
+        self.assertIn("@selector(presentLimitOnlyIdleLevelPicker)", seg)
+        # 两行都必须真的挂上手势并放开交互，否则出现"看得见选不动"的假控件
+        self.assertEqual(seg.count("addGestureRecognizer"), 3)  # 两个档位行 + 生效验证行
+        self.assertEqual(seg.count("userInteractionEnabled = YES"), 3)
 
     def test_picker_offers_five_levels(self):
         seg = function_body(SETTINGS, "- (void)presentLimitOnlyLevelPickerForScope:(CLLimitOnlyActiveScope)scope {")
@@ -372,15 +391,51 @@ class TestLimitOnlyCardUI(unittest.TestCase):
             "会话状态行不得再显示「未插电 · 限流已解除」",
         )
         self.assertNotIn('CLL(@"已插电 · 限流生效中")', seg)
-        # 三个分支各自有独立文案：两侧皆关 / 插电充电 / 其余（平时档位生效）
-        self.assertIn("两个档位均已关闭", seg)
+        # 四个分支各自有独立文案：插电充电 / 未充电（平时档位生效）/ 两种"当前时段已关闭"
         self.assertIn("已插电充电 · 充电时档位生效中", seg)
         self.assertIn("未充电 · 平时档位生效中", seg)
+        self.assertIn("已插电充电 · 充电时档位已关闭", seg)
+        self.assertIn("未充电 · 平时档位已关闭", seg)
+        # 不得再把"两个档位均已关闭"当作用户可见文案——scope=Off 不等于两侧皆关。
+        # 注释里提一句是为了说明改了什么，所以断言 CLL(...) 形式而不是裸字符串。
+        self.assertNotIn('CLL(@"两个档位均已关闭")', seg)
+
+    def test_pollution_annotation_kept(self):
+        # 外部模拟在场时标注"可能受污染"：只标注不推翻生效判定（D3 口径）
+        seg = function_body(SETTINGS, "- (void)updateLimitOnlyRows {")
+        self.assertIn("externalSimulationSource", seg)
+        self.assertIn("（可能受外部模拟污染）", seg)
 
     def test_update_rows_refreshes_all_three_status_rows(self):
         seg = function_body(SETTINGS, "- (void)updateLimitOnlyRows {")
         for title in ["充电时档位", "平时档位", "当前生效", "会话状态", "生效验证"]:
             self.assertIn(f'title:CLL(@"{title}")', seg)
+
+
+class TestSessionStatusTruthTable(unittest.TestCase):
+    """A8/A18：scope=Off 必须按时段点名，不能说"两个档位均已关闭"
+
+    第 3 轮验收 failed 的根因。limitOnlyActiveScope == Off 覆盖两种并不相同的情况：
+      - 插电充电中，但充电时档位为关（平时档位是什么都不影响当前时刻）
+      - 未插电，但平时档位为关（充电时档位是什么都不影响）
+    出厂缺省态（充电时=中度、平时=关闭）在未插电时正好落在第二种，此时卡片同时显示
+    「充电时档位 = 中度」和「两个档位均已关闭」——自相矛盾。必须按时段点名是哪一档关了。
+    """
+
+    def test_off_branch_names_the_period_level(self):
+        seg = function_body(SETTINGS, "- (void)updateLimitOnlyRows {")
+        self.assertIn("已插电充电 · 充电时档位已关闭", seg)
+        self.assertIn("未充电 · 平时档位已关闭", seg)
+        # 两个关闭分支按插电态区分，不能合成一句
+        self.assertIn("} else if (manager.directPlugConnected) {", seg)
+        self.assertNotIn('CLL(@"两个档位均已关闭")', seg)
+
+    def test_off_branch_uses_plug_state_not_both_levels(self):
+        # 判据必须是"当前插电态"（决定该由哪一档负责），不是"两个档位是否都关"
+        seg = function_body(SETTINGS, "- (void)updateLimitOnlyRows {")
+        off_branches = seg[seg.index("已插电充电 · 充电时档位已关闭") - 400:]
+        self.assertIn("manager.directPlugConnected", off_branches)
+        self.assertNotIn("limitOnlyIdleLevel", off_branches.split("未充电 · 平时档位已关闭")[0])
 
 
 class TestLocalization(unittest.TestCase):
@@ -393,7 +448,8 @@ class TestLocalization(unittest.TestCase):
 
     def test_new_keys_exist_in_both(self):
         required = [
-            "两个档位均已关闭",
+            "已插电充电 · 充电时档位已关闭",
+            "未充电 · 平时档位已关闭",
             "已插电充电 · 充电时档位生效中",
             "已插电充电 · 生效验证中",
             "已插电充电 · 验证失败，点按重试",
@@ -411,6 +467,7 @@ class TestLocalization(unittest.TestCase):
             "限流档位",
             "已插电 · 限流生效中",
             "未插电 · 限流已解除",
+            "两个档位均已关闭",
         ]
         for lang, path in self.STRINGS.items():
             text = path.read_text(encoding="utf-8")

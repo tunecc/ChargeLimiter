@@ -73,10 +73,15 @@ class TweakSessionContractTests(unittest.TestCase):
         self.assertIn('CFSTR("clLimitMode")', restore)
 
     def test_zero_runtime_pref_reads(self):
-        # thermal-sim-mikasa-rewrite A1：运行时零偏好读取——CFPreferences 仅在重挂函数
+        # thermal-sim-mikasa-rewrite A1：运行时零偏好读取——CFPreferences 只在跨重启
+        # 重挂路径上（启动期一次性，best-effort）。limit-only-idle-thermal-level 把读键
+        # 逻辑抽成了 CLTSCopyLimitOnlyMode helper，因此统计范围是"重挂函数 + 它的 helper"；
+        # 必须等于全文件总数，否则说明有别的函数在读偏好。
         restore = function_body(self.tweak, "static void CLTSRestoreSessionFromPrefs(void) {")
-        total = self.tweak.count("CFPreferencesCopyAppValue")
-        self.assertEqual(total, restore.count("CFPreferencesCopyAppValue"))
+        helper = function_body(self.tweak, "static NSString *CLTSCopyLimitOnlyMode(CFStringRef key) {")
+        boot_path_reads = restore.count("CFPreferencesCopyAppValue") + helper.count("CFPreferencesCopyAppValue")
+        self.assertEqual(self.tweak.count("CFPreferencesCopyAppValue"), boot_path_reads)
+        self.assertIn("CLTSCopyLimitOnlyMode", restore)
         self.assertNotIn("NSUserDefaults", self.tweak)
 
     def test_apply_reads_kernel_state_only(self):
@@ -110,20 +115,31 @@ class TweakSessionContractTests(unittest.TestCase):
         self.assertIn("CLTSApplyThermals();", body)  # 重启重放：内核态即真相
 
     def test_session_evaluate_kernel_edges(self):
-        # 会话边沿：读会话通道 + IOKit 插电判定；未启用不动档位通道（daemon 独写）
+        # 会话边沿：读会话通道 + IOKit 插电/充电判定；未启用不动档位通道（daemon 独写）
+        # limit-only-idle-thermal-level：判据从"插电"扩为"插电且系统正在充电"，
+        # 取值从单档位扩为"充电时档位 / 平时档位"二选一。
         body = function_body(self.tweak, "static void CLTSSessionEvaluate(void) {")
         self.assertIn("CLTSSessionConfig", body)
-        self.assertIn("if (!CLTSSessionConfig(&limit)) return;", body)
+        self.assertIn("if (!CLTSSessionConfig(&charge, &idle)) return;", body)
         self.assertIn("CLTSPowerConnected()", body)
+        self.assertIn("CLTSIsCharging()", body)
+        self.assertIn("charging ? charge : idle", body)
         self.assertIn("notify_set_state", body)
         self.assertIn("CLTSApplyThermals();", body)
         self.assertNotIn("CFPreferences", body)
 
     def test_session_channel_encoding(self):
-        # 会话通道编码：enabled(bit0) | 档位值(bit8-15)
-        body = function_body(self.tweak, "static BOOL CLTSSessionConfig(uint64_t *limitMode) {")
+        # 会话通道编码：enabled(bit0) | 充电时档位(bit8-15) | 平时档位(bit16-23)
+        body = function_body(self.tweak, "static BOOL CLTSSessionConfig(uint64_t *chargeMode, uint64_t *idleMode) {")
         self.assertIn("(state >> 8) & 0xFF", body)
+        self.assertIn("(state >> 16) & 0xFF", body)
         self.assertIn("(state & 1ULL) != 0", body)
+
+    def test_is_charging_probe_defaults_to_charging(self):
+        # IsCharging 不可读时按"正在充电"：与插电判定同向容错（误判充电保留限流更安全）
+        body = function_body(self.tweak, "static BOOL CLTSIsCharging(void) {")
+        self.assertIn("BOOL charging = YES;", body)
+        self.assertIn('CFSTR("IsCharging")', body)
 
     def test_powercuff_mode_encoding(self):
         # Powercuff 编码：1=nominal/2=light/3=moderate/4=heavy，其余 off
@@ -166,19 +182,42 @@ class DaemonCLIVerbContractTests(unittest.TestCase):
     def test_verb_defined(self):
         self.assertIn('"apply_limit_only"', self.daemon)
 
-    def test_verb_writes_session_and_exits(self):
+    def apply_limit_only_segment(self):
+        """apply_limit_only 动词段：从字面量到下一个 else if 分支为止
+
+        不用固定字符窗口——limit-only-idle-thermal-level 给动词加了第二个档位参数后
+        段长变了，固定窗口要么截断 return 0，要么把后面 thermal_selftest 的
+        mode = @"moderate" 卷进来（那是自测动词自己的缺省，与限流无关）。
+        """
         start = self.daemon.index('"apply_limit_only"')
-        segment = self.daemon[start:start + 2200]
-        self.assertIn("setLimitOnlySession(enabled, mode, plugged)", segment)
+        end = self.daemon.index("} else if (", start)
+        return self.daemon[start:end]
+
+    def test_verb_writes_session_and_exits(self):
+        segment = self.apply_limit_only_segment()
+        self.assertIn("setLimitOnlySession(enabled, chargeMode, idleMode, charging)", segment)
         self.assertIn("return 0;", segment)
         # 不启动服务：动词段不得落入 [Service.inst serve]
         self.assertNotIn("[Service.inst serve]", segment)
 
     def test_verb_validates_mode(self):
-        start = self.daemon.index('"apply_limit_only"')
-        segment = self.daemon[start:start + 2200]
+        segment = self.apply_limit_only_segment()
         for mode in ("nominal", "light", "moderate", "heavy"):
             self.assertIn(mode, segment)
+        # limit-only-idle-thermal-level：off 是合法档位值，不是非法值回退项。
+        # 非法值兜底是 off（不施加热模拟），不再是 moderate——后者会把用户选的
+        # 「关闭」偷偷升档。
+        self.assertIn('isEqualToString:@"off"', segment)
+        self.assertNotIn('mode = @"moderate";', segment)
+        self.assertIn('NSString* chargeMode = @"off";', segment)
+        self.assertIn('NSString* idleMode = @"off";', segment)
+
+    def test_verb_accepts_idle_mode_argument(self):
+        # argv[3] = 平时档位；两个档位都写进会话键
+        segment = self.apply_limit_only_segment()
+        self.assertIn("idleMode", segment)
+        self.assertIn("(argIndex + 3) < argc", segment)
+        self.assertIn("setLimitOnlySession(enabled, chargeMode, idleMode, charging)", segment)
 
 
 class RestoreCarveOutContractTests(unittest.TestCase):
@@ -256,10 +295,33 @@ class UtilsSessionContractTests(unittest.TestCase):
         self.assertIn("setLimitOnlySession", self.utils_h)
 
     def test_set_limit_only_session_writes_mirror(self):
-        body = function_body(self.utils, "void setLimitOnlySession(BOOL enabled, NSString* mode, BOOL plugged) {")
+        # limit-only-idle-thermal-level：签名扩为 (enabled, chargeMode, idleMode, chargingActive)，
+        # 两个档位各自落键；初始镜像按"正在充电 → 充电时档位，否则 → 平时档位"
+        body = function_body(self.utils,
+                             "void setLimitOnlySession(BOOL enabled, NSString* chargeMode, NSString* idleMode, BOOL chargingActive) {")
         self.assertIn('"thermalSimulationMode"', body)
-        self.assertIn("CLPostThermalSessionNotification(enabled, mode);", body)
+        self.assertIn("CLPostThermalSessionNotification(enabled, chargeMode, idleMode);", body)
         self.assertIn("CLPostThermalApplyNotification(", body)
+        self.assertIn("CLLimitOnlyIdleLevelKey", body)
+        self.assertIn("chargingActive ? chargeMode : idleMode", body)
+
+    def test_off_is_a_legal_level(self):
+        # off 合法化：任何路径不得把 off 归一化成 moderate
+        body = function_body(self.utils, "static BOOL CLIsValidLimitOnlyMode(NSString* mode) {")
+        self.assertIn('"off"', body)
+        body = function_body(self.utils,
+                             "void setLimitOnlySession(BOOL enabled, NSString* chargeMode, NSString* idleMode, BOOL chargingActive) {")
+        self.assertNotIn('@"moderate"', body)
+        self.assertIn('@"off"', body)
+
+    def test_level_configured_probes_exist(self):
+        # "缺省"与"选过关闭"值相同（都是 off），靠键是否存在区分
+        self.assertIn("BOOL getLimitOnlyLevelConfigured(void);", self.utils_h)
+        self.assertIn("BOOL getLimitOnlyIdleLevelConfigured(void);", self.utils_h)
+        for key, sig in (("CLLimitOnlyLevelKey", "BOOL getLimitOnlyLevelConfigured() {"),
+                         ("CLLimitOnlyIdleLevelKey", "BOOL getLimitOnlyIdleLevelConfigured() {")):
+            body = function_body(self.utils, sig)
+            self.assertIn("objectForKey:" + key, body)
 
     def test_kernel_state_push_on_writers(self):
         # thermal-sim-mikasa-rewrite A2：档位通道 notify_set_state（Powercuff 编码）+ 广播
@@ -268,18 +330,23 @@ class UtilsSessionContractTests(unittest.TestCase):
         self.assertIn("notify_set_state(token, CLThermalModeValue(mode));", body)
         self.assertIn("CFNotificationCenterPostNotification", body)
         # 会话通道编码：enabled(bit0) | 档位值(bit8-15)
-        session = function_body(self.utils, "static void CLPostThermalSessionNotification(BOOL enabled, NSString* mode) {")
-        self.assertIn("(enabled ? 1ULL : 0ULL) | (CLThermalModeValue(mode) << 8)", session)
+        session = function_body(self.utils,
+                                "static void CLPostThermalSessionNotification(BOOL enabled, NSString* chargeMode, NSString* idleMode) {")
+        self.assertIn("CLThermalModeValue(chargeMode) << 8", session)
+        self.assertIn("CLThermalModeValue(idleMode) << 16", session)
         # 三个写入路径全部推送内核态
         thermal = function_body(self.utils, "void setThermalSimulationMode(NSString* mode) {")
         self.assertIn("CLPostThermalApplyNotification(mode);", thermal)
         clear = function_body(self.utils, "void clearLimitOnlySessionKeys() {")
-        self.assertIn("CLPostThermalSessionNotification(NO, @\"off\");", clear)
+        self.assertIn("CLPostThermalSessionNotification(NO, @\"off\", @\"off\");", clear)
         self.assertIn("CLPostThermalApplyNotification(@\"off\");", clear)
 
     def test_disable_resets_mirror_off(self):
-        body = function_body(self.utils, "void setLimitOnlySession(BOOL enabled, NSString* mode, BOOL plugged) {")
-        self.assertIn('setObject:@"off" forKey:@"thermalSimulationMode"', body)
+        # 禁用（enabled=NO）时镜像归零；off 合法化后归零改由 initial 计算式表达
+        body = function_body(self.utils,
+                             "void setLimitOnlySession(BOOL enabled, NSString* chargeMode, NSString* idleMode, BOOL chargingActive) {")
+        self.assertIn('forKey:@"thermalSimulationMode"', body)
+        self.assertIn('@"off"', body)
 
     def test_no_ppm_and_lock_mirror_in_utils(self):
         # locked 镜像与 PPM 帮助函数退役（fix-thermal-limit-powercuff A2/A3/D3）：
@@ -299,7 +366,7 @@ class UtilsSessionContractTests(unittest.TestCase):
         self.assertIn('removeObjectForKey:@"thermalSimulationLocked"', scrub)
         self.assertIn('removeObjectForKey:@"ppmSimulationMode"', scrub)
         for sig in ("void setThermalSimulationMode(NSString* mode) {",
-                    "void setLimitOnlySession(BOOL enabled, NSString* mode, BOOL plugged) {",
+                    "void setLimitOnlySession(BOOL enabled, NSString* chargeMode, NSString* idleMode, BOOL chargingActive) {",
                     "void clearLimitOnlySessionKeys() {"):
             body = function_body(self.utils, sig)
             self.assertIn("CLScrubRetiredThermalKeys(defs);", body)
@@ -346,16 +413,32 @@ class AppContractTests(unittest.TestCase):
         self.assertIn("if (_enabled) return CLOperationModeFullControl;", body)
 
     def test_level_apply_uses_one_shot_root_process(self):
-        body = function_body(self.manager_m, "- (void)applyLimitOnlyLevel:(NSString *)mode completion:(void (^)(BOOL))completion {")
-        self.assertIn('spawnDaemonCLIVerb_C(@[@"apply_limit_only", @"1", level])', body)
-        self.assertIn('setlocalKV_C(@"limit_only_level", level)', body)
+        # limit-only-idle-thermal-level：一次写入两个分时段档位（argv[2]=充电时，argv[3]=平时）
+        body = function_body(self.manager_m,
+                             "- (void)applyLimitOnlyLevelsWithChargeMode:(NSString *)chargeMode")
+        self.assertEqual(body.count('spawnDaemonCLIVerb_C(@[@"apply_limit_only", @"1", charge, idle])'), 2)
+        self.assertIn('setlocalKV_C(@"limit_only_level", charge)', body)
+        self.assertIn('setlocalKV_C(@"limit_only_idle_level", idle)', body)
+
+    def test_write_failure_rolls_back_level_and_kv(self):
+        # A9/A19：失败时内存模型与本地 KV 一起回滚，不把失败后的旧值显示成新选的值
+        body = function_body(self.manager_m,
+                             "- (void)applyLimitOnlyLevelsWithChargeMode:(NSString *)chargeMode")
+        self.assertIn("previousCharge", body)
+        self.assertIn("previousIdle", body)
+        self.assertIn("self.limitOnlyLevel = previousCharge;", body)
+        self.assertIn("self.limitOnlyIdleLevel = previousIdle;", body)
+        # 失败路径不得开验证窗口（否则 15s 后必然跳假"验证失败"）
+        refresh_block = body.split("if (ok) {")[2]
+        self.assertIn("startLimitOnlyVerifyWindow", refresh_block)
+        self.assertNotIn("startLimitOnlyVerifyWindow", refresh_block.split("} else {")[1])
 
     def test_mode_switch_orchestration_order(self):
         # 完整控制→仅限流（spec B1 修订次序）：先落盘模式标志与档位（不被 daemon
         # 关停写突发覆盖），再 enable=NO（daemon 完整还原），最后 CLI 建会话
         body = function_body(self.manager_m, "- (void)switchToMode:(CLOperationMode)mode completion:(void (^)(BOOL))completion {")
         limit_pos = body.index("CLOperationModeLimitOnly")
-        level_pos = body.index('setlocalKV_C(@"limit_only_level", level)')
+        level_pos = body.index('setlocalKV_C(@"limit_only_level", charge)')
         mode_pos = body.index('setlocalKV_C(@"limit_only_mode", @YES)')
         enable_pos = body.index('saveConfigKey:@"enable" value:@NO')
         cli_pos = body.index('spawnDaemonCLIVerb_C(@[@"apply_limit_only", @"1"')
@@ -364,26 +447,45 @@ class AppContractTests(unittest.TestCase):
         self.assertLess(mode_pos, enable_pos)
         self.assertLess(enable_pos, cli_pos)
 
-    def test_level_normalized_to_moderate_on_switch(self):
-        # 进入仅限流自动中度（fix-limit-only-restart-state）：off/未设置一律归一化
+    def test_level_not_normalized_on_switch(self):
+        # limit-only-idle-thermal-level：off 是合法用户值，进入仅限流时不再归一化成中度。
+        # 归一化会把用户选过的「关闭」在模式切换后偷偷改成中度（off 假控件）。
+        # 缺省值只发生在键从未写过时：充电时档位中度、平时档位关闭。
         body = function_body(self.manager_m, "- (void)switchToMode:(CLOperationMode)mode completion:(void (^)(BOOL))completion {")
-        self.assertIn('if (level.length == 0 || [level isEqualToString:@"off"])', body)
-        self.assertIn('level = @"moderate";', body)
-        self.assertIn("self.limitOnlyLevel = level;", body)
+        limit_branch = body.split("case CLOperationModeLimitOnly:")[1].split("case CLOperationModeFullControl:")[0]
+        self.assertNotIn('isEqualToString:@"off"', limit_branch)
+        self.assertIn('charge = @"moderate";', limit_branch)
+        self.assertIn('idle = @"off";', limit_branch)
+        self.assertIn('setlocalKV_C(@"limit_only_idle_level", idle)', limit_branch)
 
     def test_cli_failure_retried_once(self):
         # apply_limit_only spawn 失败自动重试一次（两个调用点各两处）
         switch_body = function_body(self.manager_m, "- (void)switchToMode:(CLOperationMode)mode completion:(void (^)(BOOL))completion {")
         self.assertEqual(switch_body.count('spawnDaemonCLIVerb_C(@[@"apply_limit_only", @"1"'), 2)
-        level_body = function_body(self.manager_m, "- (void)applyLimitOnlyLevel:(NSString *)mode completion:(void (^)(BOOL))completion {")
+        level_body = function_body(self.manager_m,
+                                   "- (void)applyLimitOnlyLevelsWithChargeMode:(NSString *)chargeMode")
         self.assertEqual(level_body.count('spawnDaemonCLIVerb_C(@[@"apply_limit_only", @"1"'), 2)
 
-    def test_off_level_seed_ignored(self):
-        # off 种子根除：applyConfigData 忽略 daemon 上报的 "off"，初始默认 moderate
+    def test_level_seed_adopted_when_present(self):
+        # limit-only-idle-thermal-level：off 合法化后，键在场就采纳（含 off）。
+        # 旧实现用 off 做跳过条件，会把用户选过的关闭在重启后冲掉（A3/A13）。
+        # "缺省"与"选过关闭"改由 daemon 只在键存在时上报 + 本地回退不填字面值区分。
         body = function_body(self.manager_m, "- (void)applyConfigData:(NSDictionary *)data {")
-        self.assertIn('![limitOnlyLevelValue isEqualToString:@"off"]', body)
+        self.assertNotIn('isEqualToString:@"off"', body)
+        self.assertIn("limitOnlyLevelValue", body)
+        self.assertIn("limitOnlyIdleLevelValue", body)
+        fallback = function_body(self.manager_m, "- (NSDictionary *)localConfigFallback {")
+        self.assertNotIn('m[@"limit_only_level"] = @"moderate"', fallback)
         init_body = function_body(self.manager_m, "- (instancetype)init {")
         self.assertIn('_limitOnlyLevel = @"moderate";', init_body)
+        self.assertIn('_limitOnlyIdleLevel = @"off";', init_body)
+
+    def test_reestablish_does_not_normalize_off(self):
+        # 重启重建不得把用户选过的关闭改回中度并与内核态判 mismatch 后重写
+        body = function_body(self.manager_m, "- (void)reestablishLimitOnlySessionIfNeeded {")
+        self.assertNotIn('isEqualToString:@"off"', body)
+        self.assertIn('@"moderate"', body)
+        self.assertIn("_sessionChannelIdleMode", body)
 
     def test_mode_switch_failure_alert(self):
         # 切换失败必须可见：completion(NO) 弹窗提示（不再静默）
@@ -479,8 +581,13 @@ class PackagingAndStringsContractTests(unittest.TestCase):
         self.assertIn("IOKit.tbd", body)
 
     def test_strings_synced(self):
-        for key in ("运行模式", "完整控制", "仅限流", "限流档位", "会话状态", "生效验证",
-                    "已插电 · 限流生效中", "未插电 · 限流已解除", "切换失败"):
+        # limit-only-idle-thermal-level：「限流档位」行名与「已插电 · 限流生效中 /
+        # 未插电 · 限流已解除」已退役（后者在平时档位生效时是假话），换成按生效时段
+        # 三分支的新键。
+        for key in ("运行模式", "完整控制", "仅限流", "充电时档位", "平时档位", "当前生效",
+                    "会话状态", "生效验证",
+                    "已插电充电 · 充电时档位生效中", "未充电 · 平时档位生效中",
+                    "已插电充电 · 充电时档位已关闭", "未充电 · 平时档位已关闭", "切换失败"):
             self.assertIn('"%s"' % key, self.zh)
             self.assertIn('"%s"' % key, self.en)
 
