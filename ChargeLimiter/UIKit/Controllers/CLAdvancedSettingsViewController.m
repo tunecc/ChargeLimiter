@@ -2688,7 +2688,7 @@ static NSString *const CLThermalMergeNoticeShownKey = @"CLThermalMergeNoticeShow
             continue;   // banner 等非卡片
         }
         CLAdvSettingsCard *card = (CLAdvSettingsCard *)view;
-        // thermal-sim-settings D5：仅限流模式下档位通道归主页「高温模拟」卡片，
+        // thermal-sim-settings D5：仅限流模式下档位通道归主页的两个档位行，
         // 本卡整卡置灰。与主开关关闭是两件独立的事，此处分别判定后合并生效。
         BOOL thermalLockedHere = [self isThermalCard:card] && [self thermalCardNotEditableHere];
         for (UIView *row in card.contentStack.arrangedSubviews) {
@@ -2947,7 +2947,7 @@ static NSString *const CLThermalMergeNoticeShownKey = @"CLThermalMergeNoticeShow
     // 只有「仅限流」才需要解释档位归谁管；主开关关闭时顶部 banner 已经说明，不再重复
     if ([[CLBatteryManager shared] operationMode] == CLOperationModeLimitOnly) {
         [self addTipRowToCard:thermalCard
-                         text:CLL(@"仅限流模式：档位由主页「高温模拟」卡片接管，此处不可修改。")
+                         text:CLL(@"仅限流模式：档位由主页「充电档位 / 平时档位」接管，此处不可修改。")
                       maxLines:0];
     }
     [self.mainStack addArrangedSubview:thermalCard];

@@ -25,6 +25,9 @@ MANAGER = (REPO / "ChargeLimiter" / "UIKit" / "CLBatteryManager.m").read_text(en
 SETTINGS = (
     REPO / "ChargeLimiter" / "UIKit" / "Controllers" / "CLSettingsViewController.m"
 ).read_text(encoding="utf-8")
+ADVANCED = (
+    REPO / "ChargeLimiter" / "UIKit" / "Controllers" / "CLAdvancedSettingsViewController.m"
+).read_text(encoding="utf-8")
 
 
 def function_body(source: str, signature: str) -> str:
@@ -332,14 +335,14 @@ class TestLimitOnlyCardUI(unittest.TestCase):
         # 断言锚在 setupLimitOnlyCard 函数体上，不是整文件 substring——后者在删掉卡片
         # 某一行时仍然全绿（同样的文案在别处也出现），变异测试 7/31 漏网由此而来。
         seg = function_body(SETTINGS, "- (void)setupLimitOnlyCard {")
-        for title in ("充电时档位", "平时档位", "当前生效", "会话状态", "生效验证"):
+        for title in ("充电档位", "平时档位", "当前生效", "会话状态", "生效验证"):
             self.assertIn(f'title:CLL(@"{title}")', seg, f"卡片缺少「{title}」行")
         # 原「限流档位」行名不再出现
         self.assertNotIn('title:CLL(@"限流档位")', seg)
 
     def test_card_keeps_channel_tip_and_trollstore_hint(self):
         seg = function_body(SETTINGS, "- (void)setupLimitOnlyCard {")
-        self.assertIn("充电时档位与平时档位共用同一个温度模拟通道", seg)
+        self.assertIn("充电档位与平时档位共用同一个温度模拟通道", seg)
         self.assertIn("getJBType_C() == 8", seg)
         self.assertIn("巨魔环境无执行端", seg)
 
@@ -350,22 +353,84 @@ class TestLimitOnlyCardUI(unittest.TestCase):
         self.assertIn("@selector(limitOnlyCardTapped)", seg)
         self.assertNotIn("[self.limitOnlyCard addGestureRecognizer", seg)
 
-    def test_card_has_section_header(self):
-        """卡片必须有 section header「高温模拟 / 充电限流」
+    def test_notes_use_note_row_not_bare_label(self):
+        """两条说明必须走 addNoteRowWithText，不能再把裸 UILabel 塞进 contentStack
 
-        A1/A11 明文要求"section header 为「高温模拟 / 充电限流」的卡片"。第 2 轮验收漏掉
-        这一条被判 failed——只把行名对齐了，卡名没对齐。CLGlassCard 原先没有 header API，
-        本节同时锁定"API 存在"与"卡片调用它"两件事，避免再次只改行名。
+        裸 UILabel 只约束左右 16pt，结果是说明首行紧贴上方分隔线、末行直接顶到卡片
+        下边缘——用户反馈的"最后的文字留白不够"。说明行带 8pt 上下内边距，且左缘与
+        行名对齐而不是卡片左缘。
         """
-        self.assertIn("- (void)addSectionHeader:(NSString *)title {", SETTINGS)
         seg = function_body(SETTINGS, "- (void)setupLimitOnlyCard {")
-        self.assertIn("addSectionHeader:CLL(@\"高温模拟 / 充电限流\")", seg)
-        # header 必须是卡片的第一个子视图，不能插在档位行后面
-        self.assertLess(
-            seg.find("addSectionHeader"),
-            seg.find("addRowWithIcon"),
-            "section header 必须排在第一个档位行之前",
+        self.assertEqual(seg.count("addNoteRowWithText:"), 2)
+        self.assertNotIn("contentStack addArrangedSubview:channelTip", seg)
+        self.assertNotIn("contentStack addArrangedSubview:tip", seg)
+
+    def test_note_row_has_vertical_padding_and_title_aligned_leading(self):
+        seg = function_body(SETTINGS, "- (UIView *)addNoteRowWithText:(NSString *)text {")
+        self.assertIn("[label.topAnchor constraintEqualToAnchor:row.topAnchor constant:8]", seg)
+        self.assertIn("[label.bottomAnchor constraintEqualToAnchor:row.bottomAnchor constant:-8]", seg)
+        # 左缘与行名同一度量，右缘 16pt；三者从同一组常量推出，不会各自漂移
+        self.assertIn("constant:kCLCardTitleLeading", seg)
+        self.assertIn("constant:-kCLCardIconLeading", seg)
+
+    def test_row_metrics_come_from_shared_constants(self):
+        """行名、分隔线、说明行左缘必须同源，不留裸魔法数
+
+        曾出现"行名在 50pt、分隔线在 48pt"式的漂移风险。三个左缘都由同一组
+        kCLCard* 常量推出，改一处即全卡对齐。裸 16 / 22 / 12 / 50 重新出现即失败。
+        """
+        self.assertIn(
+            "static const CGFloat kCLCardTitleLeading = kCLCardIconLeading + kCLCardIconWidth + kCLCardIconTitleGap;",
+            SETTINGS,
         )
+        # 图标行从图标度量推行名左缘；分隔线与说明行直接用行名左缘
+        expectations = {
+            "- (void)addRowWithIcon:(NSString *)iconName title:(NSString *)title value:(NSString *)value color:(UIColor *)color {": [
+                "kCLCardIconLeading",
+                "kCLCardIconTitleGap",
+            ],
+            "- (UIView *)addNoteRowWithText:(NSString *)text {": ["kCLCardTitleLeading"],
+            "- (UIView *)addSeparator {": ["kCLCardTitleLeading"],
+        }
+        for signature, required in expectations.items():
+            seg = function_body(SETTINGS, signature)
+            for token in required:
+                self.assertIn(token, seg, f"{signature} 未使用 {token}")
+            for magic in ("constant:16", "constant:22", "constant:12", "constant:50", "constant:-16"):
+                self.assertNotIn(magic, seg, f"{signature} 残留裸度量 {magic}")
+
+    def test_long_value_degrades_without_truncating_title(self):
+        """窄屏长值只许缩字号，行名不参与压缩
+
+        「会话状态」最长约 15 字，375pt 及更窄屏上与行名的固有宽度之和已超过可用宽度。
+        两个标签压缩优先级都是默认 750，谁被压是未定义的——这里定死方向。
+        """
+        seg = function_body(SETTINGS, "- (void)addRowWithIcon:(NSString *)iconName title:(NSString *)title value:(NSString *)value color:(UIColor *)color {")
+        self.assertIn("valueLabel.adjustsFontSizeToFitWidth = YES;", seg)
+        self.assertIn("valueLabel.minimumScaleFactor = 0.6;", seg)
+        self.assertIn(
+            "[titleLabel setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];",
+            seg,
+        )
+        self.assertNotIn("[self.limitOnlyCard addGestureRecognizer", seg)
+
+    def test_card_has_no_section_header(self):
+        """卡内不得有 section header，直接以参数行开头
+
+        limit-only-thermal-card-alignment D1：主页除本卡外没有卡内标题带，分组标签只以
+        卡外普通标签的形式存在（如「更多功能」）。上一轮这里锁的是"必须有 header 且排在
+        第一个档位行之前"，本轮按用户确认的"对齐主页图标参数行"反向锁定：header 出现
+        即失败，且卡片第一个 arranged subview 必须是「充电档位」行。
+        """
+        seg = function_body(SETTINGS, "- (void)setupLimitOnlyCard {")
+        self.assertNotIn("addSectionHeader", seg)
+        # header 若回来，只会插在档位行之前——按出现顺序一并锁死
+        self.assertLess(
+            seg.find("addRowWithIcon"),
+            seg.find("addNoteRowWithText"),
+            "参数行必须排在说明行之前",
+        )
+        self.assertIn("addSectionHeader:(NSString *)title {", SETTINGS)
 
     def test_both_rows_have_pickers(self):
         seg = function_body(SETTINGS, "- (void)setupLimitOnlyCard {")
@@ -405,9 +470,9 @@ class TestLimitOnlyCardUI(unittest.TestCase):
         )
         self.assertNotIn('CLL(@"已插电 · 限流生效中")', seg)
         # 四个分支各自有独立文案：插电充电 / 未充电（平时档位生效）/ 两种"当前时段已关闭"
-        self.assertIn("已插电充电 · 充电时档位生效中", seg)
+        self.assertIn("已插电充电 · 充电档位生效中", seg)
         self.assertIn("未充电 · 平时档位生效中", seg)
-        self.assertIn("已插电充电 · 充电时档位已关闭", seg)
+        self.assertIn("已插电充电 · 充电档位已关闭", seg)
         self.assertIn("未充电 · 平时档位已关闭", seg)
         # 不得再把"两个档位均已关闭"当作用户可见文案——scope=Off 不等于两侧皆关。
         # 注释里提一句是为了说明改了什么，所以断言 CLL(...) 形式而不是裸字符串。
@@ -421,7 +486,7 @@ class TestLimitOnlyCardUI(unittest.TestCase):
 
     def test_update_rows_refreshes_all_three_status_rows(self):
         seg = function_body(SETTINGS, "- (void)updateLimitOnlyRows {")
-        for title in ["充电时档位", "平时档位", "当前生效", "会话状态", "生效验证"]:
+        for title in ["充电档位", "平时档位", "当前生效", "会话状态", "生效验证"]:
             self.assertIn(f'title:CLL(@"{title}")', seg)
 
 
@@ -437,7 +502,7 @@ class TestSessionStatusTruthTable(unittest.TestCase):
 
     def test_off_branch_names_the_period_level(self):
         seg = function_body(SETTINGS, "- (void)updateLimitOnlyRows {")
-        self.assertIn("已插电充电 · 充电时档位已关闭", seg)
+        self.assertIn("已插电充电 · 充电档位已关闭", seg)
         self.assertIn("未充电 · 平时档位已关闭", seg)
         # 两个关闭分支按"插电且正在充电"区分，不能合成一句
         self.assertIn("} else if ([manager limitOnlyChargingPeriodApplies]) {", seg)
@@ -454,7 +519,7 @@ class TestSessionStatusTruthTable(unittest.TestCase):
         修复把判据抽成 manager 的 limitOnlyChargingPeriodApplies，两侧共用一份实现。
         """
         seg = function_body(SETTINGS, "- (void)updateLimitOnlyRows {")
-        off_branches = seg[seg.index("已插电充电 · 充电时档位已关闭") - 500:]
+        off_branches = seg[seg.index("已插电充电 · 充电档位已关闭") - 500:]
         self.assertIn("[manager limitOnlyChargingPeriodApplies]", off_branches)
         self.assertNotIn("manager.directPlugConnected", off_branches)
 
@@ -485,9 +550,9 @@ class TestLocalization(unittest.TestCase):
 
     def test_new_keys_exist_in_both(self):
         required = [
-            "已插电充电 · 充电时档位已关闭",
+            "已插电充电 · 充电档位已关闭",
             "未充电 · 平时档位已关闭",
-            "已插电充电 · 充电时档位生效中",
+            "已插电充电 · 充电档位生效中",
             "已插电充电 · 生效验证中",
             "已插电充电 · 验证失败，点按重试",
             "未充电 · 平时档位生效中",
@@ -498,6 +563,20 @@ class TestLocalization(unittest.TestCase):
             text = path.read_text(encoding="utf-8")
             for key in required:
                 self.assertIn(f'"{key}" =', text, f"{lang}.lproj 缺少 {key}")
+
+    def test_limit_only_tip_names_the_main_page_rows(self):
+        """「充电高级」页置灰提示指向主页的两个档位行，不再引用已不存在的卡名
+
+        limit-only-thermal-card-alignment D2：主页该卡不再有卡名，原文案里的
+        「高温模拟」卡片名会让用户去找一张不存在的卡。
+        """
+        for lang, path in self.STRINGS.items():
+            text = path.read_text(encoding="utf-8")
+            self.assertIn('"仅限流模式：档位由主页「充电档位 / 平时档位」接管，此处不可修改。" =', text)
+            self.assertNotIn('"仅限流模式：档位由主页「高温模拟」卡片接管，此处不可修改。" =', text)
+        adv = ADVANCED
+        self.assertIn('CLL(@"仅限流模式：档位由主页「充电档位 / 平时档位」接管，此处不可修改。")', adv)
+        self.assertNotIn('CLL(@"仅限流模式：档位由主页「高温模拟」卡片接管，此处不可修改。")', adv)
 
     def test_retired_keys_are_gone(self):
         retired = [

@@ -507,6 +507,13 @@ static NSString *CLFrequencyString(NSInteger frequency) {
     return CLL(@"10 分钟");
 }
 
+// 卡片行的统一度量。图标行（值行 / 开关行 / 导航行）、分隔线和卡内说明行的左缘都由
+// 这三个值推出，改一处即全卡对齐，不会出现"行名在 50pt、分隔线在 48pt"的漂移。
+static const CGFloat kCLCardIconLeading = 16.0;
+static const CGFloat kCLCardIconWidth = 22.0;
+static const CGFloat kCLCardIconTitleGap = 12.0;
+static const CGFloat kCLCardTitleLeading = kCLCardIconLeading + kCLCardIconWidth + kCLCardIconTitleGap; // 50
+
 @implementation CLGlassCard
 
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -562,23 +569,56 @@ static NSString *CLFrequencyString(NSInteger frequency) {
     valueLabel.font = [UIFont monospacedDigitSystemFontOfSize:15 weight:UIFontWeightMedium];
     valueLabel.textColor = [UIColor secondaryLabelColor];
     valueLabel.textAlignment = NSTextAlignmentRight;
+    // 窄屏上「会话状态」「生效验证」这类长值（最长约 15 字）与行名的固有宽度之和会超过
+    // 可用宽度，而两个标签的压缩优先级都是默认 750，谁被压是未定义的。这里定死方向：
+    // 行名不参与压缩，值按比例缩字号让位，最窄 320pt 屏也不截断行名。
+    valueLabel.adjustsFontSizeToFitWidth = YES;
+    valueLabel.minimumScaleFactor = 0.6;
     valueLabel.tag = [title hash];
     objc_setAssociatedObject(valueLabel, kCLCardValueTitleKey, title, OBJC_ASSOCIATION_COPY_NONATOMIC);
     [row addSubview:valueLabel];
-    
+
     [NSLayoutConstraint activateConstraints:@[
         [row.heightAnchor constraintEqualToConstant:44],
-        [iconView.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:16],
+        [iconView.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:kCLCardIconLeading],
         [iconView.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
-        [iconView.widthAnchor constraintEqualToConstant:22],
-        [titleLabel.leadingAnchor constraintEqualToAnchor:iconView.trailingAnchor constant:12],
+        [iconView.widthAnchor constraintEqualToConstant:kCLCardIconWidth],
+        [titleLabel.leadingAnchor constraintEqualToAnchor:iconView.trailingAnchor constant:kCLCardIconTitleGap],
         [titleLabel.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
-        [valueLabel.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-16],
+        [valueLabel.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-kCLCardIconLeading],
         [valueLabel.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
         [valueLabel.leadingAnchor constraintGreaterThanOrEqualToAnchor:titleLabel.trailingAnchor constant:8]
     ]];
-    
+    [titleLabel setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+
     [self.contentStack addArrangedSubview:row];
+}
+
+// 卡内说明行（仅限流「高温模拟」卡的通道说明与巨魔形态提示）。不用裸 UILabel 直接进
+// contentStack：那样说明首行会紧贴上方分隔线、末行直接顶到卡片下边缘。上下各 8pt
+// 内边距，左缘与行名对齐而不是卡片左缘，卡内所有文字左缘才一致。
+- (UIView *)addNoteRowWithText:(NSString *)text {
+    UIView *row = [[UIView alloc] init];
+    row.translatesAutoresizingMaskIntoConstraints = NO;
+
+    UILabel *label = [[UILabel alloc] init];
+    label.translatesAutoresizingMaskIntoConstraints = NO;
+    label.text = text ?: @"";
+    label.font = [UIFont systemFontOfSize:12];
+    label.textColor = [UIColor secondaryLabelColor];
+    label.numberOfLines = 0;
+    [row addSubview:label];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [row.heightAnchor constraintGreaterThanOrEqualToConstant:36],
+        [label.topAnchor constraintEqualToAnchor:row.topAnchor constant:8],
+        [label.bottomAnchor constraintEqualToAnchor:row.bottomAnchor constant:-8],
+        [label.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:kCLCardTitleLeading],
+        [label.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-kCLCardIconLeading]
+    ]];
+
+    [self.contentStack addArrangedSubview:row];
+    return row;
 }
 
 - (void)addSectionHeader:(NSString *)title {
@@ -647,16 +687,16 @@ static NSString *CLFrequencyString(NSInteger frequency) {
 
     [NSLayoutConstraint activateConstraints:@[
         [row.heightAnchor constraintGreaterThanOrEqualToConstant:56],
-        [iconView.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:16],
+        [iconView.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:kCLCardIconLeading],
         [iconView.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
-        [iconView.widthAnchor constraintEqualToConstant:22],
-        [titleLabel.leadingAnchor constraintEqualToAnchor:iconView.trailingAnchor constant:12],
+        [iconView.widthAnchor constraintEqualToConstant:kCLCardIconWidth],
+        [titleLabel.leadingAnchor constraintEqualToAnchor:iconView.trailingAnchor constant:kCLCardIconTitleGap],
         [titleLabel.topAnchor constraintEqualToAnchor:row.topAnchor constant:9],
         [subtitleLabel.leadingAnchor constraintEqualToAnchor:titleLabel.leadingAnchor],
         [subtitleLabel.topAnchor constraintEqualToAnchor:titleLabel.bottomAnchor constant:2],
         [subtitleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:valueLabel.leadingAnchor constant:-8],
         [subtitleLabel.bottomAnchor constraintEqualToAnchor:row.bottomAnchor constant:-9],
-        [valueLabel.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-16],
+        [valueLabel.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-kCLCardIconLeading],
         [valueLabel.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
         [valueLabel.leadingAnchor constraintGreaterThanOrEqualToAnchor:titleLabel.trailingAnchor constant:8]
     ]];
@@ -700,11 +740,12 @@ static NSString *CLFrequencyString(NSInteger frequency) {
     
     [NSLayoutConstraint activateConstraints:@[
         [row.heightAnchor constraintEqualToConstant:44],
-        [iconView.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:16],
+        [iconView.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:kCLCardIconLeading],
         [iconView.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
-        [iconView.widthAnchor constraintEqualToConstant:22],
-        [titleLabel.leadingAnchor constraintEqualToAnchor:iconView.trailingAnchor constant:12],
+        [iconView.widthAnchor constraintEqualToConstant:kCLCardIconWidth],
+        [titleLabel.leadingAnchor constraintEqualToAnchor:iconView.trailingAnchor constant:kCLCardIconTitleGap],
         [titleLabel.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+        // 开关行右缘保持既有 12pt，不随图标行度量改动
         [switchView.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-12],
         [switchView.centerYAnchor constraintEqualToAnchor:row.centerYAnchor]
     ]];
@@ -1075,12 +1116,12 @@ static NSString *CLFrequencyString(NSInteger frequency) {
     
     [NSLayoutConstraint activateConstraints:@[
         [row.heightAnchor constraintEqualToConstant:44],
-        [iconView.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:16],
+        [iconView.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:kCLCardIconLeading],
         [iconView.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
-        [iconView.widthAnchor constraintEqualToConstant:22],
-        [titleLabel.leadingAnchor constraintEqualToAnchor:iconView.trailingAnchor constant:12],
+        [iconView.widthAnchor constraintEqualToConstant:kCLCardIconWidth],
+        [titleLabel.leadingAnchor constraintEqualToAnchor:iconView.trailingAnchor constant:kCLCardIconTitleGap],
         [titleLabel.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
-        [chevron.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-16],
+        [chevron.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-kCLCardIconLeading],
         [chevron.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
         [chevron.widthAnchor constraintEqualToConstant:10],
         [valueLabel.trailingAnchor constraintEqualToAnchor:chevron.leadingAnchor constant:-6],
@@ -1094,15 +1135,16 @@ static NSString *CLFrequencyString(NSInteger frequency) {
     CGFloat hairline = 1.0 / UIScreen.mainScreen.scale;
     UIView *container = [[UIView alloc] init];
     container.translatesAutoresizingMaskIntoConstraints = NO;
-    
+
     UIView *separator = [[UIView alloc] init];
     separator.backgroundColor = [UIColor separatorColor];
     separator.translatesAutoresizingMaskIntoConstraints = NO;
     [container addSubview:separator];
-    
+
     [NSLayoutConstraint activateConstraints:@[
         [container.heightAnchor constraintEqualToConstant:hairline],
-        [separator.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:50],
+        // 左缘与行名对齐，右缘到卡片边
+        [separator.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:kCLCardTitleLeading],
         [separator.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
         [separator.heightAnchor constraintEqualToConstant:hairline],
         [separator.centerYAnchor constraintEqualToAnchor:container.centerYAnchor]
@@ -5675,10 +5717,9 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
 - (void)setupLimitOnlyCard {
     self.limitOnlyCard = [[CLGlassCard alloc] init];
     self.limitOnlyCard.viewController = self;
-    // 主页版卡名缩短为「高温模拟」：与「完整控制」页的「高温模拟 / 充电限流」本是同一个
-    // thermalSimulationMode 通道，用户跨模式看到的是同一件事。主页去掉长副标题并缩短卡名，
-    // 让档位值完整显示；「充电高级」页的置灰提示指向这张卡。
-    [self.limitOnlyCard addSectionHeader:CLL(@"高温模拟")];
+    // 卡内不放 section header：主页其他参数卡（电池信息 / 适配器 / 电源路径 / 各入口卡）
+    // 都不带卡内标题带，分组标签只以卡外普通标签的形式存在。这张卡直接以参数行开头，
+    // 与它们同一套缩进、行高和分隔线；跨模式引用由「充电高级」页的置灰提示承接。
     [self.limitOnlyCard addRowWithIcon:@"thermometer.sun.fill"
                                  title:CLL(@"充电档位")
                                  value:[self limitOnlyLevelText]
@@ -5688,6 +5729,7 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     [chargeRow addGestureRecognizer:chargeTap];
     chargeRow.userInteractionEnabled = YES;
 
+    [self.limitOnlyCard addSeparator];
     [self.limitOnlyCard addRowWithIcon:@"flame.fill"
                                  title:CLL(@"平时档位")
                                  value:[self limitOnlyIdleLevelText]
@@ -5697,12 +5739,15 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     [idleRow addGestureRecognizer:idleTap];
     idleRow.userInteractionEnabled = YES;
 
+    [self.limitOnlyCard addSeparator];
     // 「当前生效」只读状态行：与 tweak 会话同一处裁决，App 不推导第二套真相
     [self.limitOnlyCard addRowWithIcon:@"dot.radiowaves.left.and.right"
                                  title:CLL(@"当前生效")
                                  value:[self limitOnlyActiveScopeText]
                                  color:[UIColor systemTealColor]];
+    [self.limitOnlyCard addSeparator];
     [self.limitOnlyCard addRowWithIcon:@"bolt.horizontal.circle" title:CLL(@"会话状态") value:@"--" color:[UIColor systemBlueColor]];
+    [self.limitOnlyCard addSeparator];
     [self.limitOnlyCard addRowWithIcon:@"checkmark.seal" title:CLL(@"生效验证") value:CLL(@"未知") color:[UIColor systemGreenColor]];
     // 验证失败态点按"生效验证"行重试（fix-thermal-limit-live-loop D4；集成审查修复：
     // 挂整卡会与档位行的档位选择器手势嵌套）
@@ -5710,31 +5755,13 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     UITapGestureRecognizer *verifyTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(limitOnlyCardTapped)];
     [verifyRow addGestureRecognizer:verifyTap];
     verifyRow.userInteractionEnabled = YES;
-    // 通道说明 tip：两行档位是同一个通道分时段使用，不是两个可叠加的功能
-    UILabel *channelTip = [[UILabel alloc] init];
-    channelTip.translatesAutoresizingMaskIntoConstraints = NO;
-    channelTip.font = [UIFont systemFontOfSize:12];
-    channelTip.textColor = [UIColor secondaryLabelColor];
-    channelTip.numberOfLines = 0;
-    channelTip.text = CLL(@"充电档位与平时档位共用同一个温度模拟通道：插电充电时用前者，其余时间用后者，不会同时生效。");
-    [self.limitOnlyCard.contentStack addArrangedSubview:channelTip];
-    [NSLayoutConstraint activateConstraints:@[
-        [channelTip.leadingAnchor constraintEqualToAnchor:self.limitOnlyCard.contentStack.leadingAnchor constant:16],
-        [channelTip.trailingAnchor constraintLessThanOrEqualToAnchor:self.limitOnlyCard.contentStack.trailingAnchor constant:-16],
-    ]];
+    // 通道说明 tip：两行档位是同一个通道分时段使用，不是两个可叠加的功能。
+    // 走 addNoteRowWithText 而不是裸 UILabel 进 contentStack——否则说明首行紧贴上方
+    // 分隔线、末行直接顶到卡片下边缘；说明行左缘与行名对齐，卡内文字左缘才一致。
+    [self.limitOnlyCard addNoteRowWithText:CLL(@"充电档位与平时档位共用同一个温度模拟通道：插电充电时用前者，其余时间用后者，不会同时生效。")];
     // 巨魔形态口径（spec B6 / D4）：无注入执行端，沿用充电限流既有提示
     if (getJBType_C() == 8 /* JBTYPE_TROLLSTORE */) {
-        UILabel *tip = [[UILabel alloc] init];
-        tip.translatesAutoresizingMaskIntoConstraints = NO;
-        tip.font = [UIFont systemFontOfSize:12];
-        tip.textColor = [UIColor secondaryLabelColor];
-        tip.numberOfLines = 0;
-        tip.text = CLL(@"巨魔环境无执行端：档位仅写入系统偏好，是否生效由系统决定");
-        [self.limitOnlyCard.contentStack addArrangedSubview:tip];
-        [NSLayoutConstraint activateConstraints:@[
-            [tip.leadingAnchor constraintEqualToAnchor:self.limitOnlyCard.contentStack.leadingAnchor constant:16],
-            [tip.trailingAnchor constraintLessThanOrEqualToAnchor:self.limitOnlyCard.contentStack.trailingAnchor constant:-16],
-        ]];
+        [self.limitOnlyCard addNoteRowWithText:CLL(@"巨魔环境无执行端：档位仅写入系统偏好，是否生效由系统决定")];
     }
     self.limitOnlyCard.hidden = YES;
     [self.mainStack addArrangedSubview:self.limitOnlyCard];
