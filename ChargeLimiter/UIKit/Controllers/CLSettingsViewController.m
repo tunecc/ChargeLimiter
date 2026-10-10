@@ -5670,18 +5670,17 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
 }
 
 // 仅限流卡片（spec B5 + limit-only-idle-thermal-level）：两个分时段档位选择 + 当前生效 +
-// 会话状态 + 生效验证——全部零 daemon 依赖。档位通道与「完整控制」的「高温模拟 / 充电限流」
-// 是同一个 thermalSimulationMode，因此这里沿用同一套行名与同一套分时段语义。
+// 会话状态 + 生效验证——全部零 daemon 依赖。档位通道与「完整控制」的热模拟卡是同一个
+// thermalSimulationMode，分时段语义一致；主页横向空间有限，行名精简并去掉副标题。
 - (void)setupLimitOnlyCard {
     self.limitOnlyCard = [[CLGlassCard alloc] init];
     self.limitOnlyCard.viewController = self;
-    // section header 与「完整控制」的热模拟卡同名：两者本来就是同一个 thermalSimulationMode
-    // 通道，卡名一致用户才知道跨模式看到的是同一件事。「充电高级」页的置灰提示也指着这个
-    // 卡名，看不到就等于那句提示失去意义。
-    [self.limitOnlyCard addSectionHeader:CLL(@"高温模拟 / 充电限流")];
+    // 主页版卡名缩短为「高温模拟」：与「完整控制」页的「高温模拟 / 充电限流」本是同一个
+    // thermalSimulationMode 通道，用户跨模式看到的是同一件事。主页去掉长副标题并缩短卡名，
+    // 让档位值完整显示；「充电高级」页的置灰提示指向这张卡。
+    [self.limitOnlyCard addSectionHeader:CLL(@"高温模拟")];
     [self.limitOnlyCard addRowWithIcon:@"thermometer.sun.fill"
-                                 title:CLL(@"充电时档位")
-                              subtitle:CLL(@"插电充电时生效；档位越高，充电电流越小")
+                                 title:CLL(@"充电档位")
                                  value:[self limitOnlyLevelText]
                                  color:[UIColor systemOrangeColor]];
     UIView *chargeRow = self.limitOnlyCard.contentStack.arrangedSubviews.lastObject;
@@ -5691,7 +5690,6 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
 
     [self.limitOnlyCard addRowWithIcon:@"flame.fill"
                                  title:CLL(@"平时档位")
-                              subtitle:CLL(@"未插电或未充电时生效；档位越高，性能越低，发热越少")
                                  value:[self limitOnlyIdleLevelText]
                                  color:[UIColor systemOrangeColor]];
     UIView *idleRow = self.limitOnlyCard.contentStack.arrangedSubviews.lastObject;
@@ -5702,7 +5700,6 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     // 「当前生效」只读状态行：与 tweak 会话同一处裁决，App 不推导第二套真相
     [self.limitOnlyCard addRowWithIcon:@"dot.radiowaves.left.and.right"
                                  title:CLL(@"当前生效")
-                              subtitle:CLL(@"两者共用同一个温度模拟通道，同一时刻只有一个生效")
                                  value:[self limitOnlyActiveScopeText]
                                  color:[UIColor systemTealColor]];
     [self.limitOnlyCard addRowWithIcon:@"bolt.horizontal.circle" title:CLL(@"会话状态") value:@"--" color:[UIColor systemBlueColor]];
@@ -5719,7 +5716,7 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     channelTip.font = [UIFont systemFontOfSize:12];
     channelTip.textColor = [UIColor secondaryLabelColor];
     channelTip.numberOfLines = 0;
-    channelTip.text = CLL(@"充电时档位与平时档位共用同一个温度模拟通道：插电充电时用前者，其余时间用后者，不会同时生效。");
+    channelTip.text = CLL(@"充电档位与平时档位共用同一个温度模拟通道：插电充电时用前者，其余时间用后者，不会同时生效。");
     [self.limitOnlyCard.contentStack addArrangedSubview:channelTip];
     [NSLayoutConstraint activateConstraints:@[
         [channelTip.leadingAnchor constraintEqualToAnchor:self.limitOnlyCard.contentStack.leadingAnchor constant:16],
@@ -5776,7 +5773,7 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     CLBatteryManager *manager = [CLBatteryManager shared];
     switch (manager.limitOnlyActiveScope) {
         case CLLimitOnlyScopeCharging:
-            return [NSString stringWithFormat:@"%@ · %@", CLL(@"充电时档位"), [self limitOnlyLevelText]];
+            return [NSString stringWithFormat:@"%@ · %@", CLL(@"充电档位"), [self limitOnlyLevelText]];
         case CLLimitOnlyScopeIdle:
             return [NSString stringWithFormat:@"%@ · %@", CLL(@"平时档位"), [self limitOnlyIdleLevelText]];
         case CLLimitOnlyScopeOff:
@@ -5813,7 +5810,7 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
 
 - (void)presentLimitOnlyLevelPickerForScope:(CLLimitOnlyActiveScope)scope {
     BOOL charging = (scope == CLLimitOnlyScopeCharging);
-    NSString *title = charging ? CLL(@"充电时档位") : CLL(@"平时档位");
+    NSString *title = charging ? CLL(@"充电档位") : CLL(@"平时档位");
     NSString *message = charging ? CLL(@"插电充电时生效\n档位越高，充电电流越小")
                                  : CLL(@"未插电或未充电时生效\n档位越高，性能越低，发热越少");
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
@@ -5895,7 +5892,7 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     if (manager.limitOnlyActiveScope == CLLimitOnlyScopeCharging) {
         switch (manager.limitOnlyVerifyState) {
             case CLLimitOnlyVerifyApplied:
-                session = CLL(@"已插电充电 · 充电时档位生效中");
+                session = CLL(@"已插电充电 · 充电档位生效中");
                 break;
             case CLLimitOnlyVerifyFailed:
                 session = CLL(@"已插电充电 · 验证失败，点按重试");
@@ -5920,7 +5917,7 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     } else if ([manager limitOnlyChargingPeriodApplies]) {
         // 插电充电中，但充电时档位为关：当前时段不施加热模拟。不说"两个档位均已关闭"——
         // 平时档位可能仍配着值，只是此刻用不上。
-        session = CLL(@"已插电充电 · 充电时档位已关闭");
+        session = CLL(@"已插电充电 · 充电档位已关闭");
     } else {
         // 未插电，或插线但系统暂停充电（优化充电 / 80% 限制 / 已充满）：生效方是平时档位，
         // 而它为关。不说"两个档位均已关闭"——充电时档位可能仍配着值，插上电就会生效。
@@ -5948,7 +5945,7 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
         verifyText = [verifyText stringByAppendingString:CLL(@"（可能受外部模拟污染）")];
     }
     [self updateCardValue:self.limitOnlyCard title:CLL(@"生效验证") value:verifyText];
-    [self updateCardValue:self.limitOnlyCard title:CLL(@"充电时档位") value:[self limitOnlyLevelText]];
+    [self updateCardValue:self.limitOnlyCard title:CLL(@"充电档位") value:[self limitOnlyLevelText]];
     [self updateCardValue:self.limitOnlyCard title:CLL(@"平时档位") value:[self limitOnlyIdleLevelText]];
     [self updateCardValue:self.limitOnlyCard title:CLL(@"当前生效") value:[self limitOnlyActiveScopeText]];
 }

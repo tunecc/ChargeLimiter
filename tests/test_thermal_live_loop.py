@@ -347,7 +347,7 @@ class SessionStatusUITests(unittest.TestCase):
 
     def test_new_strings_bilingual(self):
         for key in ("已插电充电 · 验证失败，点按重试", "未充电 · 验证失败，点按重试",
-                    "已插电充电 · 充电时档位已关闭", "未充电 · 平时档位已关闭",
+                    "已插电充电 · 充电档位已关闭", "未充电 · 平时档位已关闭",
                     "验证失败", "验证中", "（可能受外部模拟污染）"):
             self.assertIn(key, self.zh)
             self.assertIn(key, self.en)

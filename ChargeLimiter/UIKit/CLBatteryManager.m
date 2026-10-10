@@ -486,7 +486,7 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
 // 当前是否处于"插电且正在充电"时段——分时段裁决的唯一判据实现。
 // scope 计算与 UI 的关闭分支共用它：第 4 轮验收发现 UI 只用 directPlugConnected，
 // 把"插着线但系统暂停充电"错判成充电时段，于是平时档位为关时显示成
-// "已插电充电 · 充电时档位已关闭"——设备并没在充电，该点名的是平时档位。
+// "已插电充电 · 充电档位已关闭"——设备并没在充电，该点名的是平时档位。
 - (BOOL)limitOnlyChargingPeriodApplies {
     return _directPlugConnected && _directIsCharging;
 }
