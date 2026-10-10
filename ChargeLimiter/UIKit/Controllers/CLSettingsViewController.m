@@ -35,6 +35,29 @@ static void CLSetLocalIntegerForKey(NSString *key, NSInteger value);
 
 #pragma mark - 紧凑型电池状态视图
 
+typedef NS_ENUM(NSInteger, CLBatteryVisualState) {
+    CLBatteryVisualStateIdleNormal = 0,
+    CLBatteryVisualStateCharging,
+    CLBatteryVisualStateLowBattery,
+    CLBatteryVisualStatePaused,
+    CLBatteryVisualStateHold,
+    CLBatteryVisualStateHoldRecharge,
+    CLBatteryVisualStateTempPaused,
+    CLBatteryVisualStateNoInflow,
+    // 仅限流态（limit-only-battery-icon-visuals）：追加在既有八态之后，不改变既有数值。
+    // 仅限流模式下 daemon 不驻留，policyState/amperage 已停止更新，走 daemon 推导链只会
+    // 得到切模式前的陈旧结论（绿色横杆赖着不走），因此这一组状态只按仅限流自有事实源取值。
+    CLBatteryVisualStateLimitOnlyOff,
+    CLBatteryVisualStateLimitOnlyNominal,
+    CLBatteryVisualStateLimitOnlyLight,
+    CLBatteryVisualStateLimitOnlyModerate,
+    CLBatteryVisualStateLimitOnlyHeavy
+};
+
+// 仅限流态区间 [LimitOnlyOff, LimitOnlyHeavy]：用于"这一组状态共用同一套判据与文案"的判断。
+static const NSInteger CLBatteryVisualStateLimitOnlyFirst = CLBatteryVisualStateLimitOnlyOff;
+static const NSInteger CLBatteryVisualStateLimitOnlyLast = CLBatteryVisualStateLimitOnlyHeavy;
+
 @interface CLBatteryStatusView : UIView
 @property (nonatomic, assign) CGFloat percentage;
 @property (nonatomic, assign) NSInteger chargeBelow;
@@ -59,18 +82,13 @@ static void CLSetLocalIntegerForKey(NSString *key, NSInteger value);
 @property (nonatomic, strong) UIColor *fillSecondaryColor;
 @property (nonatomic, strong) UIColor *statusAccentColor;
 - (void)applyBatteryManager:(CLBatteryManager *)manager statusText:(NSString *)statusText;
+- (CLBatteryVisualState)limitOnlyVisualStateForManager:(CLBatteryManager *)manager;
+- (NSString *)limitOnlyStatusTextForManager:(CLBatteryManager *)manager;
+- (NSString *)limitOnlyLevelNameForManager:(CLBatteryManager *)manager;
+- (NSString *)limitOnlyIconNameForState:(CLBatteryVisualState)state manager:(CLBatteryManager *)manager;
+- (CFTimeInterval)limitOnlyFlowDurationForState:(CLBatteryVisualState)state;
+- (CGFloat)limitOnlyFlowOpacityForState:(CLBatteryVisualState)state;
 @end
-
-typedef NS_ENUM(NSInteger, CLBatteryVisualState) {
-    CLBatteryVisualStateIdleNormal = 0,
-    CLBatteryVisualStateCharging,
-    CLBatteryVisualStateLowBattery,
-    CLBatteryVisualStatePaused,
-    CLBatteryVisualStateHold,
-    CLBatteryVisualStateHoldRecharge,
-    CLBatteryVisualStateTempPaused,
-    CLBatteryVisualStateNoInflow
-};
 
 #pragma mark - 毛玻璃卡片
 
@@ -3939,6 +3957,11 @@ static UIViewController *CLTopVisibleViewController(void) {
 }
 
 - (CLBatteryVisualState)visualStateForManager:(CLBatteryManager *)manager {
+    // 仅限流态优先于 daemon 推导链（limit-only-battery-icon-visuals）：该模式下 daemon 不驻留，
+    // policyState / amperage 停在切模式前的陈旧值，走下面这条链只会复读旧态。
+    if (manager.operationMode == CLOperationModeLimitOnly) {
+        return [self limitOnlyVisualStateForManager:manager];
+    }
     NSString *policyState = CLDisplayedPowerStateForManager(manager);
     if ([policyState isEqualToString:@"temp_paused"]) {
         return CLBatteryVisualStateTempPaused;
@@ -3964,6 +3987,58 @@ static UIViewController *CLTopVisibleViewController(void) {
     return CLBatteryVisualStateIdleNormal;
 }
 
+// 仅限流态判据（limit-only-battery-icon-visuals）：只取仅限流模式的自有事实源。
+// 时段与档位读 limitOnlyActiveScope / limitOnlyActiveLevel——与主页「当前生效」行同一处实现，
+// 不另写一套判据，避免图标与状态行互相矛盾。
+// 刻意不读 amperage / instantAmperage / policyState：仅限流模式下这三者已停止更新。
+- (CLBatteryVisualState)limitOnlyVisualStateForManager:(CLBatteryManager *)manager {
+    if (manager.limitOnlyActiveScope == CLLimitOnlyScopeOff) {
+        return CLBatteryVisualStateLimitOnlyOff;
+    }
+    NSString *level = manager.limitOnlyActiveLevel;
+    if ([level isEqualToString:@"nominal"]) {
+        return CLBatteryVisualStateLimitOnlyNominal;
+    }
+    if ([level isEqualToString:@"light"]) {
+        return CLBatteryVisualStateLimitOnlyLight;
+    }
+    if ([level isEqualToString:@"moderate"]) {
+        return CLBatteryVisualStateLimitOnlyModerate;
+    }
+    if ([level isEqualToString:@"heavy"]) {
+        return CLBatteryVisualStateLimitOnlyHeavy;
+    }
+    // 档位名无法识别（理论上不会发生：limitOnlyActiveLevel 只返回上述五值之一）时
+    // 落到关闭态，而不是猜一个档位给图标上色。
+    return CLBatteryVisualStateLimitOnlyOff;
+}
+
+- (NSString *)limitOnlyStatusTextForManager:(CLBatteryManager *)manager {
+    if (manager.limitOnlyActiveScope == CLLimitOnlyScopeOff) {
+        return CLL(@"限流未开启");
+    }
+    NSString *levelName = [self limitOnlyLevelNameForManager:manager];
+    return [NSString stringWithFormat:CLL(@"限流中 · %@"), levelName];
+}
+
+// 档位名查表：与主页仅限流卡片 limitOnlyModeText:fallback: 的映射一致（关闭/正常/轻度/中度/重度）。
+- (NSString *)limitOnlyLevelNameForManager:(CLBatteryManager *)manager {
+    NSString *level = manager.limitOnlyActiveLevel;
+    if ([level isEqualToString:@"nominal"]) {
+        return CLL(@"正常");
+    }
+    if ([level isEqualToString:@"light"]) {
+        return CLL(@"轻度");
+    }
+    if ([level isEqualToString:@"moderate"]) {
+        return CLL(@"中度");
+    }
+    if ([level isEqualToString:@"heavy"]) {
+        return CLL(@"重度");
+    }
+    return CLL(@"关闭");
+}
+
 - (NSString *)statusIconNameForVisualState:(CLBatteryVisualState)state {
     switch (state) {
         case CLBatteryVisualStateCharging:
@@ -3982,12 +4057,41 @@ static UIViewController *CLTopVisibleViewController(void) {
     }
 }
 
+// 仅限流态的状态图标（limit-only-battery-icon-visuals）：插电充电时段统一用 bolt.fill 表达
+// "正在充电"——填充色已被档位占用，充电事实需要另一个可观测通道；未充电时段用档位自己的
+// 温度类图标。图标 tintColor 取当前档位填充主色，颜色同样表达档位。
+- (NSString *)limitOnlyIconNameForState:(CLBatteryVisualState)state manager:(CLBatteryManager *)manager {
+    if ([manager limitOnlyChargingPeriodApplies]) {
+        return @"bolt.fill";
+    }
+    switch (state) {
+        case CLBatteryVisualStateLimitOnlyNominal:
+            return @"thermometer.low";
+        case CLBatteryVisualStateLimitOnlyLight:
+            return @"thermometer.medium";
+        case CLBatteryVisualStateLimitOnlyModerate:
+            return @"thermometer.sun";
+        case CLBatteryVisualStateLimitOnlyHeavy:
+            return @"flame.fill";
+        case CLBatteryVisualStateLimitOnlyOff:
+        default:
+            return @"tortoise.fill";
+    }
+}
+
 - (void)applyBatteryManager:(CLBatteryManager *)manager statusText:(NSString *)statusText {
     if (!manager) {
         return;
     }
 
-    self.statusLabel.text = statusText ?: @"";
+    // 仅限流态的状态标签换用限流专属文案（limit-only-battery-icon-visuals D5）：调用方传入的
+    // statusText 来自 powerStateLabelForManager:，那一套同时喂电源路径卡的「供电状态」行，
+    // 不能为图标单独改；因此替换只发生在这里，不影响其他行。
+    if (manager.operationMode == CLOperationModeLimitOnly) {
+        self.statusLabel.text = [self limitOnlyStatusTextForManager:manager];
+    } else {
+        self.statusLabel.text = statusText ?: @"";
+    }
     self.percentage = manager.currentCapacity;
 
     CLBatteryVisualState nextState = [self visualStateForManager:manager];
@@ -3996,15 +4100,53 @@ static UIViewController *CLTopVisibleViewController(void) {
     [self applyVisualStateAnimated:(self.window != nil && stateChanged) forceAnimationRestart:stateChanged];
 }
 
+// 仅限流态的流动动画参数（limit-only-battery-icon-visuals D3）：档位越高流速越快、越明显。
+// 减弱动态效果时不降到 0（那就和关闭档位无法区分了），按既有 Charging/HoldRecharge 的
+// 同比例收敛到 40%——颜色仍然分档，只是不再"流"。
+- (CFTimeInterval)limitOnlyFlowDurationForState:(CLBatteryVisualState)state {
+    switch (state) {
+        case CLBatteryVisualStateLimitOnlyLight:
+            return 2.6;
+        case CLBatteryVisualStateLimitOnlyModerate:
+            return 1.8;
+        case CLBatteryVisualStateLimitOnlyHeavy:
+            return 1.2;
+        default:
+            return 2.0;
+    }
+}
+
+- (CGFloat)limitOnlyFlowOpacityForState:(CLBatteryVisualState)state {
+    CGFloat base = 0.0;
+    switch (state) {
+        case CLBatteryVisualStateLimitOnlyLight:
+            base = 0.30;
+            break;
+        case CLBatteryVisualStateLimitOnlyModerate:
+            base = 0.40;
+            break;
+        case CLBatteryVisualStateLimitOnlyHeavy:
+            base = 0.50;
+            break;
+        default:
+            return 0.0;
+    }
+    return [self shouldReduceMotion] ? base * 0.4 : base;
+}
+
 - (void)applyVisualStateAnimated:(BOOL)animated forceAnimationRestart:(BOOL)forceAnimationRestart {
     CLBatteryVisualState state = (CLBatteryVisualState)self.visualState;
     BOOL reduceMotion = [self shouldReduceMotion];
+    BOOL limitOnly = (state >= CLBatteryVisualStateLimitOnlyFirst && state <= CLBatteryVisualStateLimitOnlyLast);
     UIColor *primaryColor = [UIColor systemGreenColor];
     UIColor *secondaryColor = [[UIColor systemGreenColor] colorWithAlphaComponent:0.68];
     UIColor *accentColor = primaryColor;
     UIColor *glossColor = [UIColor colorWithWhite:1.0 alpha:0.3];
     UIColor *statusColor = [UIColor secondaryLabelColor];
-    NSString *iconName = [self statusIconNameForVisualState:state];
+    // 状态标签文字保持 secondaryLabelColor：档位色（尤其黄色）作为正文颜色在浅色模式下对比度
+    // 不足，档位由填充色、图标着色与动画表达即可。
+    NSString *iconName = limitOnly ? [self limitOnlyIconNameForState:state manager:[CLBatteryManager shared]]
+                                   : [self statusIconNameForVisualState:state];
 
     CGFloat fillAlpha = 1.0;
     CGFloat flowOpacity = 0.0;
@@ -4066,6 +4208,38 @@ static UIViewController *CLTopVisibleViewController(void) {
             statusColor = [UIColor tertiaryLabelColor];
             fillAlpha = 0.9;
             break;
+        case CLBatteryVisualStateLimitOnlyOff:
+            // 档位关闭：靛蓝、无循环动画（D4）。刻意不回绿色——模式仍是仅限流，
+            // 图标要如实反映"限流模式、当前时段没有热模拟"，而不是假装回到常规态。
+            primaryColor = [UIColor systemIndigoColor];
+            secondaryColor = [[UIColor systemIndigoColor] colorWithAlphaComponent:0.55];
+            accentColor = primaryColor;
+            glossColor = [[UIColor systemIndigoColor] colorWithAlphaComponent:0.16];
+            break;
+        case CLBatteryVisualStateLimitOnlyNominal:
+            primaryColor = [UIColor systemTealColor];
+            secondaryColor = [[UIColor systemTealColor] colorWithAlphaComponent:0.60];
+            accentColor = primaryColor;
+            glossColor = [[UIColor systemTealColor] colorWithAlphaComponent:0.18];
+            break;
+        case CLBatteryVisualStateLimitOnlyLight:
+            primaryColor = [UIColor systemYellowColor];
+            secondaryColor = [[UIColor systemYellowColor] colorWithAlphaComponent:0.60];
+            accentColor = primaryColor;
+            glossColor = [[UIColor systemYellowColor] colorWithAlphaComponent:0.20];
+            break;
+        case CLBatteryVisualStateLimitOnlyModerate:
+            primaryColor = [UIColor systemOrangeColor];
+            secondaryColor = [[UIColor systemOrangeColor] colorWithAlphaComponent:0.62];
+            accentColor = primaryColor;
+            glossColor = [[UIColor systemOrangeColor] colorWithAlphaComponent:0.20];
+            break;
+        case CLBatteryVisualStateLimitOnlyHeavy:
+            primaryColor = [UIColor systemRedColor];
+            secondaryColor = [[UIColor systemRedColor] colorWithAlphaComponent:0.65];
+            accentColor = primaryColor;
+            glossColor = [[UIColor systemRedColor] colorWithAlphaComponent:0.22];
+            break;
         case CLBatteryVisualStateIdleNormal:
         default:
             primaryColor = [UIColor systemGreenColor];
@@ -4081,6 +4255,10 @@ static UIViewController *CLTopVisibleViewController(void) {
     self.statusLabel.textColor = statusColor;
     self.fillView.alpha = fillAlpha;
     self.glossView.backgroundColor = glossColor;
+    if (limitOnly) {
+        // 静态不透明度与动画启动参数走同一个查表，避免两处各写一份数值后漂移。
+        flowOpacity = [self limitOnlyFlowOpacityForState:state];
+    }
     self.flowOverlayLayer.opacity = flowOpacity;
     self.temperatureGlowLayer.opacity = temperatureOpacity;
 
@@ -4109,6 +4287,12 @@ static UIViewController *CLTopVisibleViewController(void) {
             return (self.percentage <= 10);
         case CLBatteryVisualStateIdleNormal:
             return YES;
+        case CLBatteryVisualStateLimitOnlyNominal:
+        case CLBatteryVisualStateLimitOnlyLight:
+        case CLBatteryVisualStateLimitOnlyModerate:
+        case CLBatteryVisualStateLimitOnlyHeavy:
+            return YES;
+        case CLBatteryVisualStateLimitOnlyOff:
         default:
             return NO;
     }
@@ -4125,6 +4309,14 @@ static UIViewController *CLTopVisibleViewController(void) {
             return ([self.temperatureGlowLayer animationForKey:@"cl.temperature"] != nil);
         case CLBatteryVisualStateIdleNormal:
             return ([self.glossView.layer animationForKey:@"cl.gloss"] != nil);
+        case CLBatteryVisualStateLimitOnlyNominal:
+            // 微光呼吸复用光泽层动画，与 IdleNormal 同一个 key——两个状态不会同时在场，
+            // 停止/启动逻辑因此可以照旧按 key 判存。
+            return ([self.glossView.layer animationForKey:@"cl.gloss"] != nil);
+        case CLBatteryVisualStateLimitOnlyLight:
+        case CLBatteryVisualStateLimitOnlyModerate:
+        case CLBatteryVisualStateLimitOnlyHeavy:
+            return ([self.flowOverlayLayer animationForKey:@"cl.flow"] != nil);
         default:
             return NO;
     }
@@ -4232,6 +4424,27 @@ static UIViewController *CLTopVisibleViewController(void) {
                 [self.glossView.layer addAnimation:gloss forKey:@"cl.gloss"];
             }
             break;
+        case CLBatteryVisualStateLimitOnlyNominal:
+            // 微光呼吸：与 IdleNormal 同一段光泽层往返动画（同一 key，两个状态不会同时在场）。
+            {
+                CABasicAnimation *gloss = [CABasicAnimation animationWithKeyPath:@"opacity"];
+                gloss.fromValue = @0.12;
+                gloss.toValue = @0.28;
+                gloss.duration = 2.6;
+                gloss.autoreverses = YES;
+                gloss.repeatCount = HUGE_VALF;
+                gloss.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+                [self.glossView.layer addAnimation:gloss forKey:@"cl.gloss"];
+            }
+            break;
+        case CLBatteryVisualStateLimitOnlyLight:
+        case CLBatteryVisualStateLimitOnlyModerate:
+        case CLBatteryVisualStateLimitOnlyHeavy:
+            // 档位越高流速越快：时长与不透明度都由档位查表给出，一处定义。
+            [self startFlowAnimationWithDuration:[self limitOnlyFlowDurationForState:state]
+                                        opacity:[self limitOnlyFlowOpacityForState:state]];
+            break;
+        case CLBatteryVisualStateLimitOnlyOff:
         default:
             break;
     }
@@ -5333,6 +5546,12 @@ static void CLPresentStopChargePresetEditor(UIViewController *presenter,
     [super viewWillAppear:animated];
     self.navigationController.navigationBarHidden = YES;
     [[CLBatteryManager shared] startAutoRefresh];
+    // limit-only-battery-icon-visuals：setupView 给电池图标的初值是 IdleNormal（绿色）。
+    // 仅限流模式下 daemon 不在场，要等首轮请求失败才补发通知，启动瞬间会闪一下绿色。
+    // 这里先按当前模式立刻重算一次，不进 1s 链也不新增轮询。
+    if ([CLBatteryManager shared].operationMode == CLOperationModeLimitOnly) {
+        [self batteryInfoDidUpdate];
+    }
     [self updateChargeAbovePresetButtonAppearance];
     if (!self.didCheckLegacyMigrationPrompt) {
         self.didCheckLegacyMigrationPrompt = YES;

@@ -282,6 +282,12 @@ NSNotificationName const CLDaemonStatusDidChangeNotification = @"CLDaemonStatusD
             // 插拔边沿与探针（会话状态行不滞留旧值；不新增常驻轮询，timer 本就存在）
             if (self.operationMode == CLOperationModeLimitOnly) {
                 [self refreshDirectSessionState];
+                // limit-only-battery-icon-visuals：这一路以前提前 return，主页电池图标在仅限流
+                // 模式下永不被重算，一直留着切模式前的绿色横杆。补发一次电池事件通知，让
+                // batteryInfoDidUpdate 随 1s 链跑起来。刻意发在 refreshDirectSessionState
+                // 之外——batteryInfoDidUpdate 在仅限流模式下会回调 refreshDirectSessionState，
+                // 在它内部发通知会成环。
+                [[NSNotificationCenter defaultCenter] postNotificationName:CLBatteryInfoDidUpdateNotification object:self];
             }
             return;
         }
@@ -791,6 +797,11 @@ static NSTimeInterval const CLLimitOnlyVerifyWindowSeconds = 15.0;
                 [self refreshDirectSessionState];
             }
             [[NSNotificationCenter defaultCenter] postNotificationName:CLConfigDidUpdateNotification object:self];
+            // limit-only-battery-icon-visuals：档位刚被改写（或回滚），电池图标的颜色/动画/
+            // 文案要跟着变，不能等下一次 1s tick。仅限流态才发：其余模式走 daemon 链。
+            if (self.operationMode == CLOperationModeLimitOnly) {
+                [[NSNotificationCenter defaultCenter] postNotificationName:CLBatteryInfoDidUpdateNotification object:self];
+            }
             if (completion) completion(ok);
         });
     });
@@ -874,6 +885,12 @@ static NSTimeInterval const CLLimitOnlyVerifyWindowSeconds = 15.0;
                 [self refreshConfig]; // 失败：以磁盘真值为准重取，完成后自行发通知
             }
             [[NSNotificationCenter defaultCenter] postNotificationName:CLConfigDidUpdateNotification object:self];
+            // limit-only-battery-icon-visuals：切进/切出仅限流时立刻重算一次电池图标。否则
+            // 切进限流态后旧绿色要等下一次 1s tick 才消失，切出时限流色同样会滞留一轮。
+            // 只覆盖涉限流的两个方向：其余切换本就有 daemon 链在刷新，不多发。
+            if (mode == CLOperationModeLimitOnly || current == CLOperationModeLimitOnly) {
+                [[NSNotificationCenter defaultCenter] postNotificationName:CLBatteryInfoDidUpdateNotification object:self];
+            }
             if (completion) completion(ok);
         });
     });

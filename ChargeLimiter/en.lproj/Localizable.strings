@@ -553,3 +553,7 @@ Off: stop all control and restore the system state.";
 /* 仅限流切换失败提示（fix-limit-only-restart-state） */
 "切换失败" = "Switch Failed";
 "充电限流配置未能写入，请确认越狱环境与守护进程权限后重试" = "The charge limit could not be written. Check your jailbreak environment and daemon permissions, then try again.";
+
+/* 仅限流电池图标（limit-only-battery-icon-visuals）：主页模拟电池图标的状态标签文案 */
+"限流中 · %@" = "Limiting · %@";
+"限流未开启" = "Limit Not Active";
